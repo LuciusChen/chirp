@@ -289,8 +289,7 @@ COUNT-KEY is adjusted locally to reflect STATE-VALUE."
   "Return TEXT propertized as read-only compose chrome."
   (propertize text
               'read-only t
-              'front-sticky t
-              'rear-nonsticky t
+              'rear-nonsticky '(read-only field)
               'field 'chirp-compose-info))
 
 (defun chirp-compose--current-body ()
@@ -306,6 +305,7 @@ COUNT-KEY is adjusted locally to reflect STATE-VALUE."
   "Refresh compose overlays for the current buffer."
   (let* ((body (chirp-compose--current-body))
          (modified (buffer-modified-p))
+         (body-end nil)
          (point-offset (if (and (markerp chirp-compose-body-start-marker)
                                 (>= (point) (marker-position chirp-compose-body-start-marker)))
                            (- (point) (marker-position chirp-compose-body-start-marker))
@@ -315,8 +315,9 @@ COUNT-KEY is adjusted locally to reflect STATE-VALUE."
     (insert (chirp-compose--locked-string (chirp-compose--header-string)))
     (setq-local chirp-compose-body-start-marker (copy-marker (point)))
     (insert body)
-    (setq-local chirp-compose-body-end-marker (copy-marker (point) t))
+    (setq body-end (point))
     (insert (chirp-compose--locked-string (chirp-compose--footer-string)))
+    (setq-local chirp-compose-body-end-marker (copy-marker body-end t))
     (goto-char (+ (marker-position chirp-compose-body-start-marker)
                   (min point-offset (length body))))
     (set-buffer-modified-p modified)))
@@ -598,11 +599,16 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
   (interactive)
   (chirp-compose--close (current-buffer) chirp-compose-source-buffer))
 
+(defun chirp-compose--source-buffer ()
+  "Return the view buffer that should own a newly opened compose buffer."
+  (or (window-buffer (selected-window))
+      (current-buffer)))
+
 (defun chirp-compose-open (kind &optional tweet)
   "Open a compose buffer for KIND.
 
 When TWEET is non-nil, use it as the reply or quote target."
-  (let* ((source (current-buffer))
+  (let* ((source (chirp-compose--source-buffer))
          (buffer (generate-new-buffer "*chirp compose*")))
     (pop-to-buffer buffer)
     (with-current-buffer buffer

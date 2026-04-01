@@ -73,6 +73,11 @@ These paths are consulted after `exec-path' when `chirp-cli-command' is nil."
   :type 'integer
   :group 'chirp)
 
+(defcustom chirp-hide-promoted-posts t
+  "When non-nil, hide tweets explicitly marked as promoted by twitter-cli."
+  :type 'boolean
+  :group 'chirp)
+
 (defvar-local chirp--refresh-function nil
   "Function used to refresh the current Chirp buffer.")
 
@@ -169,7 +174,8 @@ These paths are consulted after `exec-path' when `chirp-cli-command' is nil."
   (with-current-buffer buffer
     (let ((new-name (chirp--format-buffer-name title)))
       (unless (string= (buffer-name buffer) new-name)
-        (setq chirp--shared-buffer (rename-buffer new-name t)))))
+        (rename-buffer new-name t))
+      (setq chirp--shared-buffer buffer)))
   buffer)
 
 (defun chirp-buffer ()
@@ -802,6 +808,11 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
                          (chirp-get object "bookmarked" "isBookmarked")
                          (chirp-get-in object '("viewer" "bookmarked"))
                          (chirp-get legacy "bookmarked"))))
+         (promoted-p (chirp-boolean-value
+                      (chirp-coalesce
+                       (chirp-get object "isPromoted" "is_promoted" "promoted")
+                       (chirp-get-in object '("itemContent" "promotedMetadata"))
+                       (chirp-get object "promotedMetadata"))))
          (state-overrides (and id (gethash id chirp-tweet-state-overrides)))
          (url (chirp-first-nonblank
                (chirp-get object "url")
@@ -825,6 +836,7 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
             :author-name (plist-get author-user :name)
             :author-handle author-handle
             :author-avatar-url (plist-get author-user :avatar-url)
+            :promoted-p promoted-p
             :media media
             :retweeted-p (chirp-plist-override state-overrides :retweeted-p retweeted-p)
             :liked-p (chirp-plist-override state-overrides :liked-p liked-p)
@@ -854,17 +866,28 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
                          (chirp-get-in object '("views" "count")))
             :raw object))))
 
+(defun chirp-tweet-visible-p (tweet)
+  "Return non-nil when TWEET should be shown in Chirp."
+  (or (not chirp-hide-promoted-posts)
+      (not (plist-get tweet :promoted-p))))
+
 (defun chirp-collect-top-level-tweets (value)
   "Collect normalized tweets from the top level of VALUE."
   (cond
    ((chirp-tweet-like-p value)
     (let ((tweet (chirp-normalize-tweet value)))
-      (if tweet (list tweet) nil)))
+      (if (and tweet
+               (chirp-tweet-visible-p tweet))
+          (list tweet)
+        nil)))
    ((listp value)
     (delq nil
           (mapcar (lambda (item)
                     (when (chirp-tweet-like-p item)
-                      (chirp-normalize-tweet item)))
+                      (let ((tweet (chirp-normalize-tweet item)))
+                        (when (and tweet
+                                   (chirp-tweet-visible-p tweet))
+                          tweet))))
                   value)))
    (t nil)))
 
@@ -875,10 +898,11 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
     (cl-labels ((walk (node)
                   (cond
                    ((chirp-tweet-like-p node)
-                    (let* ((tweet (chirp-normalize-tweet node))
+                   (let* ((tweet (chirp-normalize-tweet node))
                            (id (plist-get tweet :id))
                            (key (or id (plist-get tweet :url))))
                       (when (and tweet
+                                 (chirp-tweet-visible-p tweet)
                                  (or (not key)
                                      (not (gethash key seen))))
                         (when key

@@ -57,7 +57,7 @@ M-x chirp-profile
 
 ## Keys
 
-- `g`: refresh; on Home and Following, the previous timeline snapshot stays available via `b`
+- `g`: refresh; on Home and Following, Chirp keeps the current timeline visible, merges newer posts at the top, and still leaves the previous snapshot available via `b`
 - `b`: go back to the previous Chirp view
 - `TAB`: switch between Home and Following when you are on either timeline
 - `n` / `p`: next or previous entry; on Home and Following, `n` on the last entry loads more older posts
