@@ -1,0 +1,73 @@
+;;; chirp.el --- Browse X timelines from Emacs -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026
+
+;; Author: lucius
+;; Version: 0.1.0
+;; Package-Requires: ((emacs "29.1") (transient "0.4.3"))
+;; Keywords: convenience, comm
+;; URL: https://github.com/LuciusChen/chirp
+
+;;; Commentary:
+
+;; chirp.el is a lightweight X/Twitter browser for Emacs.  It delegates
+;; network access and authentication to twitter-cli, then renders timelines,
+;; tweet threads, and profiles inside special-mode buffers.
+
+;;; Code:
+
+(eval-and-compile
+  (let ((dir (file-name-directory
+              (or load-file-name
+                  (buffer-file-name)
+                  default-directory))))
+    (add-to-list 'load-path (expand-file-name "lisp" dir))))
+
+(require 'chirp-core)
+(require 'chirp-backend)
+(require 'chirp-media)
+(require 'chirp-render)
+(require 'chirp-actions)
+(require 'chirp-thread)
+(require 'chirp-profile)
+(require 'chirp-timeline)
+
+;;;###autoload
+(defun chirp-home ()
+  "Open the home timeline."
+  (interactive)
+  (chirp-timeline-open-home))
+
+;;;###autoload
+(defun chirp-following ()
+  "Open the following timeline."
+  (interactive)
+  (chirp-timeline-open-following))
+
+;;;###autoload
+(defun chirp-bookmarks ()
+  "Open bookmarks."
+  (interactive)
+  (chirp-timeline-open-bookmarks))
+
+;;;###autoload
+(defun chirp-search (query)
+  "Search X for QUERY."
+  (interactive "sSearch X: ")
+  (chirp-timeline-open-search query))
+
+;;;###autoload
+(defun chirp-thread (tweet-or-url)
+  "Open a thread for TWEET-OR-URL."
+  (interactive "sTweet ID or URL: ")
+  (chirp-thread-open tweet-or-url))
+
+;;;###autoload
+(defun chirp-profile (handle)
+  "Open HANDLE's profile."
+  (interactive "sProfile handle: ")
+  (chirp-profile-open handle))
+
+(provide 'chirp)
+
+;;; chirp.el ends here
