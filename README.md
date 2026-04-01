@@ -62,6 +62,7 @@ M-x chirp-profile
 - `TAB`: switch between Home and Following when you are on either timeline
 - `n` / `p`: next or previous entry; on Home and Following, `n` on the last entry loads more older posts
 - `N`: load more older posts on Home and Following
+- When Home or Following has no more older posts, Chirp says so instead of leaving the last loading message in place
 - `RET`: open the current tweet or profile, or open large media when point is on a thumbnail
 - `m`: open the first media item for the current tweet
 - `A`: open the author profile

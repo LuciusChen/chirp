@@ -31,21 +31,38 @@
     (chirp-timeline--open kind (or chirp--timeline-limit
                                    chirp-default-max-results))))
 
+(defun chirp-timeline--current-count (buffer)
+  "Return the current timeline post count for BUFFER."
+  (with-current-buffer buffer
+    (or chirp--timeline-count
+        (let ((count 0)
+              (pos (chirp--entry-position-forward (point-min))))
+          (while pos
+            (setq count (1+ count)
+                  pos (chirp--entry-position-forward
+                       (min (point-max) (1+ pos)))))
+          count))))
+
 (defun chirp-timeline--render (buffer title refresh tweets &optional kind limit anchor-id)
   "Render TWEETS into BUFFER."
-  (chirp-render-into-buffer
-   buffer title refresh
-   (lambda ()
-     (if tweets
-         (dolist (tweet tweets)
-           (chirp-render-insert-tweet tweet))
-       (chirp-render-insert-empty "No posts returned."))))
+  (let ((tweet-count (length tweets)))
+    (chirp-render-into-buffer
+     buffer title refresh
+     (lambda ()
+       (if tweets
+           (dolist (tweet tweets)
+             (chirp-render-insert-tweet tweet))
+         (chirp-render-insert-empty "No posts returned."))))
   (with-current-buffer buffer
     (setq-local chirp--timeline-kind kind)
     (setq-local chirp--timeline-limit (and kind limit))
+    (setq-local chirp--timeline-count (and kind tweet-count))
     (setq-local chirp--timeline-load-more-function
                 (and (memq kind '(home following))
                      #'chirp-load-more))
+    (setq-local chirp--timeline-exhausted-p
+                (and (memq kind '(home following))
+                     (< tweet-count limit)))
     (setq-local chirp--rerender-function
                 (let ((saved-tweets tweets)
                       (saved-title title)
@@ -65,7 +82,27 @@
     (or (and anchor-id
              (chirp-goto-entry-id anchor-id))
         (chirp-move-point-to-first-entry)))
-  (chirp-media-prefetch-tweets tweets buffer))
+    (chirp-media-prefetch-tweets tweets buffer)))
+
+(defun chirp-timeline--handle-feed-success
+    (buffer title refresh tweets kind limit anchor-id loading-more previous-count)
+  "Handle a successful feed response for BUFFER."
+  (let ((tweet-count (length tweets)))
+    (if (and loading-more
+             (numberp previous-count)
+             (<= tweet-count previous-count))
+        (with-current-buffer buffer
+          (setq-local chirp--timeline-loading-more nil)
+          (setq-local chirp--request-token nil)
+          (setq-local chirp--timeline-exhausted-p t))
+      (chirp-timeline--render buffer title refresh tweets kind limit anchor-id)
+      (when (and loading-more
+                 (< tweet-count limit))
+        (message "No older posts.")))
+    (when (and loading-more
+               (numberp previous-count)
+               (<= tweet-count previous-count))
+      (message "No older posts."))))
 
 (defun chirp-timeline--open (kind &optional limit anchor-id loading-more)
   "Open timeline KIND with LIMIT posts.
@@ -76,6 +113,8 @@ When LOADING-MORE is non-nil, keep the current buffer visible while fetching."
          (title (chirp-timeline--title kind))
          (limit (or limit chirp-default-max-results))
          (refresh (chirp-timeline--refresh-function kind))
+         (previous-count (and loading-more
+                              (chirp-timeline--current-count buffer)))
          (token (if loading-more
                     (progn
                       (with-current-buffer buffer
@@ -90,7 +129,8 @@ When LOADING-MORE is non-nil, keep the current buffer visible while fetching."
     (chirp-backend-feed
      (lambda (tweets _envelope)
        (when (chirp-request-current-p buffer token)
-         (chirp-timeline--render buffer title refresh tweets kind limit anchor-id)))
+         (chirp-timeline--handle-feed-success
+          buffer title refresh tweets kind limit anchor-id loading-more previous-count)))
      (chirp-timeline--following-p kind)
      (lambda (message)
        (when (chirp-request-current-p buffer token)
@@ -118,14 +158,18 @@ When LOADING-MORE is non-nil, keep the current buffer visible while fetching."
   (interactive)
   (unless (memq chirp--timeline-kind '(home following))
     (user-error "Current view does not support loading more posts"))
-  (if chirp--timeline-loading-more
-      (message "Already loading older posts...")
+  (cond
+   (chirp--timeline-loading-more
+    (message "Already loading older posts..."))
+   (chirp--timeline-exhausted-p
+    (message "No older posts."))
+   (t
     (chirp-timeline--open
      chirp--timeline-kind
      (+ (or chirp--timeline-limit chirp-default-max-results)
         (max 1 chirp-timeline-load-more-step))
      (or anchor-id (chirp-entry-id-at-point))
-     t)))
+     t))))
 
 (defun chirp-timeline-open-bookmarks ()
   "Open bookmarks."

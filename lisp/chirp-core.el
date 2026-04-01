@@ -91,8 +91,14 @@ These paths are consulted after `exec-path' when `chirp-cli-command' is nil."
 (defvar-local chirp--timeline-limit nil
   "Current max post count for the active timeline buffer.")
 
+(defvar-local chirp--timeline-count nil
+  "Current number of posts shown in the active timeline buffer.")
+
 (defvar-local chirp--timeline-load-more-function nil
   "Function used to fetch older posts for the current timeline.")
+
+(defvar-local chirp--timeline-exhausted-p nil
+  "Non-nil when the active timeline has no more older posts to fetch.")
 
 (defvar-local chirp--timeline-loading-more nil
   "Non-nil while Chirp is fetching older timeline posts.")
@@ -107,7 +113,9 @@ These paths are consulted after `exec-path' when `chirp-cli-command' is nil."
 (put 'chirp--request-token 'permanent-local t)
 (put 'chirp--timeline-kind 'permanent-local t)
 (put 'chirp--timeline-limit 'permanent-local t)
+(put 'chirp--timeline-count 'permanent-local t)
 (put 'chirp--timeline-load-more-function 'permanent-local t)
+(put 'chirp--timeline-exhausted-p 'permanent-local t)
 (put 'chirp--rerender-function 'permanent-local t)
 
 (defvar chirp--suspend-history nil
@@ -198,7 +206,9 @@ These paths are consulted after `exec-path' when `chirp-cli-command' is nil."
            chirp--refresh-function
            chirp--timeline-kind
            chirp--timeline-limit
+           chirp--timeline-count
            chirp--timeline-load-more-function
+           chirp--timeline-exhausted-p
            chirp--rerender-function
            chirp--media-list
            chirp--media-index
@@ -279,7 +289,9 @@ Return a token that identifies the current request."
     (setq-local chirp--refresh-function refresh)
     (setq-local chirp--timeline-kind nil)
     (setq-local chirp--timeline-limit nil)
+    (setq-local chirp--timeline-count nil)
     (setq-local chirp--timeline-load-more-function nil)
+    (setq-local chirp--timeline-exhausted-p nil)
     (setq-local chirp--timeline-loading-more nil)
     (setq-local chirp--rerender-function nil)
     (when (timerp chirp--rerender-timer)
