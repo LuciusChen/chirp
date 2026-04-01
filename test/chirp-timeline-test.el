@@ -199,6 +199,16 @@
     (should (equal (nth 6 render-args) "2"))
     (should (equal last-message "No new posts."))))
 
+
+(ert-deftest chirp-clean-text-decodes-html-entities ()
+  "Tweet text should decode common HTML entities."
+  (should (equal (chirp-clean-text "a &gt; b &amp; c &lt; d")
+                 "a > b & c < d"))
+  (should (equal (chirp-clean-text "say &quot;hi&quot; &#39;now&#39;")
+                 "say \"hi\" 'now'"))
+  (should (equal (chirp-clean-text "A&#10;B&#x21;")
+                 "A\nB!")))
+
 (provide 'chirp-timeline-test)
 
 ;;; chirp-timeline-test.el ends here

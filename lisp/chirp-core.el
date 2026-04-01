@@ -536,11 +536,36 @@ Return a token that identifies the current request."
                      (not (string-blank-p value)))
            return value))
 
+(defun chirp-decode-html-entities (text)
+  "Decode common HTML entities in TEXT."
+  (let ((decoded text))
+    (setq decoded
+          (replace-regexp-in-string
+           "&#\\([0-9]+\\);"
+           (lambda (match)
+             (string (string-to-number (match-string 1 match))))
+           decoded t t))
+    (setq decoded
+          (replace-regexp-in-string
+           "&#x\\([0-9A-Fa-f]+\\);"
+           (lambda (match)
+             (string (string-to-number (match-string 1 match) 16)))
+           decoded t t))
+    (setq decoded (replace-regexp-in-string "&gt;" ">" decoded t t))
+    (setq decoded (replace-regexp-in-string "&lt;" "<" decoded t t))
+    (setq decoded (replace-regexp-in-string "&amp;" "&" decoded t t))
+    (setq decoded (replace-regexp-in-string "&quot;" (string 34) decoded t t))
+    (setq decoded (replace-regexp-in-string "&#39;" "'" decoded t t))
+    (setq decoded (replace-regexp-in-string "&nbsp;" " " decoded t t))
+    decoded))
+
 (defun chirp-clean-text (value)
   "Normalize VALUE into a human-readable string."
   (cond
    ((stringp value)
-    (string-trim (replace-regexp-in-string "\r" "" value)))
+    (string-trim
+     (chirp-decode-html-entities
+      (replace-regexp-in-string "\r" "" value))))
    ((null value) "")
    (t
     (string-trim (format "%s" value)))))
