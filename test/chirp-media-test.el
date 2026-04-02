@@ -155,6 +155,23 @@
     (should-not (chirp-media-thumbnail-placeholder-image
                  '(:type "photo" :url "https://example.com/photo.jpg")))))
 
+(ert-deftest chirp-normalize-media-item-preserves-preview-and-variants ()
+  "Structured media payloads should keep preview URLs and variant lists."
+  (let* ((media
+          (chirp-normalize-media-item
+           '(("type" . "video")
+             ("url" . "https://high.mp4")
+             ("previewUrl" . "https://preview.jpg")
+             ("variants"
+              . ((("url" . "https://high.mp4")
+                  ("bitrate" . 2176000))
+                 (("url" . "https://low.mp4")
+                  ("bitrate" . 832000))))))))
+    (should (equal (plist-get media :preview-url) "https://preview.jpg"))
+    (should (equal (mapcar (lambda (variant) (plist-get variant :url))
+                           (plist-get media :variants))
+                   '("https://high.mp4" "https://low.mp4")))))
+
 (ert-deftest chirp-media-quit-restores-source-buffer-point ()
   "Closing media should restore point and scroll state in the source buffer."
   (let ((source (generate-new-buffer " *chirp-media-source*"))
@@ -209,6 +226,7 @@
 (ert-deftest chirp-media-open-video-launches-player-with-pipe-connection ()
   "Opening video media should launch the external player without a PTY."
   (let ((chirp-video-player-command "/usr/bin/mpv")
+        (chirp-video-playback-max-bitrate 2176000)
         (source (generate-new-buffer " *chirp-video-source*"))
         captured-command
         captured-connection-type
@@ -227,11 +245,15 @@
                      (lambda (_process flag)
                        (setq captured-query-flag flag))))
             (chirp-media-open
-             '((:type "video" :url "https://example.com/video.mp4"))
+             '((:type "video"
+                :url "https://example.com/high.mp4"
+                :variants ((:url "https://example.com/high.mp4" :bitrate 4096000)
+                           (:url "https://example.com/mid.mp4" :bitrate 2176000)
+                           (:url "https://example.com/low.mp4" :bitrate 832000))))
              0
              "Media"))
           (should (equal captured-command
-                         '("/usr/bin/mpv" "https://example.com/video.mp4")))
+                         '("/usr/bin/mpv" "https://example.com/mid.mp4")))
           (should (eq captured-connection-type 'pipe))
           (should (eq captured-query-flag nil)))
       (dolist (buffer (list source))
@@ -241,12 +263,15 @@
 (ert-deftest chirp-media-play-launches-configured-player ()
   "Media viewer playback should launch the configured external player on demand."
   (let ((chirp-video-player-command "/usr/bin/mpv")
+        (chirp-video-playback-max-bitrate 2176000)
         captured-command
         captured-query-flag)
     (with-temp-buffer
       (chirp-media-view-mode)
       (setq-local chirp--media-list '((:type "animated_gif"
-                                       :url "https://example.com/anim.mp4")))
+                                       :url "https://example.com/anim-high.mp4"
+                                       :variants ((:url "https://example.com/anim-high.mp4" :bitrate 4096000)
+                                                  (:url "https://example.com/anim-low.mp4" :bitrate 832000)))))
       (setq-local chirp--media-index 0)
       (cl-letf (((symbol-function 'make-process)
                  (lambda (&rest args)
@@ -257,7 +282,7 @@
                    (setq captured-query-flag flag))))
         (chirp-media-play)))
     (should (equal captured-command
-                   '("/usr/bin/mpv" "https://example.com/anim.mp4")))
+                   '("/usr/bin/mpv" "https://example.com/anim-low.mp4")))
     (should (eq captured-query-flag nil))))
 
 (provide 'chirp-media-test)

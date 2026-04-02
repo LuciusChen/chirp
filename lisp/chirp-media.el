@@ -113,6 +113,15 @@ When nil, Chirp opens video URLs in a browser."
   :type '(choice (const :tag "Browser" nil) string)
   :group 'chirp)
 
+(defcustom chirp-video-playback-max-bitrate 2176000
+  "Maximum preferred MP4 bitrate for direct external playback.
+
+When non-nil, Chirp picks the highest video variant at or below this bitrate.
+If all known variants exceed the limit, Chirp falls back to the lowest bitrate
+variant to keep playback responsive."
+  :type '(choice (const :tag "Highest available" nil) integer)
+  :group 'chirp)
+
 (defcustom chirp-video-thumbnail-command
   (executable-find "ffmpeg")
   "Command used to extract video and animated GIF thumbnails.
@@ -947,10 +956,51 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
       (browse-url url)
     (user-error "No media URL available")))
 
+(defun chirp-media--variant-bitrate (variant)
+  "Return numeric bitrate from media VARIANT, or 0."
+  (let ((value (plist-get variant :bitrate)))
+    (cond
+     ((numberp value) value)
+     ((and (stringp value)
+           (string-match-p "\\`[0-9]+\\'" value))
+      (string-to-number value))
+     (t 0))))
+
+(defun chirp-media-playback-url (media)
+  "Return the preferred playback URL for video-like MEDIA."
+  (if-let* (((chirp-media-video-like-p media))
+            (variants
+             (cl-remove-if-not
+              (lambda (variant)
+                (let ((url (plist-get variant :url)))
+                  (and (stringp url)
+                       (not (string-empty-p url)))))
+              (copy-sequence (plist-get media :variants)))))
+      (let* ((sorted
+             (sort variants
+                    (lambda (left right)
+                      (< (chirp-media--variant-bitrate left)
+                         (chirp-media--variant-bitrate right)))))
+             (capped
+              (and chirp-video-playback-max-bitrate
+                   (cl-remove-if
+                    (lambda (variant)
+                      (> (chirp-media--variant-bitrate variant)
+                         chirp-video-playback-max-bitrate))
+                    sorted)))
+             (selected
+              (if chirp-video-playback-max-bitrate
+                  (or (car (last capped))
+                      (car sorted))
+                (car (last sorted)))))
+        (or (plist-get selected :url)
+            (plist-get media :url)))
+    (plist-get media :url)))
+
 (defun chirp-media--play-external (media)
   "Open video-like MEDIA in the configured external player."
   (if-let* (((chirp-media-video-like-p media))
-            (url (plist-get media :url)))
+            (url (chirp-media-playback-url media)))
       (if chirp-video-player-command
           (let ((process-connection-type nil)
                 process)

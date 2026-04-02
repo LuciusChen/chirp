@@ -1075,6 +1075,20 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
                                       (string-remove-prefix "@" handle)))
             :raw object))))
 
+(defun chirp-normalize-media-variant (object)
+  "Normalize media variant OBJECT into a plist."
+  (let ((url (chirp-first-nonblank (chirp-get object "url")))
+        (bitrate (chirp-get object "bitrate")))
+    (when url
+      (list :url url
+            :bitrate bitrate))))
+
+(defun chirp-normalize-media-variants (value)
+  "Normalize media variant VALUE into a list of plists."
+  (if (listp value)
+      (delq nil (mapcar #'chirp-normalize-media-variant value))
+    nil))
+
 (defun chirp-normalize-media-item (object)
   "Normalize media OBJECT into a plist."
   (let ((type (chirp-first-nonblank (chirp-get object "type")))
@@ -1088,12 +1102,15 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
                       (chirp-get-in object '("preview" "url"))
                       (chirp-get-in object '("thumbnail" "url"))
                       (chirp-get-in object '("poster" "url"))))
+        (variants (chirp-normalize-media-variants
+                   (chirp-get object "variants")))
         (width (chirp-get object "width"))
         (height (chirp-get object "height")))
     (when (and type url)
       (list :type type
             :url url
             :preview-url preview-url
+            :variants variants
             :width width
             :height height))))
 
