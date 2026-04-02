@@ -59,13 +59,9 @@
   :group 'chirp)
 
 (defface chirp-quoted-tweet-block-face
-  '((((class color) (background light))
-     :background "#f3f5f7"
-     :extend t)
-    (((class color) (background dark))
-     :background "#1f242b"
-     :extend t)
-    (t :inherit shadow))
+  '((t :inherit fringe
+       :foreground unspecified
+       :extend t))
   "Face layered beneath quoted-tweet blocks."
   :group 'chirp)
 
