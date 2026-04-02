@@ -388,7 +388,7 @@ When DETAILP is non-nil, use a longer preview."
   (ignore prefix-face)
   (when-let* ((quoted (plist-get tweet :quoted-tweet)))
     (let* ((start (point))
-           (quoted-prefix (concat (or prefix "") "│ "))
+           (quoted-prefix (concat (or prefix "") "┃ "))
            (quoted-prefix-face 'chirp-quoted-tweet-block-face)
            (handle (plist-get quoted :author-handle))
            (name (plist-get quoted :author-name))

@@ -316,7 +316,7 @@
                'chirp-quoted-tweet-block-face
                (get-text-property (match-beginning 0) 'face)))
       (goto-char (point-min))
-      (search-forward "│ Quoted body text")
+      (search-forward "┃ Quoted body text")
       (should (chirp-test--face-member-p
                'chirp-quoted-tweet-block-face
                (get-text-property (match-beginning 0) 'face))))))
@@ -336,7 +336,7 @@
              (pos (- (point) (length needle)))
              (wrap-prefix (get-text-property pos 'wrap-prefix)))
         (should (stringp wrap-prefix))
-        (should (string-match-p "^│ " wrap-prefix))))))
+        (should (string-match-p "^┃ " wrap-prefix))))))
 
 (ert-deftest chirp-render-quoted-tweet-media-uses-prefix-on-every-image-slice ()
   "Quoted tweet media should repeat the quote prefix on every image slice line."
@@ -359,7 +359,7 @@
             (zero-spacing-newlines 0)
             display-pos)
         (dolist (line (split-string (buffer-string) "\n"))
-          (when (string-prefix-p "│ " line)
+          (when (string-prefix-p "┃ " line)
             (setq quoted-prefix-lines (1+ quoted-prefix-lines))))
         (dotimes (idx (1- (point-max)))
           (when (and (eq (char-after (1+ idx)) ?\n)
