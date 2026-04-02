@@ -262,7 +262,7 @@ When ACTIVE is non-nil, prefer the action-specific face for LABEL."
         (add-text-properties
          start (point)
          `(rear-nonsticky (display)
-                          line-height t
+                          line-height ,height
                           line-spacing 0
                           display ,image)))
     (chirp-render--insert-prefix prefix face)))
@@ -510,7 +510,7 @@ When DETAILP is non-nil, use a longer preview."
 (defun chirp-render--insert-sliced-image (image prefix &optional prefix-face)
   "Insert IMAGE as multiple line slices, each preceded by PREFIX."
   (let* ((slice-height (max 1 (chirp-media--chars-xheight 1)))
-         (slice-overlap 1)
+         (slice-overlap (max 2 (round (* slice-height 0.35))))
          (prepared (chirp-render--prepare-image-for-slicing image))
          (placeholder-width (max 1 (ceiling (car (image-size prepared nil)))))
          (nslices (or (plist-get (cdr prepared) :chirp-nslices)
@@ -524,13 +524,13 @@ When DETAILP is non-nil, use a longer preview."
           (add-text-properties
            slice-start (point)
            `(rear-nonsticky (display)
-                            line-height t
+                            line-height ,(+ slice-height slice-overlap)
                             line-spacing 0
                             display ((slice 0 ,(chirp-media--chars-xheight slice-num)
                                              1.0 ,(+ slice-height slice-overlap))
                                      ,prepared))))
         (add-text-properties line-start (point)
-                             '(line-height t
+                             `(line-height ,(+ slice-height slice-overlap)
                                            line-spacing 0))
         (when (< (1+ slice-num) nslices)
           (let ((newline-start (point)))
@@ -539,6 +539,27 @@ When DETAILP is non-nil, use a longer preview."
              newline-start (point)
              '(line-height t
                            line-spacing 0))))))))
+
+(defun chirp-render--insert-prefixed-media-image (image placeholder prefix &optional prefix-face)
+  "Insert IMAGE on one line with a full-height quote PREFIX.
+Return non-nil when the specialized one-line path was used."
+  (when (chirp-render--quote-prefix-p prefix)
+    (when-let* ((height (and image (max 1 (ceiling (cdr (image-size image t))))))
+                (prefix-image (chirp-render--quote-bar-prefix-image prefix height)))
+      (let ((line-start (point)))
+        (insert (chirp-render--prefix-string prefix prefix-face))
+        (add-text-properties
+         line-start (point)
+         `(rear-nonsticky (display)
+                          line-height ,height
+                          line-spacing 0
+                          display ,prefix-image))
+        (let ((image-start (point)))
+          (insert-image image placeholder)
+          (add-text-properties image-start (point)
+                               `(line-height ,height
+                                             line-spacing 0)))
+        t))))
 
 (defun chirp-render--insert-media-cell (media media-list index &optional prefix prefix-face)
   "Insert one media cell for MEDIA."
@@ -555,15 +576,19 @@ When DETAILP is non-nil, use a longer preview."
            (_ "[image]"))))
     (if-let* ((thumb (chirp-media-thumbnail-image media)))
         (if prefix
-            (chirp-render--insert-sliced-image
-             (or (chirp-media-sliced-thumbnail-image media)
-                 thumb)
-             prefix
-             prefix-face)
+            (or (chirp-render--insert-prefixed-media-image
+                 thumb placeholder prefix prefix-face)
+                (chirp-render--insert-sliced-image
+                 (or (chirp-media-sliced-thumbnail-image media)
+                     thumb)
+                 prefix
+                 prefix-face))
           (insert-image thumb placeholder))
       (if-let* ((fallback (chirp-media-thumbnail-placeholder-image media)))
           (if prefix
-              (chirp-render--insert-sliced-image fallback prefix prefix-face)
+              (or (chirp-render--insert-prefixed-media-image
+                   fallback placeholder prefix prefix-face)
+                  (chirp-render--insert-sliced-image fallback prefix prefix-face))
             (insert-image fallback placeholder))
         (insert (propertize placeholder 'face 'chirp-media-placeholder-face))))
     (add-text-properties

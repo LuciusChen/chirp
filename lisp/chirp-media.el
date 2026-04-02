@@ -762,12 +762,7 @@ When FALLBACK is non-nil, call it if remote extraction fails."
 
 (defun chirp-media--chars-xheight (n &optional frame)
   "Return the pixel height for N text rows on FRAME."
-  (let* ((frame (or frame (selected-frame)))
-         (height (or (and-let* ((font (face-font 'default frame))
-                                (info (font-info font frame)))
-                       (aref info 3))
-                     (frame-char-height frame))))
-    (ceiling (* n (max 1 height)))))
+  (* n (max 1 (frame-char-height (or frame (selected-frame))))))
 
 (defun chirp-media--chars-in-height (pixels &optional frame)
   "Return how many text rows are needed to cover PIXELS on FRAME."
