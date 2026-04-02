@@ -174,8 +174,7 @@
         (should (= (plist-get (cdr image) :chirp-nslices) 4))
         (should (equal created-args
                        '("/tmp/chirp-photo-thumb.jpg"
-                         :width 117
-                         :height 128
+                         :height (4 . ch)
                          :scale 1.0
                          :ascent center
                          :chirp-nslices 4)))))))

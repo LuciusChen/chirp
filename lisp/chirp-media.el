@@ -754,6 +754,12 @@ When FALLBACK is non-nil, call it if remote extraction fails."
     (cons (max 1 (round (* width scale)))
           (max 1 (round (* height scale))))))
 
+(defun chirp-media--char-height-spec (n)
+  "Return an image `:height' spec for N lines."
+  (if (string-version-lessp emacs-version "30.1")
+      (* n (frame-char-height))
+    (cons n 'ch)))
+
 (defun chirp-media--mime-type (file)
   "Return a MIME type for FILE."
   (pcase (downcase (or (file-name-extension file) ""))
@@ -954,16 +960,10 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
                   width height
                   chirp-media-thumbnail-size
                   chirp-media-thumbnail-size))
-           (display-width (car dims))
            (display-height (cdr dims))
            (nslices (max 1 (ceiling (/ display-height (float char-height)))))
-           (target-height (* nslices char-height))
-           (target-width (max 1 (round (* display-width
-                                          (/ (float target-height)
-                                             (max 1.0 display-height))))))
            (image (create-image file nil nil
-                                :width target-width
-                                :height target-height
+                                :height (chirp-media--char-height-spec nslices)
                                 :scale 1.0
                                 :ascent 'center)))
       (when image
