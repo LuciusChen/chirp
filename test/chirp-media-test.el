@@ -144,12 +144,41 @@
                (lambda (file width height)
                  (setq rendered-file (list file width height))
                  'photo-image)))
-      (should (eq (chirp-media-thumbnail-image
-                   '(:type "photo"
-                     :url "https://example.com/photo.jpg"))
-                  'photo-image))
+        (should (eq (chirp-media-thumbnail-image
+                     '(:type "photo"
+                       :url "https://example.com/photo.jpg"))
+                    'photo-image))
       (should (equal rendered-file
                      '("/tmp/chirp-photo-thumb.jpg" 128 128))))))
+
+(ert-deftest chirp-media-sliced-thumbnail-image-aligns-height-to-char-grid ()
+  "Quote slicing should create a file-backed image sized to full text rows."
+  (let ((chirp-media-render-from-cache-only t)
+        created-args)
+    (cl-letf (((symbol-function 'chirp-media-cached-file)
+               (lambda (&rest _args)
+                 "/tmp/chirp-photo-thumb.jpg"))
+              ((symbol-function 'frame-char-height)
+               (lambda (&optional _frame)
+                 32))
+              ((symbol-function 'create-image)
+               (lambda (file &optional _type _data-p &rest props)
+                 (setq created-args (cons file props))
+                 (cons 'image props))))
+      (let ((image (chirp-media-sliced-thumbnail-image
+                    '(:type "photo"
+                      :url "https://example.com/photo.jpg"
+                      :width 921
+                      :height 1008))))
+        (should image)
+        (should (= (plist-get (cdr image) :chirp-nslices) 4))
+        (should (equal created-args
+                       '("/tmp/chirp-photo-thumb.jpg"
+                         :width 117
+                         :height 128
+                         :scale 1.0
+                         :ascent center
+                         :chirp-nslices 4)))))))
 
 (ert-deftest chirp-media-thumbnail-image-badges-video-like-media ()
   "Video-like thumbnails should use the play-badge renderer."

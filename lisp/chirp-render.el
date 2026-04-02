@@ -434,23 +434,25 @@ When DETAILP is non-nil, use a longer preview."
 
 (defun chirp-render--prepare-image-for-slicing (image)
   "Return IMAGE resized so each visual slice matches one text line."
-  (let* ((char-height (max 1 (frame-char-height)))
-         (display-size (image-size image t))
-         (display-width (max 1 (truncate (car display-size))))
-         (display-height (max 1 (truncate (cdr display-size))))
-         (nslices (max 1 (ceiling (/ display-height (float char-height)))))
-         (target-height (* nslices char-height))
-         (target-width (max 1 (round (* display-width
-                                       (/ (float target-height) display-height)))))
-         (copy (copy-tree image)))
-    (when (and (consp copy)
-               (listp (cdr copy)))
-      (plist-put (cdr copy) :scale 1.0)
-      (plist-put (cdr copy) :width target-width)
-      (plist-put (cdr copy) :height target-height)
-      (plist-put (cdr copy) :chirp-nslices nslices)
-      (plist-put (cdr copy) :ascent 'center))
-    copy))
+  (if (plist-get (cdr-safe image) :chirp-nslices)
+      image
+    (let* ((char-height (max 1 (frame-char-height)))
+           (display-size (image-size image t))
+           (display-width (max 1 (truncate (car display-size))))
+           (display-height (max 1 (truncate (cdr display-size))))
+           (nslices (max 1 (ceiling (/ display-height (float char-height)))))
+           (target-height (* nslices char-height))
+           (target-width (max 1 (round (* display-width
+                                         (/ (float target-height) display-height)))))
+           (copy (copy-tree image)))
+      (when (and (consp copy)
+                 (listp (cdr copy)))
+        (plist-put (cdr copy) :scale 1.0)
+        (plist-put (cdr copy) :width target-width)
+        (plist-put (cdr copy) :height target-height)
+        (plist-put (cdr copy) :chirp-nslices nslices)
+        (plist-put (cdr copy) :ascent 'center))
+      copy)))
 
 (defun chirp-render--insert-sliced-image (image prefix &optional prefix-face)
   "Insert IMAGE as multiple line slices, each preceded by PREFIX."
@@ -491,7 +493,11 @@ When DETAILP is non-nil, use a longer preview."
            (_ "[image]"))))
     (if-let* ((thumb (chirp-media-thumbnail-image media)))
         (if prefix
-            (chirp-render--insert-sliced-image thumb prefix prefix-face)
+            (chirp-render--insert-sliced-image
+             (or (chirp-media-sliced-thumbnail-image media)
+                 thumb)
+             prefix
+             prefix-face)
           (insert-image thumb placeholder))
       (if-let* ((fallback (chirp-media-thumbnail-placeholder-image media)))
           (if prefix

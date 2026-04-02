@@ -932,6 +932,44 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
      chirp-media-thumbnail-size
      (string= (plist-get media :type) "animated_gif"))))
 
+(defun chirp-media--thumbnail-source-file (media)
+  "Return the best local thumbnail source file for MEDIA, or nil."
+  (cond
+   ((string= (plist-get media :type) "photo")
+    (if chirp-media-render-from-cache-only
+        (chirp-media-cached-file (plist-get media :url) "media" "jpg")
+      (chirp-media-local-file (plist-get media :url) "media" "jpg")))
+   ((chirp-media-video-like-p media)
+    (if chirp-media-render-from-cache-only
+        (chirp-media--cached-video-preview-file media)
+      (chirp-media-video-thumbnail-file media)))))
+
+(defun chirp-media-sliced-thumbnail-image (media)
+  "Return a quote-slicing-ready thumbnail image for MEDIA, or nil."
+  (when-let* ((file (chirp-media--thumbnail-source-file media))
+              (width (or (plist-get media :width) chirp-media-thumbnail-size))
+              (height (or (plist-get media :height) chirp-media-thumbnail-size))
+              (char-height (max 1 (frame-char-height))))
+    (let* ((dims (chirp-media--scaled-dimensions
+                  width height
+                  chirp-media-thumbnail-size
+                  chirp-media-thumbnail-size))
+           (display-width (car dims))
+           (display-height (cdr dims))
+           (nslices (max 1 (ceiling (/ display-height (float char-height)))))
+           (target-height (* nslices char-height))
+           (target-width (max 1 (round (* display-width
+                                          (/ (float target-height)
+                                             (max 1.0 display-height))))))
+           (image (create-image file nil nil
+                                :width target-width
+                                :height target-height
+                                :scale 1.0
+                                :ascent 'center)))
+      (when image
+        (plist-put (cdr image) :chirp-nslices nslices)
+        image))))
+
 (defun chirp-media-avatar-image (url)
   "Return a small avatar image descriptor for URL."
   (when-let* ((file (if chirp-media-render-from-cache-only
