@@ -995,14 +995,21 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
   "Return non-nil when OBJECT resembles a user payload."
   (and (chirp-object-p object)
        (or (chirp-first-nonblank
-            (chirp-get object "screen_name" "screenName" "username" "handle")
+            (chirp-get object "screen_name")
+            (chirp-get object "screenName")
+            (chirp-get object "username")
+            (chirp-get object "handle")
             (chirp-get-in object '("legacy" "screen_name")))
            (chirp-get object "id" "rest_id"))
        (or (chirp-first-nonblank
-            (chirp-get object "name" "display_name" "description" "bio")
+            (chirp-get object "name")
+            (chirp-get object "display_name")
+            (chirp-get object "description")
+            (chirp-get object "bio")
             (chirp-get-in object '("legacy" "name"))
             (chirp-get-in object '("legacy" "description")))
            (chirp-get object "followers_count" "friends_count" "statuses_count")
+           (chirp-get object "followers" "following" "tweets")
            (chirp-get-in object '("legacy" "followers_count"))
            (chirp-get-in object '("legacy" "friends_count")))))
 
@@ -1068,10 +1075,14 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
   (let* ((user (chirp-extract-user-object object))
          (legacy (chirp-get user "legacy"))
          (handle (chirp-first-nonblank
-                  (chirp-get user "screen_name" "screenName" "username" "handle")
+                  (chirp-get user "screen_name")
+                  (chirp-get user "screenName")
+                  (chirp-get user "username")
+                  (chirp-get user "handle")
                   (chirp-get legacy "screen_name")))
          (name (chirp-first-nonblank
-                (chirp-get user "name" "display_name")
+                (chirp-get user "name")
+                (chirp-get user "display_name")
                 (chirp-get legacy "name")
                 handle))
          (id (chirp-first-nonblank
@@ -1079,22 +1090,33 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
               (chirp-get legacy "id_str")))
          (bio (chirp-clean-text
                (chirp-first-nonblank
-                (chirp-get user "description" "bio")
+                (chirp-get user "description")
+                (chirp-get user "bio")
                 (chirp-get legacy "description"))))
          (followers (chirp-coalesce
-                     (chirp-get user "followers_count" "followers")
+                     (chirp-get user "followers_count")
+                     (chirp-get user "followers")
                      (chirp-get legacy "followers_count")))
          (following (chirp-coalesce
-                     (chirp-get user "friends_count" "following_count" "following")
+                     (chirp-get user "friends_count")
+                     (chirp-get user "following_count")
+                     (chirp-get user "following")
                      (chirp-get legacy "friends_count")))
          (posts (chirp-coalesce
-                 (chirp-get user "statuses_count" "tweets_count" "tweets")
+                 (chirp-get user "statuses_count")
+                 (chirp-get user "tweets_count")
+                 (chirp-get user "tweets")
                  (chirp-get legacy "statuses_count")))
          (joined (chirp-first-nonblank
-                  (chirp-get user "createdAtLocal" "createdAtISO" "createdAt" "created_at")
+                  (chirp-get user "createdAtLocal")
+                  (chirp-get user "createdAtISO")
+                  (chirp-get user "createdAt")
+                  (chirp-get user "created_at")
                   (chirp-get legacy "created_at")))
          (avatar-url (chirp-first-nonblank
-                      (chirp-get user "profileImageUrl" "profile_image_url_https" "profile_image_url")
+                      (chirp-get user "profileImageUrl")
+                      (chirp-get user "profile_image_url_https")
+                      (chirp-get user "profile_image_url")
                       (chirp-get legacy "profile_image_url_https" "profile_image_url"))))
     (when (or handle id name)
       (list :kind 'user

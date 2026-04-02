@@ -186,6 +186,24 @@
   (let ((tweet (chirp-test--sample-retweeted-tweet)))
     (should (equal (plist-get tweet :retweeted-by) "dotey"))))
 
+(ert-deftest chirp-normalize-user-parses-structured-profile-payload-with-blank-name ()
+  "Structured profile payloads should survive blank display-name fields."
+  (let ((user (chirp-normalize-user
+               '(("id" . "50683")
+                 ("name" . "")
+                 ("screenName" . "dingyi")
+                 ("bio" . "promote")
+                 ("followers" . 148033)
+                 ("following" . 4908)
+                 ("tweets" . 59745)
+                 ("profileImageUrl" . "")))))
+    (should user)
+    (should (equal (plist-get user :handle) "dingyi"))
+    (should (equal (plist-get user :name) "dingyi"))
+    (should (equal (plist-get user :bio) "promote"))
+    (should (= (plist-get user :followers) 148033))
+    (should (= (plist-get user :posts) 59745))))
+
 (ert-deftest chirp-render-insert-tweet-renders-expanded-links-and-article-preview ()
   "Tweet rendering should show expanded links and article metadata."
   (let ((tweet (chirp-test--sample-article-tweet)))
@@ -482,6 +500,30 @@
         (let ((inhibit-read-only t))
           (chirp-render-insert-tweet tweet))
         (goto-char (point-min))
+        (chirp-open-at-point)))
+    (should (equal opened-profile "alice"))
+    (should-not opened-thread)))
+
+(ert-deftest chirp-open-at-point-opens-profile-when-point-is-on-author-handle ()
+  "RET on the author name or handle should open the profile."
+  (let ((tweet (chirp-test--sample-quoted-tweet))
+        opened-profile
+        opened-thread)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-profile-open)
+                 (lambda (handle &optional _buffer)
+                   (setq opened-profile handle)))
+                ((symbol-function 'chirp-thread-open)
+                 (lambda (&rest args)
+                   (setq opened-thread args))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet))
+        (goto-char (point-min))
+        (search-forward "@alice")
+        (goto-char (match-beginning 0))
         (chirp-open-at-point)))
     (should (equal opened-profile "alice"))
     (should-not opened-thread)))

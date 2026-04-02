@@ -537,10 +537,12 @@ When DETAILP is non-nil, use a longer preview."
       (insert "\n"))
     (chirp-render--insert-prefix prefix prefix-face)
     (chirp-render--insert-avatar (plist-get tweet :author-avatar-url) handle)
-    (insert (propertize author 'face 'chirp-author-face))
-    (when handle
-      (insert " ")
-      (insert (propertize (format "@%s" handle) 'face 'chirp-handle-face)))
+    (let ((author-start (point)))
+      (insert (propertize author 'face 'chirp-author-face))
+      (when handle
+        (insert " ")
+        (insert (propertize (format "@%s" handle) 'face 'chirp-handle-face)))
+      (chirp-render--mark-author-region author-start (point) handle))
     (when created-at
       (insert "  ")
       (insert (propertize created-at 'face 'chirp-meta-face)))
