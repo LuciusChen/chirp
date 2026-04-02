@@ -466,7 +466,10 @@ When DETAILP is non-nil, use a longer preview."
       (when (< (1+ slice-num) nslices)
         (let ((newline-start (point)))
           (insert "\n")
-          (put-text-property newline-start (point) 'line-height t))))))
+          (add-text-properties
+           newline-start (point)
+           '(line-height t
+                         line-spacing 0)))))))
 
 (defun chirp-render--insert-media-cell (media media-list index &optional prefix prefix-face)
   "Insert one media cell for MEDIA."
