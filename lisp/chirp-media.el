@@ -760,6 +760,19 @@ When FALLBACK is non-nil, call it if remote extraction fails."
       (* n (frame-char-height))
     (cons n 'ch)))
 
+(defun chirp-media--chars-xheight (n &optional frame)
+  "Return the pixel height for N text rows on FRAME."
+  (let* ((frame (or frame (selected-frame)))
+         (height (or (and-let* ((font (face-font 'default frame))
+                                (info (font-info font frame)))
+                       (aref info 3))
+                     (frame-char-height frame))))
+    (ceiling (* n (max 1 height)))))
+
+(defun chirp-media--chars-in-height (pixels &optional frame)
+  "Return how many text rows are needed to cover PIXELS on FRAME."
+  (ceiling (/ pixels (float (chirp-media--chars-xheight 1 frame)))))
+
 (defun chirp-media--mime-type (file)
   "Return a MIME type for FILE."
   (pcase (downcase (or (file-name-extension file) ""))
@@ -954,14 +967,13 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
   "Return a quote-slicing-ready thumbnail image for MEDIA, or nil."
   (when-let* ((file (chirp-media--thumbnail-source-file media))
               (width (or (plist-get media :width) chirp-media-thumbnail-size))
-              (height (or (plist-get media :height) chirp-media-thumbnail-size))
-              (char-height (max 1 (frame-char-height))))
+              (height (or (plist-get media :height) chirp-media-thumbnail-size)))
     (let* ((dims (chirp-media--scaled-dimensions
                   width height
                   chirp-media-thumbnail-size
                   chirp-media-thumbnail-size))
            (display-height (cdr dims))
-           (nslices (max 1 (ceiling (/ display-height (float char-height)))))
+           (nslices (max 1 (chirp-media--chars-in-height display-height)))
            (image (create-image file nil nil
                                 :height (chirp-media--char-height-spec nslices)
                                 :scale 1.0

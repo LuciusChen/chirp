@@ -456,27 +456,34 @@ When DETAILP is non-nil, use a longer preview."
 
 (defun chirp-render--insert-sliced-image (image prefix &optional prefix-face)
   "Insert IMAGE as multiple line slices, each preceded by PREFIX."
-  (let* ((char-height (max 1 (frame-char-height)))
+  (let* ((slice-height (max 1 (chirp-media--chars-xheight 1)))
          (prepared (chirp-render--prepare-image-for-slicing image))
          (nslices (or (plist-get (cdr prepared) :chirp-nslices)
                       (max 1 (ceiling (/ (cdr (image-size prepared t))
-                                         (float char-height)))))))
+                                         (float slice-height)))))))
     (dotimes (slice-num nslices)
-      (chirp-render--insert-prefix prefix prefix-face)
-      (let ((slice-start (point)))
-        (insert " ")
-        (add-text-properties
-         slice-start (point)
-         `(rear-nonsticky (display)
-                          display ((slice 0 ,(* slice-num char-height) 1.0 ,char-height)
-                                   ,prepared))))
-      (when (< (1+ slice-num) nslices)
-        (let ((newline-start (point)))
-          (insert "\n")
+      (let ((line-start (point)))
+        (chirp-render--insert-prefix prefix prefix-face)
+        (let ((slice-start (point)))
+          (insert " ")
           (add-text-properties
-           newline-start (point)
-           '(line-height t
-                         line-spacing 0)))))))
+           slice-start (point)
+           `(rear-nonsticky (display)
+                            line-height t
+                            line-spacing 0
+                            display ((slice 0 ,(chirp-media--chars-xheight slice-num)
+                                             1.0 ,slice-height)
+                                     ,prepared))))
+        (add-text-properties line-start (point)
+                             '(line-height t
+                                           line-spacing 0))
+        (when (< (1+ slice-num) nslices)
+          (let ((newline-start (point)))
+            (insert "\n")
+            (add-text-properties
+             newline-start (point)
+             '(line-height t
+                           line-spacing 0))))))))
 
 (defun chirp-render--insert-media-cell (media media-list index &optional prefix prefix-face)
   "Insert one media cell for MEDIA."

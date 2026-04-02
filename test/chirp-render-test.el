@@ -341,12 +341,16 @@
 (ert-deftest chirp-render-quoted-tweet-media-uses-prefix-on-every-image-slice ()
   "Quoted tweet media should repeat the quote prefix on every image slice line."
   (let ((tweet (chirp-test--sample-quoted-tweet-with-media))
-        (fake-image '(image :type png :file "/tmp/fake.png")))
+        (fake-image '(image :type png :file "/tmp/fake.png" :chirp-nslices 4)))
     (with-temp-buffer
       (chirp-view-mode)
       (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
                 ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) fake-image))
+                ((symbol-function 'chirp-media-sliced-thumbnail-image) (lambda (&rest _args) fake-image))
                 ((symbol-function 'chirp-media-thumbnail-placeholder-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media--chars-xheight)
+                 (lambda (n &optional _frame)
+                   (* n 24)))
                 ((symbol-function 'image-size)
                  (lambda (image &optional _pixels _frame)
                    (cons 64
@@ -370,8 +374,11 @@
         (should (>= quoted-prefix-lines 4))
         (should (>= zero-spacing-newlines 2))
         (should display-pos)
+        (should (eq (get-text-property display-pos 'line-spacing) 0))
         (should (eq (car-safe (car-safe (get-text-property display-pos 'display)))
-                    'slice))))))
+                    'slice))
+        (should (equal (car (get-text-property display-pos 'display))
+                       '(slice 0 0 1.0 24)))))))
 
 (ert-deftest chirp-open-at-point-opens-profile-when-point-is-on-avatar ()
   "RET on an avatar should open the author profile, not the tweet thread."
