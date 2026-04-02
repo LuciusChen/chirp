@@ -6,6 +6,7 @@
 
 (require 'ert)
 (require 'cl-lib)
+(require 'transient)
 (require 'chirp-actions)
 
 (defun chirp-test--make-compose-buffer (body)
@@ -183,6 +184,75 @@ Return a list of (compose source foreign)."
         (dolist (buffer (list compose source foreign))
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
+
+(defun chirp-test--with-tweet-buffer (tweet fn)
+  "Create a temporary Chirp view buffer with TWEET and call FN inside it."
+  (let ((buffer (generate-new-buffer " *chirp-action-tweet*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (chirp-view-mode)
+          (let ((inhibit-read-only t))
+            (insert "tweet\n")
+            (add-text-properties
+             (point-min) (point-max)
+             `(chirp-entry-item ,tweet))
+            (put-text-property (point-min) (1+ (point-min)) 'chirp-entry-start t)
+            (goto-char (point-min)))
+          (funcall fn buffer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-toggle-like-at-point-uses-like-and-unlike-commands ()
+  "Toggle like should choose the backend command from the current local state."
+  (clrhash chirp-tweet-state-overrides)
+  (let (captured-args rerendered)
+    (unwind-protect
+        (progn
+          (chirp-test--with-tweet-buffer
+           '(:kind tweet :id "123" :liked-p nil :like-count 10)
+           (lambda (_buffer)
+             (cl-letf (((symbol-function 'chirp-actions--perform)
+                        (lambda (args on-success &optional _on-error)
+                          (setq captured-args args)
+                          (funcall on-success nil nil)))
+                       ((symbol-function 'chirp-request-rerender)
+                        (lambda (&optional _buffer _delay)
+                          (setq rerendered t))))
+               (chirp-toggle-like-at-point)
+               (should (equal captured-args '("like" "123")))
+               (should rerendered)
+               (should (plist-get (chirp-entry-at-point) :liked-p))
+               (should (= (plist-get (chirp-entry-at-point) :like-count) 11)))))
+          (setq captured-args nil
+                rerendered nil)
+          (chirp-test--with-tweet-buffer
+           '(:kind tweet :id "123" :liked-p t :like-count 10)
+           (lambda (_buffer)
+             (cl-letf (((symbol-function 'chirp-actions--perform)
+                        (lambda (args on-success &optional _on-error)
+                          (setq captured-args args)
+                          (funcall on-success nil nil)))
+                       ((symbol-function 'chirp-request-rerender)
+                        (lambda (&optional _buffer _delay)
+                          (setq rerendered t))))
+               (chirp-toggle-like-at-point)
+               (should (equal captured-args '("unlike" "123")))
+               (should rerendered)
+               (should-not (plist-get (chirp-entry-at-point) :liked-p))
+               (should (= (plist-get (chirp-entry-at-point) :like-count) 9))))))
+      (clrhash chirp-tweet-state-overrides))))
+
+(ert-deftest chirp-dispatch-uses-toggle-actions-for-stateful-tweet-actions ()
+  "The Chirp transient should expose only toggle entries for like/RT/bookmark."
+  (let ((retweet-suffix (transient-get-suffix 'chirp-dispatch "R"))
+        (like-suffix (transient-get-suffix 'chirp-dispatch "l"))
+        (bookmark-suffix (transient-get-suffix 'chirp-dispatch "B")))
+    (should (eq (plist-get (cdr retweet-suffix) :command) 'chirp-toggle-retweet-at-point))
+    (should (eq (plist-get (cdr like-suffix) :command) 'chirp-toggle-like-at-point))
+    (should (eq (plist-get (cdr bookmark-suffix) :command) 'chirp-toggle-bookmark-at-point))
+    (should-error (transient-get-suffix 'chirp-dispatch "T"))
+    (should-error (transient-get-suffix 'chirp-dispatch "u"))
+    (should-error (transient-get-suffix 'chirp-dispatch "U"))))
 
 (provide 'chirp-actions-test)
 

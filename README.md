@@ -1,6 +1,6 @@
 # chirp.el
 
-`chirp.el` is a small Emacs browser for X/Twitter. It uses [`twitter-cli`](https://github.com/public-clis/twitter-cli) for authentication and data fetching, then renders the results in a single shared `special-mode` buffer that is renamed to match the current view.
+`chirp.el` is a small Emacs browser for X/Twitter. It uses [`twitter-cli`](https://github.com/public-clis/twitter-cli) for authentication and data fetching, then renders each view in its own `special-mode` buffer.
 
 ## Scope
 
@@ -57,8 +57,7 @@ M-x chirp-profile
 
 ## Keys
 
-- `g`: refresh; on Home and Following, Chirp keeps the current timeline visible, merges newer posts at the top, and still leaves the previous snapshot available via `b`
-- `b`: go back to the previous Chirp view
+- `g`: refresh; on Home and Following, Chirp keeps the current timeline visible and merges newer posts at the top
 - `TAB`: switch between Home and Following when you are on either timeline
 - `n` / `p`: next or previous entry; on Home and Following, `n` on the last entry loads more older posts
 - `N`: load more older posts on Home and Following
@@ -68,7 +67,7 @@ M-x chirp-profile
 - `A`: open the author profile
 - `x`: open the actions menu for For You/Following, post/reply/quote, and tweet actions
 - `o`: open the current item in a browser
-- `q`: quit the window, or close the current media view and return
+- `q`: close the current Chirp buffer
 
 Inside the compose buffer:
 
@@ -88,8 +87,8 @@ Clipboard image paste uses `wl-paste` on Wayland and `pngpaste` on macOS when av
 - Thumbnails are rendered without inserted gaps, so point can move between adjacent images directly.
 - Timeline, thread, and profile views now render cached avatars/thumbnails first; missing media are prefetched in the background so text appears faster.
 - Video and animated GIF thumbnails are filled in asynchronously when Chirp can use an upstream preview image or extract one with `ffmpeg`.
-- Press `RET` on a thumbnail to open the photo in `image-mode` in the same Chirp buffer when image display is available.
-- In image and fallback media views, `q` returns to the previous Chirp view.
+- Press `RET` on a thumbnail to open the photo in a new Chirp media buffer when image display is available.
+- In image and fallback media views, `q` closes the current media buffer.
 - Videos currently open externally through `mpv` when available, or the browser otherwise.
 
 If you prefer the old blocking behavior, customize:
@@ -104,9 +103,16 @@ To disable background image prefetch, customize:
 (setq chirp-media-prefetch-images nil)
 ```
 
+To trade freshness for faster repeated opens of the same thread/profile/article,
+customize the short in-memory backend cache:
+
+```elisp
+(setq chirp-backend-read-cache-ttl 15)
+```
+
 ## Notes
 
 - The package expects `twitter-cli --json` to return the documented envelope from `SCHEMA.md`.
 - The parser is deliberately defensive because upstream X payloads can drift.
-- Timeline "load more" currently re-fetches with a larger `--max`; `twitter-cli feed` does not expose cursor-based pagination yet.
+- Timeline "load more" uses `twitter-cli feed --cursor` and appends older posts without re-fetching the already loaded prefix.
 - This repository was bootstrapped without `twitter-cli` installed locally, so the code is byte-compile checked but not end-to-end runtime tested yet.

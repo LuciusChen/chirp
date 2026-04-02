@@ -9,66 +9,85 @@
 (require 'chirp-media)
 (require 'chirp-render)
 
-(defun chirp-profile-open (handle)
+(declare-function chirp-backend-invalidate-user "chirp-backend" (handle))
+(defvar chirp-backend--bypass-read-cache)
+
+(defun chirp-profile-open (handle &optional buffer)
   "Open HANDLE's profile."
   (interactive "sProfile handle: ")
   (let* ((clean-handle (string-remove-prefix "@" handle))
          (title (format "@%s" clean-handle))
-         (buffer (chirp-buffer))
-         (refresh (lambda () (chirp-profile-open clean-handle))))
-    (chirp--maybe-push-history)
-    (let ((token (chirp-show-loading buffer title refresh)))
+         (buffer (or buffer (chirp-buffer)))
+         (refresh (lambda ()
+                    (chirp-backend-invalidate-user clean-handle)
+                    (let ((chirp-backend--bypass-read-cache t))
+                      (chirp-profile-open clean-handle buffer))))
+         (token nil)
+         (saved-user nil)
+         (saved-tweets nil)
+         (user-ready nil)
+         (tweets-ready nil)
+         (finished nil))
+    (cl-labels
+        ((render-current (&optional anchor-id)
+           (chirp-render-into-buffer
+            buffer title refresh
+            (lambda ()
+              (chirp-render-insert-user-summary saved-user)
+              (chirp-render-insert-section "Recent Posts")
+              (if saved-tweets
+                  (dolist (tweet saved-tweets)
+                    (chirp-render-insert-tweet tweet))
+                (chirp-render-insert-empty "No recent posts returned."))))
+           (with-current-buffer buffer
+             (setq-local chirp--rerender-function
+                         (lambda ()
+                           (render-current
+                            (with-current-buffer buffer
+                              (chirp-capture-point-anchor)))))
+             (or (and anchor-id
+                      (chirp-restore-point-anchor anchor-id))
+                 (chirp-move-point-to-first-entry))))
+         (finish-success ()
+           (when (and (not finished)
+                      user-ready
+                      tweets-ready
+                      (chirp-request-current-p buffer token))
+             (setq finished t)
+             (render-current)
+             (chirp-display-buffer buffer)
+             (chirp-media-prefetch-user saved-user buffer)
+             (chirp-media-prefetch-tweets saved-tweets buffer)
+             (chirp-enrich-quoted-tweets saved-tweets buffer)))
+         (finish-error (message &optional posts-failed-p)
+           (when (and (not finished)
+                      (chirp-request-current-p buffer token))
+             (setq finished t)
+             (chirp-show-error
+              buffer title refresh
+              (if posts-failed-p
+                  (format "Profile loaded, but recent posts failed.\n\n%s"
+                          message)
+                message)))))
+      (setq token (chirp-begin-background-request buffer title))
       (chirp-backend-user
        clean-handle
        (lambda (user _envelope)
          (when (chirp-request-current-p buffer token)
-           (chirp-backend-user-posts
-            clean-handle
-            (lambda (tweets _posts-envelope)
-              (when (chirp-request-current-p buffer token)
-                (chirp-render-into-buffer
-                 buffer title refresh
-                 (lambda ()
-                   (chirp-render-insert-user-summary user)
-                   (chirp-render-insert-section "Recent Posts")
-                   (if tweets
-                       (dolist (tweet tweets)
-                         (chirp-render-insert-tweet tweet))
-                     (chirp-render-insert-empty "No recent posts returned."))))
-                (with-current-buffer buffer
-                  (setq-local chirp--rerender-function
-                              (let ((saved-user user)
-                                    (saved-tweets tweets)
-                                    (saved-title title)
-                                    (saved-refresh refresh))
-                                (lambda ()
-                                  (let ((anchor-id (with-current-buffer buffer
-                                                     (chirp-entry-id-at-point))))
-                                    (chirp-render-into-buffer
-                                     buffer saved-title saved-refresh
-                                     (lambda ()
-                                       (chirp-render-insert-user-summary saved-user)
-                                       (chirp-render-insert-section "Recent Posts")
-                                       (if saved-tweets
-                                           (dolist (tweet saved-tweets)
-                                             (chirp-render-insert-tweet tweet))
-                                         (chirp-render-insert-empty "No recent posts returned."))))
-                                    (with-current-buffer buffer
-                                      (or (and anchor-id
-                                               (chirp-goto-entry-id anchor-id))
-                                          (chirp-move-point-to-first-entry)))))))
-                  (chirp-move-point-to-first-entry))
-                (chirp-media-prefetch-user user buffer)
-                (chirp-media-prefetch-tweets tweets buffer)))
-            (lambda (message)
-              (when (chirp-request-current-p buffer token)
-                (chirp-show-error
-                 buffer title refresh
-                 (format "Profile loaded, but recent posts failed.\n\n%s"
-                         message)))))))
+           (setq saved-user user
+                 user-ready t)
+           (finish-success)))
        (lambda (message)
+         (finish-error message)))
+      (chirp-backend-user-posts
+       clean-handle
+       (lambda (tweets _posts-envelope)
          (when (chirp-request-current-p buffer token)
-           (chirp-show-error buffer title refresh message)))))))
+           (setq saved-tweets tweets
+                 tweets-ready t)
+           (finish-success)))
+       (lambda (message)
+         (finish-error message t))))))
 
 (provide 'chirp-profile)
 

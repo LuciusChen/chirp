@@ -10,6 +10,7 @@
 (require 'chirp-core)
 (require 'chirp-backend)
 
+(declare-function chirp-backend-clear-cache "chirp-backend" ())
 (declare-function chirp-timeline-open-home "chirp-timeline" ())
 (declare-function chirp-timeline-open-following "chirp-timeline" ())
 
@@ -79,10 +80,9 @@
            (replace-regexp-in-string "[\r\n]+" "  " message)))
 
 (defun chirp-actions--refresh-current-view ()
-  "Refresh the current Chirp view without pushing history."
+  "Refresh the current Chirp view."
   (when chirp--refresh-function
-    (let ((chirp--suspend-history t))
-      (funcall chirp--refresh-function))))
+    (funcall chirp--refresh-function)))
 
 (defun chirp-actions--refresh-buffer (buffer)
   "Refresh BUFFER when it is a live Chirp view."
@@ -97,6 +97,7 @@ When ON-ERROR is non-nil, call it with the human-readable error message."
   (chirp-backend-request
    args
    (lambda (data envelope)
+     (chirp-backend-clear-cache)
      (funcall on-success data envelope))
    (or on-error
        #'chirp-actions--show-error)))
@@ -652,13 +653,10 @@ When TWEET is non-nil, use it as the reply or quote target."
     ("r" "Reply" chirp-reply-at-point)
     ("Q" "Quote" chirp-quote-at-point)]
    ["Tweet"
-    ("R" "Retweet" chirp-retweet-at-point)
-    ("T" "Undo RT" chirp-unretweet-at-point)]
+    ("R" "Retweet" chirp-toggle-retweet-at-point)]
    ["Engage"
-    ("l" "Like" chirp-like-at-point)
-    ("u" "Unlike" chirp-unlike-at-point)
-    ("B" "Bookmark" chirp-bookmark-at-point)
-    ("U" "Unbookmark" chirp-unbookmark-at-point)]
+    ("l" "Like" chirp-toggle-like-at-point)
+    ("B" "Bookmark" chirp-toggle-bookmark-at-point)]
    ["Other"
     ("d" "Delete" chirp-delete-at-point)
     ("o" "Browser" chirp-browse-at-point)]])

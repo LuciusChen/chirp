@@ -9,19 +9,20 @@
 (require 'chirp-core)
 (require 'chirp-timeline)
 
-(ert-deftest chirp-shared-buffer-tracks-renamed-buffer-object ()
-  "Renaming a Chirp buffer should keep `chirp-buffer' pointed at the same object."
-  (let ((chirp--shared-buffer nil))
+(ert-deftest chirp-buffer-creates-fresh-view-buffers ()
+  "Each `chirp-buffer' call should return a fresh buffer."
+  (let ((buffer-a (chirp-buffer))
+        (buffer-b (chirp-buffer)))
     (unwind-protect
-        (let ((buffer (chirp-buffer)))
-          (should (buffer-live-p buffer))
-          (chirp--apply-buffer-name buffer "For You")
-          (should (eq chirp--shared-buffer buffer))
-          (should (eq (chirp-buffer) buffer))
-          (should (string= (buffer-name buffer) "*chirp: For You*")))
-      (when (buffer-live-p chirp--shared-buffer)
-        (kill-buffer chirp--shared-buffer))
-      (setq chirp--shared-buffer nil))))
+        (progn
+          (should (buffer-live-p buffer-a))
+          (should (buffer-live-p buffer-b))
+          (should-not (eq buffer-a buffer-b))
+          (chirp--apply-buffer-name buffer-a "For You")
+          (should (string= (buffer-name buffer-a) "*chirp: For You*")))
+      (dolist (buffer (list buffer-a buffer-b))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
 
 (ert-deftest chirp-collect-top-level-tweets-hides-promoted-posts ()
   "Promoted tweets should be dropped when filtering is enabled."
@@ -99,8 +100,10 @@
                40
                "2"
                t
-               nil
+               (list (list :id "1") (list :id "2"))
                2
+               (list (list :id "1") (list :id "2"))
+               nil
                nil
                nil))
             (should-not render-called)
@@ -133,7 +136,9 @@
        t
        nil
        (list (list :id "2") (list :id "1"))
-       t))
+       t
+       nil
+       nil))
     (should render-args)
     (should (equal (mapcar (lambda (tweet) (plist-get tweet :id))
                            (nth 3 render-args))
@@ -163,8 +168,10 @@
        nil
        t
        nil
-               (list (list :id "2") (list :id "1"))
-               nil))
+       (list (list :id "2") (list :id "1"))
+       nil
+       nil
+       nil))
     (should render-args)
     (should (equal (nth 6 render-args) "2"))
     (should (equal last-message "No new posts."))))
@@ -191,6 +198,8 @@
        t
        nil
        (list (list :id "2") (list :id "1"))
+       nil
+       nil
        nil))
     (should render-args)
     (should (equal (mapcar (lambda (tweet) (plist-get tweet :id))
@@ -198,6 +207,145 @@
                    '("2" "3" "1")))
     (should (equal (nth 6 render-args) "2"))
     (should (equal last-message "No new posts."))))
+
+(ert-deftest chirp-timeline-render-displays-buffer-when-ready ()
+  "Rendering a fetched timeline should display the target buffer."
+  (let ((buffer (generate-new-buffer " *chirp-display-test*"))
+        displayed)
+    (unwind-protect
+        (cl-letf (((symbol-function 'chirp-render-into-buffer)
+                   (lambda (target _title _refresh render-fn)
+                     (with-current-buffer target
+                       (chirp-view-mode)
+                       (let ((inhibit-read-only t))
+                         (erase-buffer)
+                         (funcall render-fn)))))
+                  ((symbol-function 'chirp-render-insert-tweet)
+                   (lambda (_tweet)
+                     (insert "tweet\n")))
+                  ((symbol-function 'chirp-display-buffer)
+                   (lambda (target)
+                     (setq displayed target)))
+                  ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+          (chirp-timeline--render buffer "For You" #'ignore (list (list :id "1")) 'home 20 nil nil t))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))
+    (should (eq displayed buffer))))
+
+(ert-deftest chirp-timeline-render-stores-next-cursor ()
+  "Timeline render should retain the next pagination cursor."
+  (let ((buffer (generate-new-buffer " *chirp-next-cursor*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+          (chirp-timeline--render
+           buffer
+           "For You"
+           #'ignore
+           (list (list :id "1"))
+           'home
+           20
+           nil
+           nil
+           nil
+           "cursor-next")
+          (with-current-buffer buffer
+            (should (equal chirp--timeline-next-cursor "cursor-next"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-timeline-rerender-does-not-steal-focus ()
+  "Background timeline rerenders should not redisplay the buffer."
+  (let ((buffer (generate-new-buffer " *chirp-rerender-test*"))
+        displayed)
+    (unwind-protect
+        (cl-letf (((symbol-function 'chirp-render-into-buffer)
+                   (lambda (target _title _refresh render-fn)
+                     (with-current-buffer target
+                       (chirp-view-mode)
+                       (let ((inhibit-read-only t))
+                         (erase-buffer)
+                         (funcall render-fn)))))
+                  ((symbol-function 'chirp-render-insert-tweet)
+                   (lambda (_tweet)
+                     (insert "tweet\n")))
+                  ((symbol-function 'chirp-display-buffer)
+                   (lambda (target)
+                     (setq displayed target)))
+                  ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+          (chirp-timeline--render buffer "For You" #'ignore (list (list :id "1")) 'home 20 nil nil nil)
+          (should-not displayed))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-timeline-rerender-preserves-point-within-entry ()
+  "Background rerenders should keep point inside the same tweet body."
+  (let ((buffer (generate-new-buffer " *chirp-offset-test*"))
+        (tweet-a '(:id "1" :text "Alpha line one\nAlpha line two"))
+        (tweet-b '(:id "2" :text "Beta line one\nBeta line two")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (chirp-timeline--render buffer "For You" #'ignore (list tweet-a tweet-b) 'home 20 nil nil nil)
+          (search-forward "Beta line two")
+          (let ((before (point)))
+            (funcall chirp--rerender-function)
+            (should (equal (plist-get (chirp-entry-at-point) :id) "2"))
+            (should (> (point) (chirp--current-entry-start)))
+            (should (equal before (point)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-load-more-uses-next-cursor-instead-of-growing-max ()
+  "Loading more should request the next cursor without inflating the head page size."
+  (with-temp-buffer
+    (chirp-view-mode)
+    (setq-local chirp--timeline-kind 'home)
+    (setq-local chirp--timeline-limit 20)
+    (setq-local chirp--timeline-next-cursor "cursor-next")
+    (let ((buffer (current-buffer))
+          captured)
+      (cl-letf (((symbol-function 'chirp-timeline--open)
+                 (lambda (&rest args)
+                   (setq captured args))))
+        (chirp-load-more))
+      (should (equal (nth 0 captured) 'home))
+      (should (= (nth 1 captured) 20))
+      (should (equal (nth 2 captured) '(:position 1)))
+      (should (eq (nth 3 captured) buffer))
+      (should (eq (nth 4 captured) t))
+      (should-not (nth 5 captured))
+      (should (equal (nth 6 captured) "cursor-next")))))
+
+(ert-deftest chirp-window-state-restore-preserves-point-and-scroll ()
+  "Window-state helpers should preserve point and scroll position."
+  (let ((buffer (generate-new-buffer " *chirp-window-state*")))
+    (unwind-protect
+        (save-window-excursion
+          (switch-to-buffer buffer)
+          (with-current-buffer buffer
+            (chirp-view-mode)
+            (let ((inhibit-read-only t))
+              (dotimes (index 80)
+                (insert (format "line %02d\n" index))))
+            (goto-char (point-min))
+            (forward-line 40)
+            (set-window-start (selected-window) (line-beginning-position))
+            (set-window-vscroll (selected-window) 8 t)
+            (let ((state (chirp-capture-window-state buffer))
+                  (point (point))
+                  (window-start (window-start (selected-window)))
+                  (vscroll (window-vscroll (selected-window) t)))
+              (goto-char (point-min))
+              (set-window-start (selected-window) (point-min))
+              (set-window-vscroll (selected-window) 0 t)
+              (chirp-restore-window-state state)
+              (should (= (point) point))
+              (should (= (window-start (selected-window)) window-start))
+              (should (= (window-vscroll (selected-window) t) vscroll)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 
 (ert-deftest chirp-clean-text-decodes-html-entities ()

@@ -14,6 +14,22 @@
 (defconst chirp-backend--default-cli-commands '("twitter" "twitter-cli")
   "Executable names Chirp tries when `chirp-cli-command' is nil.")
 
+(defcustom chirp-backend-read-cache-ttl 15
+  "Seconds to keep successful thread/profile/article reads in memory.
+
+When zero or negative, the in-memory read cache is disabled."
+  :type 'number
+  :group 'chirp)
+
+(defvar chirp-backend--read-cache (make-hash-table :test #'equal)
+  "In-memory cache for successful Chirp read responses.")
+
+(defvar chirp-backend--pending-read-requests (make-hash-table :test #'equal)
+  "Map cache keys to queued Chirp read callbacks while a request is in flight.")
+
+(defvar chirp-backend--bypass-read-cache nil
+  "When non-nil, Chirp read requests bypass the in-memory cache and pending reuse.")
+
 (defun chirp-backend--auto-detect-command-p ()
   "Return non-nil when Chirp should auto-detect the CLI command."
   (or (null chirp-cli-command)
@@ -52,6 +68,149 @@
     (or (chirp-backend--resolve-from-exec-path candidates)
         (and (chirp-backend--auto-detect-command-p)
              (chirp-backend--resolve-from-search-paths candidates)))))
+
+(defun chirp-backend-clear-cache ()
+  "Clear Chirp's in-memory read cache."
+  (interactive)
+  (clrhash chirp-backend--read-cache))
+
+(defun chirp-backend--clone-data (value)
+  "Return VALUE copied deeply enough for safe cache reuse."
+  (if (consp value)
+      (copy-tree value)
+    value))
+
+(defun chirp-backend--normalize-handle (handle)
+  "Return HANDLE normalized for cache lookup."
+  (downcase (string-remove-prefix "@" (format "%s" handle))))
+
+(defun chirp-backend--tweet-id-from-target (target)
+  "Return a likely tweet id extracted from TARGET, or nil."
+  (cond
+   ((null target) nil)
+   ((and (stringp target)
+         (string-match "/status/\\([0-9]+\\)" target))
+    (match-string 1 target))
+   ((stringp target)
+    target)
+   ((listp target)
+    (or (plist-get target :id)
+        (and-let* ((url (plist-get target :url)))
+          (chirp-backend--tweet-id-from-target url))))
+   (t
+    (format "%s" target))))
+
+(defun chirp-backend--thread-cache-key (tweet-or-url)
+  "Return the cache key for thread TARGET."
+  (list :thread (or (chirp-backend--tweet-id-from-target tweet-or-url)
+                    (format "%s" tweet-or-url))))
+
+(defun chirp-backend--article-cache-key (tweet-id)
+  "Return the cache key for TWEET-ID article fetches."
+  (list :article (format "%s" tweet-id)))
+
+(defun chirp-backend--user-cache-key (handle)
+  "Return the cache key for HANDLE profile metadata."
+  (list :user (chirp-backend--normalize-handle handle)))
+
+(defun chirp-backend--user-posts-cache-key (handle)
+  "Return the cache key for HANDLE recent posts."
+  (list :user-posts (chirp-backend--normalize-handle handle)))
+
+(defun chirp-backend-invalidate-thread (tweet-or-url)
+  "Drop cached thread and article data for TWEET-OR-URL."
+  (let ((thread-key (chirp-backend--thread-cache-key tweet-or-url))
+        (tweet-id (chirp-backend--tweet-id-from-target tweet-or-url)))
+    (remhash thread-key chirp-backend--read-cache)
+    (when tweet-id
+      (chirp-backend-invalidate-article tweet-id))))
+
+(defun chirp-backend-invalidate-article (tweet-id)
+  "Drop cached article data for TWEET-ID."
+  (let ((key (chirp-backend--article-cache-key tweet-id)))
+    (remhash key chirp-backend--read-cache)))
+
+(defun chirp-backend-invalidate-user (handle)
+  "Drop cached profile metadata and posts for HANDLE."
+  (dolist (key (list (chirp-backend--user-cache-key handle)
+                     (chirp-backend--user-posts-cache-key handle)))
+    (remhash key chirp-backend--read-cache)))
+
+(defun chirp-backend--cache-entry-live-p (entry now)
+  "Return non-nil when cached ENTRY is still fresh at NOW."
+  (and entry
+       (> chirp-backend-read-cache-ttl 0)
+       (numberp (plist-get entry :expires-at))
+       (> (plist-get entry :expires-at) now)))
+
+(defun chirp-backend--cached-result (key)
+  "Return KEY's cached result plist, or nil when absent or expired."
+  (let* ((now (float-time))
+         (entry (gethash key chirp-backend--read-cache)))
+    (cond
+     ((chirp-backend--cache-entry-live-p entry now)
+      entry)
+     (entry
+      (remhash key chirp-backend--read-cache)
+      nil)
+     (t nil))))
+
+(defun chirp-backend--dispatch-read-success (requesters value envelope)
+  "Invoke REQUESTERS with VALUE and ENVELOPE."
+  (dolist (requester requesters)
+    (funcall (car requester)
+             (chirp-backend--clone-data value)
+             (chirp-backend--clone-data envelope))))
+
+(defun chirp-backend--dispatch-read-error (requesters message)
+  "Invoke REQUESTERS with MESSAGE."
+  (dolist (requester requesters)
+    (funcall (or (cdr requester)
+                 (lambda (text)
+                   (message "%s" text)))
+             message)))
+
+(defun chirp-backend--cached-read (key fetcher callback &optional errback)
+  "Fetch KEY via FETCHER and serve CALLBACK from the short-lived read cache.
+
+FETCHER is called with success and error callbacks."
+  (if-let* (((not chirp-backend--bypass-read-cache))
+            (entry (chirp-backend--cached-result key)))
+      (funcall callback
+               (chirp-backend--clone-data (plist-get entry :value))
+               (chirp-backend--clone-data (plist-get entry :envelope)))
+    (let ((pending (and (not chirp-backend--bypass-read-cache)
+                        (gethash key chirp-backend--pending-read-requests))))
+      (if pending
+          (puthash key
+                   (append pending (list (cons callback errback)))
+                   chirp-backend--pending-read-requests)
+        (puthash key (list (cons callback errback))
+                 chirp-backend--pending-read-requests)
+        (condition-case err
+            (funcall
+             fetcher
+             (lambda (value envelope)
+               (let ((requesters (prog1 (gethash key chirp-backend--pending-read-requests)
+                                   (remhash key chirp-backend--pending-read-requests))))
+                 (when (> chirp-backend-read-cache-ttl 0)
+                   (puthash key
+                            (list :value (chirp-backend--clone-data value)
+                                  :envelope (chirp-backend--clone-data envelope)
+                                  :expires-at (+ (float-time)
+                                                 chirp-backend-read-cache-ttl))
+                            chirp-backend--read-cache))
+                 (chirp-backend--dispatch-read-success requesters value envelope)))
+             (lambda (message)
+               (let ((requesters (prog1 (gethash key chirp-backend--pending-read-requests)
+                                   (remhash key chirp-backend--pending-read-requests))))
+                 (chirp-backend--dispatch-read-error requesters message))))
+          (error
+           (let ((requesters (prog1 (gethash key chirp-backend--pending-read-requests)
+                               (remhash key chirp-backend--pending-read-requests))))
+             (chirp-backend--dispatch-read-error
+              requesters
+              (error-message-string err)))))))))
 
 (defun chirp-backend--missing-command-message ()
   "Return an error message for a missing twitter-cli executable."
@@ -201,13 +360,20 @@ ATTEMPT tracks how many retries have already been used."
 ERRBACK receives a single human-readable string."
   (chirp-backend--request args callback errback 0))
 
-(defun chirp-backend-feed (callback &optional following errback max-results)
+(defun chirp-backend-envelope-next-cursor (envelope)
+  "Return the next pagination cursor from ENVELOPE, or nil."
+  (or (chirp-get-in envelope '("pagination" "nextCursor"))
+      (chirp-get envelope "nextCursor")))
+
+(defun chirp-backend-feed (callback &optional following errback max-results cursor)
   "Fetch the home timeline and call CALLBACK.
 When FOLLOWING is non-nil, fetch the Following timeline."
   (chirp-backend-request
    (append '("feed")
            (when following
              '("-t" "following"))
+           (when cursor
+             (list "--cursor" cursor))
            (list "--max" (number-to-string (or max-results
                                               chirp-default-max-results))))
    (lambda (data envelope)
@@ -232,32 +398,78 @@ When FOLLOWING is non-nil, fetch the Following timeline."
 
 (defun chirp-backend-thread (tweet-or-url callback &optional errback)
   "Fetch thread data for TWEET-OR-URL and call CALLBACK."
-  (chirp-backend-request
-   (list "tweet" tweet-or-url)
-   (lambda (data envelope)
-     (funcall callback (chirp-collect-tweets data) envelope))
+  (chirp-backend--cached-read
+   (chirp-backend--thread-cache-key tweet-or-url)
+   (lambda (success error)
+     (chirp-backend-request
+      (list "tweet" tweet-or-url)
+      (lambda (data envelope)
+        (funcall success (chirp-collect-tweets data) envelope))
+      error))
+   callback
+   errback))
+
+(defun chirp-backend-tweet (tweet-id callback &optional errback)
+  "Fetch a single tweet for TWEET-ID and call CALLBACK."
+  (chirp-backend-thread
+   tweet-id
+   (lambda (tweets envelope)
+     (if-let* ((tweet (or (cl-find tweet-id tweets
+                                   :key (lambda (item) (plist-get item :id))
+                                   :test #'equal)
+                          (car tweets))))
+         (funcall callback tweet envelope)
+       (funcall (or errback #'ignore)
+                "twitter-cli returned tweet detail Chirp could not parse.")))
+   errback))
+
+(defun chirp-backend-article (tweet-id callback &optional errback)
+  "Fetch article content for TWEET-ID and call CALLBACK."
+  (chirp-backend--cached-read
+   (chirp-backend--article-cache-key tweet-id)
+   (lambda (success error)
+     (chirp-backend-request
+      (list "article" tweet-id)
+      (lambda (data envelope)
+        (let ((tweet (chirp-normalize-tweet data)))
+          (if tweet
+              (funcall success tweet envelope)
+            (funcall error
+                     "twitter-cli returned article data Chirp could not parse."))))
+      error))
+   callback
    errback))
 
 (defun chirp-backend-user (handle callback &optional errback)
   "Fetch profile data for HANDLE and call CALLBACK."
-  (chirp-backend-request
-   (list "user" (string-remove-prefix "@" handle))
-   (lambda (data envelope)
-     (let ((user (chirp-normalize-user data)))
-       (if user
-           (funcall callback user envelope)
-         (funcall (or errback #'ignore)
-                  "twitter-cli returned a profile payload Chirp could not parse."))))
+  (chirp-backend--cached-read
+   (chirp-backend--user-cache-key handle)
+   (lambda (success error)
+     (chirp-backend-request
+      (list "user" (string-remove-prefix "@" handle))
+      (lambda (data envelope)
+        (let ((user (chirp-normalize-user data)))
+          (if user
+              (funcall success user envelope)
+            (funcall error
+                     "twitter-cli returned a profile payload Chirp could not parse."))))
+      error))
+   callback
    errback))
 
 (defun chirp-backend-user-posts (handle callback &optional errback)
   "Fetch recent posts for HANDLE and call CALLBACK."
-  (chirp-backend-request
-   (list "user-posts"
-         (string-remove-prefix "@" handle)
-         "--max" (number-to-string chirp-profile-post-limit))
-   (lambda (data envelope)
-     (funcall callback (chirp-collect-top-level-tweets data) envelope))
+  (chirp-backend--cached-read
+   (chirp-backend--user-posts-cache-key handle)
+   (lambda (success error)
+     (chirp-backend-request
+      (list "user-posts"
+            (string-remove-prefix "@" handle)
+            "--max" (number-to-string chirp-profile-post-limit))
+      (lambda (data envelope)
+        (funcall success (chirp-collect-top-level-tweets data) envelope))
+      error))
+   callback
    errback))
 
 (provide 'chirp-backend)

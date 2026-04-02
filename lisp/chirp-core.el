@@ -8,14 +8,16 @@
 (require 'subr-x)
 (require 'browse-url)
 
-(declare-function chirp-profile-open "chirp-profile" (handle))
-(declare-function chirp-thread-open "chirp-thread" (tweet-or-url &optional focus-id))
+(declare-function chirp-backend-tweet "chirp-backend" (tweet-id callback &optional errback))
+(declare-function chirp-profile-open "chirp-profile" (handle &optional buffer))
+(declare-function chirp-thread-open "chirp-thread" (tweet-or-url &optional focus-id buffer))
 (declare-function chirp-dispatch "chirp-actions" ())
 (declare-function chirp-load-more "chirp-timeline" (&optional anchor-id))
 (declare-function chirp-toggle-home-following "chirp-timeline" ())
 (declare-function chirp-media-at-point "chirp-media" ())
-(declare-function chirp-media-open "chirp-media" (media-list index &optional title push-history))
+(declare-function chirp-media-open "chirp-media" (media-list index &optional title buffer))
 (declare-function chirp-media-open-at-point "chirp-media" ())
+(declare-function chirp-media-prefetch-tweet "chirp-media" (tweet buffer))
 (declare-function chirp-media-image-mode "chirp-media" ())
 (declare-function chirp-media-view-mode "chirp-media" ())
 
@@ -44,7 +46,7 @@ These paths are consulted after `exec-path' when `chirp-cli-command' is nil."
   :group 'chirp)
 
 (defcustom chirp-buffer-name "*chirp*"
-  "Base shared buffer name used for Chirp views."
+  "Base buffer name used for newly created Chirp views."
   :type 'string
   :group 'chirp)
 
@@ -84,9 +86,6 @@ These paths are consulted after `exec-path' when `chirp-cli-command' is nil."
 (defvar-local chirp--view-title nil
   "Human-readable title for the current Chirp buffer.")
 
-(defvar-local chirp--history nil
-  "Navigation history stack for the current Chirp buffer.")
-
 (defvar-local chirp--request-token nil
   "Latest async request token for the current Chirp buffer.")
 
@@ -98,6 +97,9 @@ These paths are consulted after `exec-path' when `chirp-cli-command' is nil."
 
 (defvar-local chirp--timeline-count nil
   "Current number of posts shown in the active timeline buffer.")
+
+(defvar-local chirp--timeline-next-cursor nil
+  "Pagination cursor used to fetch older posts for the active timeline buffer.")
 
 (defvar-local chirp--timeline-load-more-function nil
   "Function used to fetch older posts for the current timeline.")
@@ -114,28 +116,30 @@ These paths are consulted after `exec-path' when `chirp-cli-command' is nil."
 (defvar-local chirp--rerender-timer nil
   "Pending timer used to coalesce lightweight Chirp rerenders.")
 
-(put 'chirp--history 'permanent-local t)
 (put 'chirp--request-token 'permanent-local t)
 (put 'chirp--timeline-kind 'permanent-local t)
 (put 'chirp--timeline-limit 'permanent-local t)
 (put 'chirp--timeline-count 'permanent-local t)
+(put 'chirp--timeline-next-cursor 'permanent-local t)
 (put 'chirp--timeline-load-more-function 'permanent-local t)
 (put 'chirp--timeline-exhausted-p 'permanent-local t)
 (put 'chirp--rerender-function 'permanent-local t)
 
-(defvar chirp--suspend-history nil
-  "When non-nil, Chirp navigation should not push history entries.")
-
-(defvar chirp--shared-buffer nil
-  "The shared Chirp buffer object, even when it is renamed per view.")
-
 (defvar chirp-tweet-state-overrides (make-hash-table :test #'equal)
   "Map tweet ids to local state overrides such as likes and bookmarks.")
+
+(defvar chirp-quoted-tweet-cache (make-hash-table :test #'equal)
+  "Map quoted tweet ids to enriched Chirp tweet plists.")
+
+(defvar chirp-quoted-tweet-pending (make-hash-table :test #'equal)
+  "Map quoted tweet ids to pending enrichment callbacks.")
+
+(defconst chirp--quoted-tweet-fetch-failed (make-symbol "chirp-quoted-tweet-fetch-failed")
+  "Sentinel value used when quoted tweet enrichment fails.")
 
 (defvar chirp-view-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "g") #'chirp-refresh)
-    (define-key map (kbd "b") #'chirp-back)
     (define-key map (kbd "TAB") #'chirp-toggle-home-following)
     (define-key map (kbd "n") #'chirp-next-entry)
     (define-key map (kbd "p") #'chirp-previous-entry)
@@ -146,14 +150,16 @@ These paths are consulted after `exec-path' when `chirp-cli-command' is nil."
     (define-key map (kbd "A") #'chirp-open-author-at-point)
     (define-key map (kbd "x") #'chirp-dispatch)
     (define-key map (kbd "o") #'chirp-browse-at-point)
-    (define-key map (kbd "q") #'quit-window)
+    (define-key map (kbd "q") #'chirp-quit-current-buffer)
     map)
   "Keymap for `chirp-view-mode'.")
 
 (define-derived-mode chirp-view-mode special-mode "Chirp"
   "Major mode for Chirp buffers."
   (setq-local truncate-lines nil)
-  (setq-local line-spacing 0.1))
+  (setq-local word-wrap t)
+  (setq-local line-spacing 0.1)
+  (visual-line-mode 1))
 
 (defun chirp--base-buffer-stem ()
   "Return the display stem used for Chirp buffer names."
@@ -163,7 +169,7 @@ These paths are consulted after `exec-path' when `chirp-cli-command' is nil."
       name)))
 
 (defun chirp--format-buffer-name (&optional title)
-  "Return a shared buffer name for TITLE."
+  "Return a display buffer name for TITLE."
   (if (and (stringp title)
            (not (string-empty-p title)))
       (format "*%s: %s*" (chirp--base-buffer-stem) title)
@@ -174,16 +180,12 @@ These paths are consulted after `exec-path' when `chirp-cli-command' is nil."
   (with-current-buffer buffer
     (let ((new-name (chirp--format-buffer-name title)))
       (unless (string= (buffer-name buffer) new-name)
-        (rename-buffer new-name t))
-      (setq chirp--shared-buffer buffer)))
+        (rename-buffer new-name t))))
   buffer)
 
 (defun chirp-buffer ()
-  "Return the shared Chirp buffer."
-  (setq chirp--shared-buffer
-        (if (buffer-live-p chirp--shared-buffer)
-            chirp--shared-buffer
-          (get-buffer-create chirp-buffer-name))))
+  "Create and return a fresh Chirp buffer."
+  (generate-new-buffer chirp-buffer-name))
 
 (defun chirp-display-buffer (buffer)
   "Display BUFFER in the selected window."
@@ -196,71 +198,10 @@ These paths are consulted after `exec-path' when `chirp-cli-command' is nil."
       (derived-mode-p 'chirp-media-image-mode)
       (derived-mode-p 'chirp-media-view-mode)))
 
-(defun chirp--snapshot-state ()
-  "Capture the current Chirp buffer state."
-  (list :mode major-mode
-        :content (buffer-substring (point-min) (point-max))
-        :point (point)
-        :locals
-        (mapcar
-         (lambda (symbol)
-           (cons symbol
-                 (and (boundp symbol)
-                      (local-variable-p symbol)
-                      (symbol-value symbol))))
-         '(chirp--view-title
-           chirp--refresh-function
-           chirp--timeline-kind
-           chirp--timeline-limit
-           chirp--timeline-count
-           chirp--timeline-load-more-function
-           chirp--timeline-exhausted-p
-           chirp--rerender-function
-           chirp--media-list
-           chirp--media-index
-           chirp--media-title))))
-
-(defun chirp--maybe-push-history ()
-  "Save the current Chirp view so `chirp-back' can restore it."
-  (when (and (not chirp--suspend-history)
-             (chirp--active-buffer-p)
-             (eq (current-buffer) (chirp-buffer))
-             (or chirp--view-title
-                 (> (buffer-size) 0)))
-    (push (chirp--snapshot-state) chirp--history)))
-
-(defun chirp--restore-state (state)
-  "Restore a Chirp buffer STATE snapshot."
-  (let ((inhibit-read-only t)
-        (history chirp--history)
-        (mode (plist-get state :mode))
-        (locals (plist-get state :locals)))
-    (pcase mode
-      ('chirp-media-image-mode
-       (erase-buffer)
-       (insert (plist-get state :content))
-       (chirp-media-image-mode))
-      ('chirp-media-view-mode
-       (chirp-media-view-mode))
-      (_
-       (chirp-view-mode)))
-    (setq-local chirp--history history)
-    (setq-local chirp--request-token nil)
-    (setq-local header-line-format nil)
-    (dolist (binding locals)
-      (set (make-local-variable (car binding)) (cdr binding)))
-    (unless (eq mode 'chirp-media-image-mode)
-      (erase-buffer)
-      (insert (plist-get state :content)))
-    (chirp--apply-buffer-name (current-buffer) chirp--view-title)
-    (goto-char (min (point-max) (plist-get state :point)))))
-
-(defun chirp-back ()
-  "Return to the previous Chirp view."
+(defun chirp-quit-current-buffer ()
+  "Close the current Chirp buffer."
   (interactive)
-  (unless chirp--history
-    (user-error "No previous Chirp view"))
-  (chirp--restore-state (pop chirp--history)))
+  (quit-window t))
 
 (defun chirp-show-loading (buffer title refresh)
   "Display a loading message in BUFFER for TITLE.
@@ -273,6 +214,11 @@ Return a token that identifies the current request."
        (insert "Loading...\n")))
     (chirp-display-buffer buffer)
     token))
+
+(defun chirp-begin-background-request (buffer title)
+  "Start an async request for BUFFER titled TITLE without displaying it yet."
+  (message "Loading %s..." title)
+  (chirp-begin-request buffer))
 
 (defun chirp-begin-request (buffer)
   "Return a new request token for BUFFER."
@@ -296,6 +242,7 @@ Return a token that identifies the current request."
     (setq-local chirp--timeline-kind nil)
     (setq-local chirp--timeline-limit nil)
     (setq-local chirp--timeline-count nil)
+    (setq-local chirp--timeline-next-cursor nil)
     (setq-local chirp--timeline-load-more-function nil)
     (setq-local chirp--timeline-exhausted-p nil)
     (setq-local chirp--timeline-loading-more nil)
@@ -322,14 +269,27 @@ Return a token that identifies the current request."
          chirp--rerender-timer
          (run-at-time
           wait nil
-          (lambda (buf)
+         (lambda (buf)
             (when (buffer-live-p buf)
               (with-current-buffer buf
                 (setq-local chirp--rerender-timer nil)
                 (when chirp--rerender-function
-                  (let ((chirp--suspend-history t))
-                    (funcall chirp--rerender-function))))))
+                  (let ((window-state (chirp-capture-window-state buf)))
+                    (funcall chirp--rerender-function)
+                    (chirp-restore-window-state window-state))))))
           target))))))
+
+(defun chirp-author-handle-at-point ()
+  "Return the author handle stored at point, or nil."
+  (or (get-text-property (point) 'chirp-author-handle)
+      (and (> (point) (point-min))
+           (get-text-property (1- (point)) 'chirp-author-handle))))
+
+(defun chirp-author-profile-url-at-point ()
+  "Return the author profile URL stored at point, or nil."
+  (or (get-text-property (point) 'chirp-author-profile-url)
+      (and (> (point) (point-min))
+           (get-text-property (1- (point)) 'chirp-author-profile-url))))
 
 (defun chirp-show-error (buffer title refresh message)
   "Display MESSAGE in BUFFER for TITLE."
@@ -338,15 +298,14 @@ Return a token that identifies the current request."
    (lambda ()
      (insert "Unable to load data.\n\n")
      (insert message)
-     (insert "\n"))))
+     (insert "\n")))
+  (chirp-display-buffer buffer))
 
 (defun chirp-refresh ()
   "Refresh the current Chirp buffer."
   (interactive)
   (if chirp--refresh-function
-      (let ((chirp--suspend-history
-             (not (memq chirp--timeline-kind '(home following)))))
-        (funcall chirp--refresh-function))
+      (funcall chirp--refresh-function)
     (user-error "No refresh function for this buffer")))
 
 (defun chirp--entry-position-forward (start)
@@ -369,11 +328,93 @@ Return a token that identifies the current request."
                                      'chirp-entry-start t)))
     last))
 
+(defun chirp--current-entry-start ()
+  "Return the top-level entry start that contains point, or nil."
+  (let ((search-end (min (point-max) (1+ (point)))))
+    (when (> search-end (point-min))
+      (chirp--entry-position-backward search-end))))
+
+(defun chirp-capture-point-anchor ()
+  "Return a stable anchor describing the current point location."
+  (if-let* ((entry-start (chirp--current-entry-start))
+            (entry (get-text-property entry-start 'chirp-entry-item)))
+      (list :entry-id (plist-get entry :id)
+            :offset (- (point) entry-start))
+    (list :position (point))))
+
+(defun chirp-point-position-from-anchor (anchor)
+  "Return a buffer position for ANCHOR, or nil when it cannot be restored."
+  (cond
+   ((null anchor) nil)
+   ((and (listp anchor)
+         (plist-member anchor :position))
+    (max (point-min)
+         (min (point-max)
+              (plist-get anchor :position))))
+   ((listp anchor)
+    (when-let* ((entry-id (plist-get anchor :entry-id))
+                (entry-pos (chirp-entry-position-by-id entry-id)))
+      (let* ((offset (max 0 (or (plist-get anchor :offset) 0)))
+             (next-start (chirp--entry-position-forward (min (point-max) (1+ entry-pos))))
+             (entry-end (or next-start (point-max))))
+        (max entry-pos
+             (min (+ entry-pos offset)
+                  (max entry-pos (1- entry-end)))))))
+   ((stringp anchor)
+    (chirp-entry-position-by-id anchor))
+   (t nil)))
+
+(defun chirp-restore-point-anchor (anchor)
+  "Restore point from ANCHOR, returning non-nil on success."
+  (when-let* ((pos (chirp-point-position-from-anchor anchor)))
+    (goto-char pos)
+    t))
+
+(defun chirp-buffer-window (&optional buffer)
+  "Return the interactive window showing BUFFER, or nil."
+  (let ((target (or buffer (current-buffer))))
+    (or (and (window-live-p (selected-window))
+             (eq (window-buffer (selected-window)) target)
+             (selected-window))
+        (get-buffer-window target t))))
+
+(defun chirp-capture-window-state (&optional buffer)
+  "Return the current window state for BUFFER, or nil when not visible."
+  (when-let* ((window (chirp-buffer-window buffer))
+              ((window-live-p window)))
+    (with-current-buffer (window-buffer window)
+      (list :window window
+            :point-anchor (save-excursion
+                            (goto-char (window-point window))
+                            (chirp-capture-point-anchor))
+            :start-anchor (save-excursion
+                            (goto-char (window-start window))
+                            (chirp-capture-point-anchor))
+            :hscroll (window-hscroll window)
+            :vscroll (window-vscroll window t)))))
+
+(defun chirp-restore-window-state (state)
+  "Restore window STATE captured by `chirp-capture-window-state'."
+  (when-let* ((window (plist-get state :window))
+              ((window-live-p window)))
+    (with-current-buffer (window-buffer window)
+      (when-let* ((start (chirp-point-position-from-anchor
+                          (plist-get state :start-anchor))))
+        (set-window-start window start t))
+      (set-window-hscroll window (or (plist-get state :hscroll) 0))
+      (set-window-vscroll window (or (plist-get state :vscroll) 0) t)
+      (when-let* ((pos (chirp-point-position-from-anchor
+                        (plist-get state :point-anchor))))
+        (set-window-point window pos)))))
+
 (defun chirp-next-entry ()
   "Move to the next entry."
   (interactive)
-  (let* ((origin (point))
-         (pos (chirp--entry-position-forward (min (point-max) (1+ origin)))))
+  (let* ((current-start (chirp--current-entry-start))
+         (pos (if current-start
+                  (chirp--entry-position-forward
+                   (min (point-max) (1+ current-start)))
+                (chirp--entry-position-forward (point-min)))))
     (cond
      (pos
       (goto-char pos))
@@ -388,9 +429,9 @@ Return a token that identifies the current request."
 (defun chirp-previous-entry ()
   "Move to the previous entry."
   (interactive)
-  (let* ((origin (point))
-         (start (max (point-min) (1- origin)))
-         (pos (chirp--entry-position-backward start)))
+  (let* ((current-start (chirp--current-entry-start))
+         (pos (and current-start
+                   (chirp--entry-position-backward current-start))))
     (unless pos
       (setq pos (chirp--entry-position-backward (point-max))))
     (if pos
@@ -399,7 +440,10 @@ Return a token that identifies the current request."
 
 (defun chirp-entry-at-point ()
   "Return the Chirp entry stored at point, or nil."
-  (or (get-text-property (point) 'chirp-entry-item)
+  (or (get-text-property (point) 'chirp-subentry-item)
+      (and (> (point) (point-min))
+           (get-text-property (1- (point)) 'chirp-subentry-item))
+      (get-text-property (point) 'chirp-entry-item)
       (and (> (point) (point-min))
            (get-text-property (1- (point)) 'chirp-entry-item))))
 
@@ -427,20 +471,25 @@ Return a token that identifies the current request."
 
 (defun chirp-entry-url-at-point ()
   "Return the hidden URL stored on the current Chirp entry, or nil."
-  (or (get-text-property (point) 'chirp-entry-url)
+  (or (get-text-property (point) 'chirp-subentry-url)
+      (and (> (point) (point-min))
+           (get-text-property (1- (point)) 'chirp-subentry-url))
+      (get-text-property (point) 'chirp-entry-url)
       (and (> (point) (point-min))
            (get-text-property (1- (point)) 'chirp-entry-url))))
 
 (defun chirp-open-at-point ()
   "Open the entry at point."
   (interactive)
-  (if (chirp-media-at-point)
-      (chirp-media-open-at-point)
-    (pcase (plist-get (chirp-entry-at-point) :kind)
-      ('tweet (chirp-thread-open (chirp-entry-at-point)
-                                 (plist-get (chirp-entry-at-point) :id)))
-      ('user (chirp-profile-open (plist-get (chirp-entry-at-point) :handle)))
-      (_ (user-error "No entry at point")))))
+  (if-let* ((author-handle (chirp-author-handle-at-point)))
+      (chirp-profile-open author-handle)
+    (if (chirp-media-at-point)
+        (chirp-media-open-at-point)
+      (pcase (plist-get (chirp-entry-at-point) :kind)
+        ('tweet (chirp-thread-open (chirp-entry-at-point)
+                                   (plist-get (chirp-entry-at-point) :id)))
+        ('user (chirp-profile-open (plist-get (chirp-entry-at-point) :handle)))
+        (_ (user-error "No entry at point"))))))
 
 (defun chirp-open-primary-media ()
   "Open the media at point or the first media of the current entry."
@@ -448,12 +497,12 @@ Return a token that identifies the current request."
   (if (chirp-media-at-point)
       (chirp-media-open-at-point)
     (let* ((entry (chirp-entry-at-point))
-           (media-list (plist-get entry :media)))
+           (media-list (or (plist-get entry :media)
+                           (chirp-tweet-article-images entry))))
       (if media-list
           (chirp-media-open media-list
                             0
-                            (or chirp--view-title "Chirp Media")
-                            t)
+                            (or chirp--view-title "Chirp Media"))
         (user-error "No media available at point")))))
 
 (defun chirp-open-author-at-point ()
@@ -472,6 +521,7 @@ Return a token that identifies the current request."
   (let* ((media (chirp-media-at-point))
          (entry (chirp-entry-at-point))
          (url (or (plist-get media :url)
+                  (chirp-author-profile-url-at-point)
                   (chirp-entry-url-at-point)
                   (plist-get entry :url)
                   (plist-get entry :profile-url))))
@@ -569,6 +619,262 @@ Return a token that identifies the current request."
    ((null value) "")
    (t
     (string-trim (format "%s" value)))))
+
+(defconst chirp--short-url-regexp "https?://t\\.co/[[:alnum:]]+"
+  "Regexp that matches short X/Twitter URLs in tweet text.")
+
+(defconst chirp--markdown-image-regexp "!\\[\\([^]\n]*\\)\\](\\([^)\n]+\\))"
+  "Regexp that matches one Markdown image.")
+
+(defun chirp-normalize-string-list (value)
+  "Normalize VALUE into a de-duplicated list of non-blank strings."
+  (when (listp value)
+    (let ((seen (make-hash-table :test #'equal))
+          items)
+      (dolist (item value (nreverse items))
+        (when-let* ((text (and (stringp item)
+                               (string-trim item))))
+          (unless (or (string-empty-p text)
+                      (gethash text seen))
+            (puthash text t seen)
+            (push text items)))))))
+
+(defun chirp-normalize-url-item (value)
+  "Normalize one URL VALUE into an expanded string, or nil."
+  (cond
+   ((stringp value)
+    (let ((text (string-trim value)))
+      (unless (string-empty-p text)
+        text)))
+   ((chirp-object-p value)
+    (chirp-first-nonblank
+     (chirp-get value
+                "expanded_url"
+                "expandedUrl"
+                "expanded"
+                "url"
+                "shortUrl")))
+   (t nil)))
+
+(defun chirp-normalize-url-list (&rest values)
+  "Normalize URL VALUES into a de-duplicated list of expanded strings."
+  (let ((seen (make-hash-table :test #'equal))
+        items)
+    (dolist (value values (nreverse items))
+      (when (listp value)
+        (dolist (item value)
+          (when-let* ((url (chirp-normalize-url-item item)))
+            (unless (gethash url seen)
+              (puthash url t seen)
+              (push url items))))))))
+
+(defun chirp-extract-tweet-urls (object &optional legacy)
+  "Extract expanded URLs for tweet OBJECT and optional LEGACY payload."
+  (chirp-normalize-url-list
+   (chirp-get object "urls")
+   (chirp-get-in object '("note_tweet" "note_tweet_results" "result" "entity_set" "urls"))
+   (chirp-get-in object '("note_tweet" "entity_set" "urls"))
+   (chirp-get-in object '("entities" "urls"))
+   (and legacy
+        (chirp-get-in legacy '("entities" "urls")))))
+
+(defun chirp-tweet-candidate-urls (tweet)
+  "Return likely canonical URLs for TWEET."
+  (let ((id (plist-get tweet :id))
+        (handle (plist-get tweet :author-handle))
+        urls)
+    (when-let* ((url (plist-get tweet :url)))
+      (push url urls))
+    (when id
+      (push (format "https://x.com/i/status/%s" id) urls)
+      (when handle
+        (push (format "https://x.com/%s/status/%s" handle id) urls)))
+    (delete-dups (delq nil urls))))
+
+(defun chirp-tweet-preview-text (tweet &optional max-length)
+  "Return a short one-paragraph preview for TWEET."
+  (let* ((limit (or max-length 160))
+         (text (or (plist-get tweet :text)
+                   (chirp-tweet-article-preview tweet limit)
+                   ""))
+         (cleaned (replace-regexp-in-string "[ \t\n\r]+" " " (chirp-clean-text text) t)))
+    (if (<= (length cleaned) limit)
+        cleaned
+      (concat (string-trim-right (substring cleaned 0 (max 0 (- limit 3))))
+              "..."))))
+
+(defun chirp-filter-display-urls (urls &optional quoted-tweet)
+  "Return URLS after removing duplicates and quoted-tweet permalinks."
+  (let ((quoted-urls (and quoted-tweet
+                          (chirp-tweet-candidate-urls quoted-tweet))))
+    (cl-remove-if (lambda (url)
+                    (member url quoted-urls))
+                  urls)))
+
+(defun chirp-short-url-count (text)
+  "Return how many `t.co` placeholders appear in TEXT."
+  (let ((start 0)
+        (count 0)
+        (value (or text "")))
+    (while (string-match chirp--short-url-regexp value start)
+      (setq count (1+ count)
+            start (match-end 0)))
+    count))
+
+(defun chirp-strip-short-urls (text)
+  "Remove `t.co` placeholders from TEXT while keeping paragraph structure."
+  (let ((cleaned (or text "")))
+    (setq cleaned (replace-regexp-in-string chirp--short-url-regexp "" cleaned t t))
+    (setq cleaned (replace-regexp-in-string "[ \t]+\\(\n\\)" "\\1" cleaned t))
+    (setq cleaned (replace-regexp-in-string "\\(\n\\)[ \t]+" "\\1" cleaned t))
+    (setq cleaned (replace-regexp-in-string "[ \t]\\{2,\\}" " " cleaned t))
+    (setq cleaned (replace-regexp-in-string "\n\\{3,\\}" "\n\n" cleaned t))
+    (string-trim cleaned)))
+
+(defun chirp--normalize-markdown-summary (text)
+  "Flatten markdown-ish TEXT into a readable single paragraph."
+  (let ((summary (or text "")))
+    (setq summary (replace-regexp-in-string "!\\[[^]]*\\](\\([^)]*\\))" "" summary t))
+    (setq summary (replace-regexp-in-string "\\[\\([^]]+\\)\\](\\([^)]*\\))" "\\1" summary t))
+    (setq summary (replace-regexp-in-string "`\\([^`]+\\)`" "\\1" summary t))
+    (setq summary (replace-regexp-in-string "^[#>*-]+[ \t]*" "" summary t))
+    (setq summary (replace-regexp-in-string "[ \t\n\r]+" " " summary t))
+    (string-trim summary)))
+
+(defun chirp-tweet-article-preview (tweet &optional max-length)
+  "Return a short readable article preview for TWEET.
+
+When MAX-LENGTH is non-nil, truncate the preview to that many characters."
+  (let* ((limit (or max-length 240))
+         (paragraphs (split-string (or (plist-get tweet :article-text) "")
+                                   "\n[ \t]*\n+"
+                                   t))
+         (summary
+          (cl-loop for paragraph in paragraphs
+                   for cleaned = (chirp--normalize-markdown-summary paragraph)
+                   unless (or (string-empty-p cleaned)
+                              (string-prefix-p "```" cleaned))
+                   return cleaned)))
+    (when summary
+      (if (<= (length summary) limit)
+          summary
+        (concat (string-trim-right (substring summary 0 (max 0 (- limit 3))))
+                "...")))))
+
+(defun chirp--markdown-image-media (text)
+  "Return a photo plist when TEXT is exactly one Markdown image paragraph."
+  (let ((paragraph (string-trim (or text ""))))
+    (when (string-match (format "\\`%s\\'" chirp--markdown-image-regexp) paragraph)
+      (let ((url (chirp-clean-text (match-string 2 paragraph)))
+            (alt (chirp-clean-text (match-string 1 paragraph))))
+        (when (and (not (string-empty-p url))
+                   (string-match-p "\\`https?://" url))
+          (list :type "photo"
+                :url url
+                :alt alt
+                :article-image-p t))))))
+
+(defun chirp-article-segments (text)
+  "Split article TEXT into renderable text and image segments."
+  (let (segments)
+    (dolist (paragraph (split-string (or text "")
+                                     "\n[ \t]*\n+"
+                                     t))
+      (if-let* ((media (chirp--markdown-image-media paragraph)))
+          (push (list :type 'image :media media) segments)
+        (let ((cleaned (chirp-clean-text paragraph)))
+          (unless (string-empty-p cleaned)
+            (push (list :type 'text :text cleaned) segments)))))
+    (nreverse segments)))
+
+(defun chirp-tweet-article-images (tweet &optional max-count)
+  "Return article images parsed from TWEET.
+
+When MAX-COUNT is non-nil, return at most that many images."
+  (let ((images
+         (cl-loop for segment in (chirp-article-segments
+                                  (plist-get tweet :article-text))
+                  when (eq (plist-get segment :type) 'image)
+                  collect (plist-get segment :media))))
+    (if (and (integerp max-count)
+             (>= max-count 0))
+        (cl-subseq images 0 (min max-count (length images)))
+      images)))
+
+(defun chirp-tweet-article-display-text (tweet)
+  "Return article body text for TWEET with Markdown image paragraphs removed."
+  (string-join
+   (cl-loop for segment in (chirp-article-segments
+                            (plist-get tweet :article-text))
+            when (eq (plist-get segment :type) 'text)
+            collect (plist-get segment :text))
+   "\n\n"))
+
+(defun chirp-normalize-quoted-tweet (value)
+  "Normalize VALUE into a quoted-tweet plist, or nil."
+  (when-let* ((quoted
+               (cond
+                ((chirp-object-p value)
+                 (or (chirp-get value "quotedTweet" "quoted_tweet")
+                     (chirp-get-in value '("quoted_status_result" "result"))))
+                (t nil))))
+    (or (and-let* ((quoted-id (chirp-first-nonblank
+                               (chirp-get quoted "id" "id_str" "rest_id")))
+                   (cached (gethash quoted-id chirp-quoted-tweet-cache))
+                   ((not (eq cached chirp--quoted-tweet-fetch-failed))))
+         cached)
+        (chirp-normalize-tweet quoted))))
+
+(defun chirp-quoted-tweet-enriched-p (tweet)
+  "Return non-nil when quoted TWEET already carries full fetched detail."
+  (plist-get tweet :chirp-enriched-p))
+
+(defun chirp--dispatch-quoted-tweet-callbacks (tweet-id payload)
+  "Run pending callbacks for TWEET-ID with PAYLOAD."
+  (let ((callbacks (prog1 (gethash tweet-id chirp-quoted-tweet-pending)
+                     (remhash tweet-id chirp-quoted-tweet-pending))))
+    (dolist (callback callbacks)
+      (when callback
+        (ignore-errors (funcall callback payload))))))
+
+(defun chirp--request-quoted-tweet (tweet-id callback)
+  "Fetch quoted tweet TWEET-ID and run CALLBACK with the result."
+  (let ((cached (gethash tweet-id chirp-quoted-tweet-cache)))
+    (cond
+     ((eq cached chirp--quoted-tweet-fetch-failed)
+      nil)
+     (cached
+      (funcall callback cached))
+     ((gethash tweet-id chirp-quoted-tweet-pending)
+      (puthash tweet-id
+               (cons callback (gethash tweet-id chirp-quoted-tweet-pending))
+               chirp-quoted-tweet-pending))
+     (t
+      (puthash tweet-id (list callback) chirp-quoted-tweet-pending)
+      (chirp-backend-tweet
+       tweet-id
+       (lambda (tweet _envelope)
+         (puthash tweet-id tweet chirp-quoted-tweet-cache)
+         (chirp--dispatch-quoted-tweet-callbacks tweet-id tweet))
+       (lambda (_message)
+         (puthash tweet-id chirp--quoted-tweet-fetch-failed chirp-quoted-tweet-cache)
+         (chirp--dispatch-quoted-tweet-callbacks tweet-id nil)))))))
+
+(defun chirp-enrich-quoted-tweets (tweets buffer)
+  "Asynchronously enrich quoted tweets inside TWEETS and rerender BUFFER."
+  (dolist (tweet tweets)
+    (when-let* ((quoted (plist-get tweet :quoted-tweet))
+                (quoted-id (plist-get quoted :id))
+                ((not (chirp-quoted-tweet-enriched-p quoted))))
+      (chirp--request-quoted-tweet
+       quoted-id
+       (lambda (full-quoted)
+         (when (and full-quoted
+                    (buffer-live-p buffer))
+           (plist-put full-quoted :chirp-enriched-p t)
+           (plist-put tweet :quoted-tweet full-quoted)
+           (chirp-media-prefetch-tweet full-quoted buffer)
+           (chirp-request-rerender buffer)))))))
 
 (defun chirp-format-count (value)
   "Return a display string for VALUE."
@@ -803,6 +1109,19 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
                  (chirp-get legacy "full_text" "text")
                  (chirp-get-in object '("note_tweet" "note_tweet_results" "result" "text"))
                  (chirp-get-in object '("note_tweet" "text")))))
+         (quoted-tweet (chirp-normalize-quoted-tweet object))
+         (all-urls (chirp-extract-tweet-urls object legacy))
+         (display-text (if (>= (length all-urls)
+                               (chirp-short-url-count text))
+                           (chirp-strip-short-urls text)
+                         text))
+         (urls (chirp-filter-display-urls all-urls quoted-tweet))
+         (article-title (chirp-first-nonblank
+                         (chirp-get object "articleTitle" "article_title")))
+         (article-text-raw (chirp-first-nonblank
+                            (chirp-get object "articleText" "article_text")))
+         (article-text (and article-text-raw
+                            (chirp-clean-text article-text-raw)))
          (author-handle (plist-get author-user :handle))
          (media (chirp-normalize-media-list (chirp-get object "media")))
          (reply-to-handle (let ((handle (chirp-first-nonblank
@@ -848,11 +1167,13 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
     (when (or id (not (string-empty-p text)))
       (list :kind 'tweet
             :id id
-            :text text
+            :text display-text
+            :raw-text text
             :created-at (chirp-first-nonblank
                          (chirp-get object "createdAtLocal" "createdAtISO" "createdAt" "created_at")
                          (chirp-get legacy "created_at"))
             :url url
+            :urls urls
             :conversation-id (chirp-first-nonblank
                               (chirp-get object "conversationId" "conversation_id")
                               (chirp-get legacy "conversation_id_str"))
@@ -861,6 +1182,9 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
             :author-name (plist-get author-user :name)
             :author-handle author-handle
             :author-avatar-url (plist-get author-user :avatar-url)
+            :quoted-tweet quoted-tweet
+            :article-title article-title
+            :article-text article-text
             :promoted-p promoted-p
             :media media
             :retweeted-p (chirp-plist-override state-overrides :retweeted-p retweeted-p)
