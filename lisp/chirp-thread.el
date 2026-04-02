@@ -43,6 +43,14 @@
                 tweet-or-url
               (or (plist-get tweet-or-url :id) "tweet")))))
 
+(defun chirp-thread--seed-tweets (tweet-or-url focus-id)
+  "Return an immediately renderable tweet list for TWEET-OR-URL, or nil."
+  (when (and (listp tweet-or-url)
+             (eq (plist-get tweet-or-url :kind) 'tweet)
+             (or (null focus-id)
+                 (equal (plist-get tweet-or-url :id) focus-id)))
+    (list tweet-or-url)))
+
 (defun chirp-thread--article-fetch-needed-p (tweet)
   "Return non-nil when TWEET should be enriched via `twitter article'."
   (and (plist-get tweet :id)
@@ -145,6 +153,17 @@ restore point to that entry after rendering."
                 (handle-article-success article-tweet))
               #'ignore))))
     (setq token (chirp-begin-background-request buffer title))
+    (when-let* ((seed (chirp-thread--seed-tweets tweet-or-url focus-id)))
+      (setq saved-ordered seed)
+      (chirp-thread--render-view buffer title refresh saved-ordered nil t)
+      (with-current-buffer buffer
+        (setq-local chirp--rerender-function
+                    (lambda ()
+                      (render-current
+                       (with-current-buffer buffer
+                         (chirp-capture-point-anchor))))))
+      (chirp-media-prefetch-tweets saved-ordered buffer)
+      (chirp-enrich-quoted-tweets saved-ordered buffer))
     (when (and (listp tweet-or-url)
                (plist-get tweet-or-url :id))
       (maybe-request-article tweet-or-url))

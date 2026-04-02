@@ -8,6 +8,48 @@
 (require 'cl-lib)
 (require 'chirp-thread)
 
+(ert-deftest chirp-thread-open-renders-seed-focus-tweet-before-network-thread-load ()
+  "Opening a thread from a visible tweet should render that tweet immediately."
+  (let ((buffer (generate-new-buffer " *chirp-thread-seed-test*"))
+        thread-callback
+        renders)
+    (unwind-protect
+        (cl-letf (((symbol-function 'chirp-begin-background-request)
+                   (lambda (_buffer _title)
+                     'thread-token))
+                  ((symbol-function 'chirp-request-current-p)
+                   (lambda (_buffer token)
+                     (eq token 'thread-token)))
+                  ((symbol-function 'chirp-backend-thread)
+                   (lambda (_target callback &optional _errback)
+                     (setq thread-callback callback)))
+                  ((symbol-function 'chirp-backend-article) #'ignore)
+                  ((symbol-function 'chirp-thread--render-view)
+                   (lambda (_buffer _title _refresh ordered &optional _anchor-id _display-p)
+                     (push ordered renders)))
+                  ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
+                  ((symbol-function 'chirp-display-buffer) #'ignore))
+          (chirp-thread-open
+           '(:kind tweet
+             :id "123"
+             :text "Focus tweet")
+           "123"
+           buffer)
+          (should (functionp thread-callback))
+          (should (equal (mapcar (lambda (tweet) (plist-get tweet :id))
+                                 (car (last renders)))
+                         '("123")))
+          (funcall thread-callback
+                   (list '(:kind tweet :id "123" :text "Focus tweet")
+                         '(:kind tweet :id "456" :text "Reply"))
+                   nil)
+          (should (equal (mapcar (lambda (tweet) (plist-get tweet :id))
+                                 (car renders))
+                         '("123" "456"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest chirp-thread-open-prefetched-article-is-applied-before-first-render ()
   "Article enrichment should overlap thread loading and feed the first render."
   (let ((buffer (generate-new-buffer " *chirp-thread-test*"))
