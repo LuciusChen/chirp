@@ -126,6 +126,31 @@
     (should (equal (plist-get card :image-url)
                    "https://github.com/preview.png"))))
 
+(ert-deftest chirp-media-scaled-dimensions-preserve-aspect-ratio ()
+  "Scaled dimensions should fit the target box without distorting aspect ratio."
+  (should (equal (chirp-media--scaled-dimensions 921 1008 128 128)
+                 '(117 . 128)))
+  (should (equal (chirp-media--scaled-dimensions 1651 1079 128 128)
+                 '(128 . 84))))
+
+(ert-deftest chirp-media-thumbnail-image-uses-photo-thumbnail-wrapper ()
+  "Photo thumbnails should prefer the fixed-size SVG wrapper renderer."
+  (let ((chirp-media-render-from-cache-only t)
+        rendered-file)
+    (cl-letf (((symbol-function 'chirp-media-cached-file)
+               (lambda (&rest _args)
+                 "/tmp/chirp-photo-thumb.jpg"))
+              ((symbol-function 'chirp-media--photo-thumbnail-image)
+               (lambda (file width height)
+                 (setq rendered-file (list file width height))
+                 'photo-image)))
+      (should (eq (chirp-media-thumbnail-image
+                   '(:type "photo"
+                     :url "https://example.com/photo.jpg"))
+                  'photo-image))
+      (should (equal rendered-file
+                     '("/tmp/chirp-photo-thumb.jpg" 128 128))))))
+
 (ert-deftest chirp-media-thumbnail-image-badges-video-like-media ()
   "Video-like thumbnails should use the play-badge renderer."
   (let ((chirp-media-render-from-cache-only t)

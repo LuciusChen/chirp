@@ -746,6 +746,14 @@ When FALLBACK is non-nil, call it if remote extraction fails."
               image)))
       (error nil))))
 
+(defun chirp-media--scaled-dimensions (width height max-width max-height)
+  "Return scaled WIDTH and HEIGHT constrained by MAX-WIDTH and MAX-HEIGHT."
+  (let* ((scale (min 1.0
+                     (/ (float max-width) (max 1.0 width))
+                     (/ (float max-height) (max 1.0 height)))))
+    (cons (max 1 (round (* width scale)))
+          (max 1 (round (* height scale))))))
+
 (defun chirp-media--mime-type (file)
   "Return a MIME type for FILE."
   (pcase (downcase (or (file-name-extension file) ""))
@@ -779,6 +787,30 @@ When FALLBACK is non-nil, call it if remote extraction fails."
                      :preserveAspectRatio "xMidYMid slice"
                      :clip-path "url(#avatar-clip)")
           (svg-image svg :ascent 'center))
+      (error nil))))
+
+(defun chirp-media--photo-thumbnail-image (file max-width max-height)
+  "Return FILE rendered at its final thumbnail size without runtime scaling."
+  (when (and file
+             (display-images-p))
+    (condition-case nil
+        (let ((base-image (create-image file)))
+          (when base-image
+            (pcase-let* ((`(,width . ,height) (image-size base-image t))
+                         (`(,target-width . ,target-height)
+                          (chirp-media--scaled-dimensions
+                           width height max-width max-height))
+                         (svg (svg-create target-width target-height)))
+              (svg-embed svg
+                         file
+                         (chirp-media--mime-type file)
+                         nil
+                         :x 0
+                         :y 0
+                         :width target-width
+                         :height target-height
+                         :preserveAspectRatio "xMidYMid meet")
+              (svg-image svg :ascent 'center))))
       (error nil))))
 
 (defun chirp-media--video-badged-thumbnail-image (file size)
@@ -919,9 +951,12 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
                         (chirp-media-local-file (plist-get media :url)
                                                 "media"
                                                 "jpg"))))
-      (chirp-media--scaled-image file
-                                 chirp-media-thumbnail-size
-                                 chirp-media-thumbnail-size)))
+      (or (chirp-media--photo-thumbnail-image file
+                                              chirp-media-thumbnail-size
+                                              chirp-media-thumbnail-size)
+          (chirp-media--scaled-image file
+                                     chirp-media-thumbnail-size
+                                     chirp-media-thumbnail-size))))
    ((chirp-media-video-like-p media)
     (when-let* ((file (if chirp-media-render-from-cache-only
                           (or (and-let* ((preview-url (plist-get media :preview-url)))
