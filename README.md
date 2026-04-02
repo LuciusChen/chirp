@@ -22,6 +22,24 @@ It does not implement DMs, notifications, or paid features.
 - GNU Emacs 29.1 or newer
 - `twitter-cli` installed and available as `twitter` or `twitter-cli`
 
+If you want the `twitter-cli` fork/version currently used by Chirp before
+upstream merges land, install the `stable` branch from this fork:
+
+```bash
+uv tool install --force "git+https://github.com/LuciusChen/twitter-cli.git@stable"
+```
+
+If you keep a local checkout and want Chirp to follow that checkout directly:
+
+```bash
+cd ~/repos/twitter-cli
+git switch stable
+uv tool install --force -e .
+```
+
+The editable install is convenient for local development, but remember that the
+active CLI will follow whatever branch that checkout is currently on.
+
 Chirp auto-detects either executable name by default. If your binary lives
 elsewhere, customize:
 
