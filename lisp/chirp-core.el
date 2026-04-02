@@ -1179,6 +1179,10 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
                                   "in_reply_to_status_id")
                        (chirp-get legacy "in_reply_to_status_id_str"
                                   "in_reply_to_status_id")))
+         (retweeted-by (let ((handle (chirp-first-nonblank
+                                      (chirp-get object "retweetedBy" "retweeted_by"))))
+                         (and handle
+                              (string-remove-prefix "@" handle))))
          (retweeted-p (chirp-boolean-value
                        (chirp-coalesce
                         (chirp-get object "retweeted" "isRetweeted")
@@ -1222,6 +1226,7 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
                               (chirp-get legacy "conversation_id_str"))
             :reply-to-id reply-to-id
             :reply-to-handle reply-to-handle
+            :retweeted-by retweeted-by
             :author-name (plist-get author-user :name)
             :author-handle author-handle
             :author-avatar-url (plist-get author-user :avatar-url)

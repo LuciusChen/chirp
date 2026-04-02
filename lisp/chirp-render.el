@@ -84,6 +84,11 @@
   "Face used for reply context lines in thread views."
   :group 'chirp)
 
+(defface chirp-social-context-face
+  '((t :inherit shadow))
+  "Face used for home/following social context lines."
+  :group 'chirp)
+
 (defface chirp-thread-divider-face
   '((t :inherit shadow))
   "Face used for separators inside thread views."
@@ -467,8 +472,14 @@ When DETAILP is non-nil, use a longer preview."
   (let* ((start (point))
          (author (or (plist-get tweet :author-name) "Unknown"))
          (handle (plist-get tweet :author-handle))
+         (retweeted-by (plist-get tweet :retweeted-by))
          (created-at (plist-get tweet :created-at))
          (meta-start nil))
+    (when retweeted-by
+      (chirp-render--insert-prefix prefix prefix-face)
+      (insert (propertize (format "retweeted by @%s" retweeted-by)
+                          'face 'chirp-social-context-face))
+      (insert "\n"))
     (chirp-render--insert-prefix prefix prefix-face)
     (chirp-render--insert-avatar (plist-get tweet :author-avatar-url) handle)
     (insert (propertize author 'face 'chirp-author-face))

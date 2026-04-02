@@ -56,6 +56,15 @@
                        ("author" . (("screenName" . "bob")
                                     ("name" . "Bob"))))))))
 
+(defun chirp-test--sample-retweeted-tweet ()
+  "Return a normalized tweet payload with retweet social context."
+  (chirp-normalize-tweet
+   '(("id" . "321")
+     ("text" . "Boosted post")
+     ("retweetedBy" . "dotey")
+     ("author" . (("screenName" . "alice")
+                  ("name" . "Alice"))))))
+
 (defun chirp-test--sample-note-tweet-with-entity-links ()
   "Return a normalized note tweet whose expanded URLs live in entity metadata."
   (chirp-normalize-tweet
@@ -124,6 +133,11 @@
     (should (equal (plist-get tweet :urls)
                    '("https://github.com/example/project")))))
 
+(ert-deftest chirp-normalize-tweet-preserves-retweeted-by-handle ()
+  "Structured tweets should preserve retweet social context handles."
+  (let ((tweet (chirp-test--sample-retweeted-tweet)))
+    (should (equal (plist-get tweet :retweeted-by) "dotey"))))
+
 (ert-deftest chirp-render-insert-tweet-renders-expanded-links-and-article-preview ()
   "Tweet rendering should show expanded links and article metadata."
   (let ((tweet (chirp-test--sample-article-tweet)))
@@ -169,6 +183,21 @@
         (should (string-match-p "https://t\\.co/repo" rendered))
         (should (string-match-p "https://t\\.co/read" rendered))
         (should (string-match-p "https://github.com/example/project" rendered))))))
+
+(ert-deftest chirp-render-insert-tweet-renders-retweet-social-context ()
+  "Tweet rendering should show who retweeted the current post."
+  (let ((tweet (chirp-test--sample-retweeted-tweet)))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet)))
+      (goto-char (point-min))
+      (should (search-forward "retweeted by @dotey" nil t))
+      (should (chirp-test--face-member-p
+               'chirp-social-context-face
+               (get-text-property (match-beginning 0) 'face))))))
 
 (ert-deftest chirp-render-insert-thread-focus-tweet-renders-full-article-body ()
   "Thread focus rendering should include the full article text."
