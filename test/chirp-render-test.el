@@ -378,7 +378,7 @@
         (should (eq (car-safe (car-safe (get-text-property display-pos 'display)))
                     'slice))
         (should (equal (car (get-text-property display-pos 'display))
-                       '(slice 0 0 1.0 24)))))))
+                       '(slice 0 0 1.0 25)))))))
 
 (ert-deftest chirp-open-at-point-opens-profile-when-point-is-on-avatar ()
   "RET on an avatar should open the author profile, not the tweet thread."

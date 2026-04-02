@@ -457,6 +457,7 @@ When DETAILP is non-nil, use a longer preview."
 (defun chirp-render--insert-sliced-image (image prefix &optional prefix-face)
   "Insert IMAGE as multiple line slices, each preceded by PREFIX."
   (let* ((slice-height (max 1 (chirp-media--chars-xheight 1)))
+         (slice-overlap 1)
          (prepared (chirp-render--prepare-image-for-slicing image))
          (nslices (or (plist-get (cdr prepared) :chirp-nslices)
                       (max 1 (ceiling (/ (cdr (image-size prepared t))
@@ -472,7 +473,7 @@ When DETAILP is non-nil, use a longer preview."
                             line-height t
                             line-spacing 0
                             display ((slice 0 ,(chirp-media--chars-xheight slice-num)
-                                             1.0 ,slice-height)
+                                             1.0 ,(+ slice-height slice-overlap))
                                      ,prepared))))
         (add-text-properties line-start (point)
                              '(line-height t
