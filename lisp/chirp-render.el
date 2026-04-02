@@ -432,7 +432,28 @@ When DETAILP is non-nil, use a longer preview."
       (insert "  "))
     (chirp-render--mark-author-region start (point) handle)))
 
-(defun chirp-render--insert-media-cell (media media-list index)
+(defun chirp-render--insert-sliced-image (image prefix &optional prefix-face)
+  "Insert IMAGE as multiple line slices, each preceded by PREFIX."
+  (let* ((char-height (max 1 (frame-char-height)))
+         (pixel-size (image-size image t))
+         (pixel-height (max 1 (truncate (cdr pixel-size))))
+         (nslices (max 1 (ceiling (/ pixel-height (float char-height))))))
+    (dotimes (slice-num nslices)
+      (chirp-render--insert-prefix prefix prefix-face)
+      (let* ((slice-start (point))
+             (slice-y (* slice-num char-height))
+             (slice-height (max 1 (min char-height (- pixel-height slice-y)))))
+        (insert " ")
+        (add-text-properties
+         slice-start (point)
+         `(rear-nonsticky (display)
+                          display ((slice 0 ,slice-y 1.0 ,slice-height) ,image))))
+      (when (< (1+ slice-num) nslices)
+        (let ((newline-start (point)))
+          (insert "\n")
+          (put-text-property newline-start (point) 'line-height t))))))
+
+(defun chirp-render--insert-media-cell (media media-list index &optional prefix prefix-face)
   "Insert one media cell for MEDIA."
   (let ((start (point))
         (placeholder
@@ -446,9 +467,13 @@ When DETAILP is non-nil, use a longer preview."
            ("animated_gif" "[gif]")
            (_ "[image]"))))
     (if-let* ((thumb (chirp-media-thumbnail-image media)))
-        (insert-image thumb placeholder)
+        (if prefix
+            (chirp-render--insert-sliced-image thumb prefix prefix-face)
+          (insert-image thumb placeholder))
       (if-let* ((fallback (chirp-media-thumbnail-placeholder-image media)))
-          (insert-image fallback placeholder)
+          (if prefix
+              (chirp-render--insert-sliced-image fallback prefix prefix-face)
+            (insert-image fallback placeholder))
         (insert (propertize placeholder 'face 'chirp-media-placeholder-face))))
     (add-text-properties
      start (point)
@@ -461,10 +486,15 @@ When DETAILP is non-nil, use a longer preview."
 (defun chirp-render-insert-media-strip (media-list &optional prefix prefix-face)
   "Insert a grid of thumbnails for MEDIA-LIST."
   (when media-list
-    (chirp-render--insert-prefix prefix prefix-face)
-    (cl-loop for media in media-list
-             for index from 0
-             do (chirp-render--insert-media-cell media media-list index))
+    (if prefix
+        (cl-loop for media in media-list
+                 for index from 0
+                 do (chirp-render--insert-media-cell media media-list index prefix prefix-face)
+                 (insert "\n"))
+      (chirp-render--insert-prefix prefix prefix-face)
+      (cl-loop for media in media-list
+               for index from 0
+               do (chirp-render--insert-media-cell media media-list index)))
     (insert "\n\n")))
 
 (defun chirp-render--insert-tweet (tweet &optional prefix prefix-face show-reply-context article-mode)

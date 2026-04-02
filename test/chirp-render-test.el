@@ -56,6 +56,21 @@
                        ("author" . (("screenName" . "bob")
                                     ("name" . "Bob"))))))))
 
+(defun chirp-test--sample-quoted-tweet-with-media ()
+  "Return a normalized tweet payload whose quoted tweet has media."
+  (chirp-normalize-tweet
+   '(("id" . "998")
+     ("text" . "Commentary https://t.co/quoted")
+     ("urls" . ("https://x.com/bob/status/456"))
+     ("author" . (("screenName" . "alice")
+                  ("name" . "Alice")))
+     ("quotedTweet" . (("id" . "456")
+                       ("text" . "")
+                       ("author" . (("screenName" . "bob")
+                                    ("name" . "Bob")))
+                       ("media" . ((("type" . "photo")
+                                    ("url" . "https://example.com/quoted.jpg")))))))))
+
 (defun chirp-test--sample-retweeted-tweet ()
   "Return a normalized tweet payload with retweet social context."
   (chirp-normalize-tweet
@@ -322,6 +337,25 @@
              (wrap-prefix (get-text-property pos 'wrap-prefix)))
         (should (stringp wrap-prefix))
         (should (string-match-p "^| " wrap-prefix))))))
+
+(ert-deftest chirp-render-quoted-tweet-media-uses-prefix-on-every-image-slice ()
+  "Quoted tweet media should repeat the quote prefix on every image slice line."
+  (let ((tweet (chirp-test--sample-quoted-tweet-with-media))
+        (fake-image '(image :type png :file "/tmp/fake.png")))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) fake-image))
+                ((symbol-function 'chirp-media-thumbnail-placeholder-image) (lambda (&rest _args) nil))
+                ((symbol-function 'image-size) (lambda (&rest _args) '(64 . 96)))
+                ((symbol-function 'frame-char-height) (lambda (&optional _frame) 32)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet)))
+      (let ((quoted-prefix-lines 0))
+        (dolist (line (split-string (buffer-string) "\n"))
+          (when (string-prefix-p "| " line)
+            (setq quoted-prefix-lines (1+ quoted-prefix-lines))))
+        (should (>= quoted-prefix-lines 4))))))
 
 (ert-deftest chirp-open-at-point-opens-profile-when-point-is-on-avatar ()
   "RET on an avatar should open the author profile, not the tweet thread."
