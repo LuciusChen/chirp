@@ -399,7 +399,9 @@ When DETAILP is non-nil, use a longer preview."
            (_ "[image]"))))
     (if-let* ((thumb (chirp-media-thumbnail-image media)))
         (insert-image thumb placeholder)
-      (insert (propertize placeholder 'face 'chirp-media-placeholder-face)))
+      (if-let* ((fallback (chirp-media-thumbnail-placeholder-image media)))
+          (insert-image fallback placeholder)
+        (insert (propertize placeholder 'face 'chirp-media-placeholder-face))))
     (add-text-properties
      start (point)
      `(chirp-media-item ,media

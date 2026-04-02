@@ -813,6 +813,84 @@ When FALLBACK is non-nil, call it if remote extraction fails."
           (svg-image svg :ascent 'center))
       (error nil))))
 
+(defun chirp-media--video-placeholder-image (size &optional animated-gif-p)
+  "Return a fixed-size placeholder image for video-like media of SIZE.
+
+When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
+  (when (display-images-p)
+    (condition-case nil
+        (let* ((svg (svg-create size size))
+               (dark-p (eq (frame-parameter nil 'background-mode) 'dark))
+               (bg (if dark-p "#27303a" "#dfe6ec"))
+               (bg-accent (if dark-p "#313b46" "#e8eef3"))
+               (stroke (if dark-p "#4d5966" "#bcc7d1"))
+               (badge-fill "rgba(0,0,0,0.45)")
+               (badge-stroke "rgba(255,255,255,0.82)")
+               (center (/ size 2.0))
+               (radius (max 10.0 (/ size 6.0)))
+               (left (- center (* radius 0.35)))
+               (top (- center (* radius 0.55)))
+               (bottom (+ center (* radius 0.55)))
+               (right (+ center (* radius 0.55))))
+          (dom-append-child
+           svg
+           (dom-node 'rect
+                     `((x . 0)
+                       (y . 0)
+                       (width . ,size)
+                       (height . ,size)
+                       (rx . 10)
+                       (ry . 10)
+                       (fill . ,bg)
+                       (stroke . ,stroke)
+                       (stroke-width . "1"))))
+          (dom-append-child
+           svg
+           (dom-node 'rect
+                     `((x . 0)
+                       (y . ,(* size 0.58))
+                       (width . ,size)
+                       (height . ,(* size 0.42))
+                       (rx . 10)
+                       (ry . 10)
+                       (fill . ,bg-accent))))
+          (dom-append-child
+           svg
+           (dom-node 'circle
+                     `((cx . ,center)
+                       (cy . ,center)
+                       (r . ,radius)
+                       (fill . ,badge-fill)
+                       (stroke . ,badge-stroke)
+                       (stroke-width . "1.5"))))
+          (dom-append-child
+           svg
+           (dom-node 'polygon
+                     `((points . ,(format "%s,%s %s,%s %s,%s"
+                                          left top
+                                          left bottom
+                                          right center))
+                       (fill . "white"))))
+          (when animated-gif-p
+            (svg-text svg
+                      "GIF"
+                      :x (* size 0.5)
+                      :y (- size 12)
+                      :text-anchor "middle"
+                      :font-size "12"
+                      :font-family "monospace"
+                      :font-weight "700"
+                      :fill (if dark-p "#d9e2ea" "#52606d")))
+          (svg-image svg :ascent 'center))
+      (error nil))))
+
+(defun chirp-media-thumbnail-placeholder-image (media)
+  "Return a stable thumbnail placeholder image for MEDIA, or nil."
+  (when (chirp-media-video-like-p media)
+    (chirp-media--video-placeholder-image
+     chirp-media-thumbnail-size
+     (string= (plist-get media :type) "animated_gif"))))
+
 (defun chirp-media-avatar-image (url)
   "Return a small avatar image descriptor for URL."
   (when-let* ((file (if chirp-media-render-from-cache-only

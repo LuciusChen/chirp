@@ -144,6 +144,17 @@
       (should (equal rendered-file
                      '("/tmp/chirp-video-thumb.jpg" 128))))))
 
+(ert-deftest chirp-media-thumbnail-placeholder-image-exists-for-video-like-media ()
+  "Video-like media should reserve thumbnail space before the real preview arrives."
+  (cl-letf (((symbol-function 'display-images-p)
+             (lambda () t)))
+    (should (chirp-media-thumbnail-placeholder-image
+             '(:type "video" :url "https://example.com/video.mp4")))
+    (should (chirp-media-thumbnail-placeholder-image
+             '(:type "animated_gif" :url "https://example.com/anim.mp4")))
+    (should-not (chirp-media-thumbnail-placeholder-image
+                 '(:type "photo" :url "https://example.com/photo.jpg")))))
+
 (ert-deftest chirp-media-quit-restores-source-buffer-point ()
   "Closing media should restore point and scroll state in the source buffer."
   (let ((source (generate-new-buffer " *chirp-media-source*"))
