@@ -148,36 +148,45 @@
     (should (equal last-message "1 new post."))))
 
 (ert-deftest chirp-timeline-refresh-reports-no-new-posts ()
-  "Refreshing should say when nothing new was added."
-  (let ((render-args nil)
-        (last-message nil))
-    (cl-letf (((symbol-function 'chirp-timeline--render)
-               (lambda (&rest args)
-                 (setq render-args args)))
-              ((symbol-function 'message)
-               (lambda (format-string &rest args)
-                 (setq last-message (apply #'format format-string args)))))
-      (chirp-timeline--handle-feed-success
-       (current-buffer)
-       "For You"
-       #'ignore
-       (list (list :id "2") (list :id "1"))
-       'home
-       20
-       "2"
-       nil
-       t
-       nil
-       (list (list :id "2") (list :id "1"))
-       nil
-       nil
-       nil))
-    (should render-args)
-    (should (equal (nth 6 render-args) "2"))
-    (should (equal last-message "No new posts."))))
+  "Refreshing should say when nothing new was added and avoid a rerender."
+  (let ((buffer (generate-new-buffer " *chirp-refresh-no-change*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (chirp-view-mode)
+          (setq-local chirp--timeline-kind 'home)
+          (setq-local chirp--timeline-limit 20)
+          (setq-local chirp--timeline-count 2)
+          (setq-local chirp--timeline-next-cursor nil)
+          (let ((render-called nil)
+                (last-message nil))
+            (cl-letf (((symbol-function 'chirp-timeline--render)
+                       (lambda (&rest _args)
+                         (setq render-called t)))
+                      ((symbol-function 'message)
+                       (lambda (format-string &rest args)
+                         (setq last-message (apply #'format format-string args)))))
+              (chirp-timeline--handle-feed-success
+               buffer
+               "For You"
+               #'ignore
+               (list (list :id "2") (list :id "1"))
+               'home
+               20
+               "2"
+               nil
+               t
+               2
+               (list (list :id "2") (list :id "1"))
+               nil
+               nil
+               nil))
+            (should-not render-called)
+            (should (equal last-message "No new posts."))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
-(ert-deftest chirp-timeline-refresh-only-counts-new-prefix-posts ()
-  "Refreshing should only count tweets inserted ahead of the current top item."
+(ert-deftest chirp-timeline-refresh-counts-new-interleaved-posts ()
+  "Refreshing should count unseen tweets even when the top recommendation stays put."
   (let ((render-args nil)
         (last-message nil))
     (cl-letf (((symbol-function 'chirp-timeline--render)
@@ -205,8 +214,51 @@
     (should (equal (mapcar (lambda (tweet) (plist-get tweet :id))
                            (nth 3 render-args))
                    '("2" "3" "1")))
-    (should (equal (nth 6 render-args) "2"))
-    (should (equal last-message "No new posts."))))
+    (should-not (nth 6 render-args))
+    (should (equal last-message "1 new post."))))
+
+(ert-deftest chirp-timeline-refresh-skips-rerender-when-page-is-unchanged ()
+  "Refreshing should avoid a full rerender when the visible page is unchanged."
+  (let ((buffer (generate-new-buffer " *chirp-refresh-skip*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (chirp-view-mode)
+          (setq-local chirp--timeline-kind 'home)
+          (setq-local chirp--timeline-limit 20)
+          (setq-local chirp--timeline-count 2)
+          (setq-local chirp--timeline-next-cursor "cursor-next")
+          (setq-local chirp--timeline-exhausted-p nil)
+          (setq-local chirp--request-token 'token)
+          (let ((render-called nil)
+                (last-message nil))
+            (cl-letf (((symbol-function 'chirp-timeline--render)
+                       (lambda (&rest _args)
+                         (setq render-called t)))
+                      ((symbol-function 'message)
+                       (lambda (format-string &rest args)
+                         (setq last-message (apply #'format format-string args)))))
+              (chirp-timeline--handle-feed-success
+               buffer
+               "For You"
+               #'ignore
+               (list (list :id "2") (list :id "1"))
+               'home
+               20
+               "2"
+               nil
+               t
+               2
+               (list (list :id "2") (list :id "1"))
+               nil
+               "cursor-next"
+               nil))
+            (should-not render-called)
+            (should-not chirp--request-token)
+            (should-not chirp--timeline-loading-more)
+            (should (equal chirp--timeline-next-cursor "cursor-next"))
+            (should (equal last-message "No new posts."))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest chirp-timeline-render-displays-buffer-when-ready ()
   "Rendering a fetched timeline should display the target buffer."

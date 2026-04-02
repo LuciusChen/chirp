@@ -195,6 +195,7 @@ When nil, Chirp falls back to a text placeholder for video-like media."
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "n") #'chirp-media-next)
     (define-key map (kbd "p") #'chirp-media-previous)
+    (define-key map (kbd "v") #'chirp-media-play)
     (define-key map (kbd "o") #'chirp-media-browse)
     (define-key map (kbd "q") #'chirp-media-quit)
     map)
@@ -208,6 +209,7 @@ When nil, Chirp falls back to a text placeholder for video-like media."
     (set-keymap-parent map image-mode-map)
     (define-key map (kbd "n") #'chirp-media-next)
     (define-key map (kbd "p") #'chirp-media-previous)
+    (define-key map (kbd "v") #'chirp-media-play)
     (define-key map (kbd "o") #'chirp-media-browse)
     (define-key map (kbd "q") #'chirp-media-quit)
     map)
@@ -867,6 +869,28 @@ When FALLBACK is non-nil, call it if remote extraction fails."
       (browse-url url)
     (user-error "No media URL available")))
 
+(defun chirp-media-play ()
+  "Play the current video or GIF using the configured external player."
+  (interactive)
+  (if-let* ((media (or (chirp-media-at-point)
+                       (nth chirp--media-index chirp--media-list)))
+            ((chirp-media-video-like-p media))
+            (url (plist-get media :url)))
+      (if chirp-video-player-command
+          (let ((process-connection-type nil)
+                process)
+            (setq process
+                  (make-process
+                   :name "chirp-video"
+                   :buffer nil
+                   :command (list chirp-video-player-command url)
+                   :connection-type 'pipe
+                   :noquery t))
+            (set-process-query-on-exit-flag process nil)
+            (message "Opening video with %s" chirp-video-player-command))
+        (browse-url url))
+    (user-error "Current media is not a video or GIF")))
+
 (defun chirp-media--photo-file (media)
   "Return a local file path for photo MEDIA."
   (chirp-media-local-file (plist-get media :url) "media" "jpg"))
@@ -885,6 +909,21 @@ When FALLBACK is non-nil, call it if remote extraction fails."
                     (or (plist-get media :url) "")
                     chirp-video-thumbnail-offset)))
    (chirp-media--cache-subdir "video-thumbnails")))
+
+(defun chirp-media--cached-video-preview-file (media)
+  "Return a cached still preview file for video-like MEDIA, or nil."
+  (or (and-let* ((preview-url (plist-get media :preview-url)))
+        (chirp-media-cached-file preview-url "video-thumbnails" "jpg"))
+      (let ((thumbnail-file (chirp-media--video-thumbnail-file media)))
+        (and (file-exists-p thumbnail-file)
+             thumbnail-file))))
+
+(defun chirp-media--cached-video-preview-image (media)
+  "Return a cached still preview image for video-like MEDIA, or nil."
+  (when-let* ((file (chirp-media--cached-video-preview-file media)))
+    (chirp-media--scaled-image file
+                               chirp-media-view-max-width
+                               chirp-media-view-max-height)))
 
 (defun chirp-media--extract-video-thumbnail (video-file thumbnail-file)
   "Extract a thumbnail from VIDEO-FILE into THUMBNAIL-FILE."
@@ -933,6 +972,9 @@ When FALLBACK is non-nil, call it if remote extraction fails."
         (setq-local chirp--view-title title)
         (setq-local chirp--timeline-kind nil)
         (setq-local chirp--refresh-function nil)
+        (setq-local chirp--rerender-function
+                    (lambda ()
+                      (chirp-media-open media-list index title buffer)))
         (setq-local header-line-format nil)
         (goto-char (point-min)))
       (chirp-display-buffer buffer)
@@ -949,6 +991,10 @@ When FALLBACK is non-nil, call it if remote extraction fails."
       (setq-local chirp--media-title title)
       (setq-local chirp--view-title title)
       (setq-local chirp--timeline-kind nil)
+      (setq-local chirp--refresh-function nil)
+      (setq-local chirp--rerender-function
+                  (lambda ()
+                    (chirp-media-open media-list index title buffer)))
       (setq-local header-line-format nil)
       (let ((inhibit-read-only t))
         (erase-buffer)
@@ -960,10 +1006,16 @@ When FALLBACK is non-nil, call it if remote extraction fails."
             (insert "Image preview unavailable.\n"))
           (insert "\n\n"))
          ((chirp-media-video-like-p media)
+          (if-let* ((image (chirp-media--cached-video-preview-image media)))
+              (progn
+                (insert-image image (format "[video %d]" (1+ index)))
+                (insert "\n\n"))
+            (chirp-media-prefetch-media media buffer)
+            (insert "Preview loading...\n\n"))
           (insert (if (string= (plist-get media :type) "animated_gif")
                       "Animated GIF media.\n\n"
                     "Video media.\n\n"))
-          (insert "Use `o` to open the source URL, or configure `chirp-video-player-command`.\n\n"))
+          (insert "Press `v` to play externally, or `o` to open the source URL.\n\n"))
          (t
           (insert "Unsupported media type.\n\n")))
         (insert (format "Type: %s\n" (or (plist-get media :type) "unknown")))
@@ -1001,24 +1053,17 @@ When FALLBACK is non-nil, call it if remote extraction fails."
     (if (null media)
         (user-error "No media available")
       (progn
-        (if (chirp-media-video-like-p media)
-            (if chirp-video-player-command
-                (progn
-                  (start-process "chirp-video" nil chirp-video-player-command
-                                 (plist-get media :url))
-                  (message "Opening video with %s" chirp-video-player-command))
-              (browse-url (plist-get media :url)))
-          (if (string= (plist-get media :type) "photo")
-              (chirp-media--render-image-buffer
-               buffer
-               media-list
-               safe-index
-               base-title)
-            (chirp-media--render-buffer
+        (if (string= (plist-get media :type) "photo")
+            (chirp-media--render-image-buffer
              buffer
              media-list
              safe-index
-             base-title)))
+             base-title)
+          (chirp-media--render-buffer
+           buffer
+           media-list
+           safe-index
+           base-title))
         (with-current-buffer buffer
           (setq-local chirp--media-source-buffer source-buffer)
           (setq-local chirp--media-source-anchor source-anchor)

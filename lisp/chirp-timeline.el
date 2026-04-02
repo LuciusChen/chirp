@@ -64,12 +64,12 @@
       (plist-get tweet :text)))
 
 (defun chirp-timeline--prepended-new-count (current fetched)
-  "Return how many FETCHED tweets are newly prepended ahead of CURRENT.
+  "Return how many unique FETCHED tweets are not already present in CURRENT.
 
-This only counts the leading run of unseen tweets before the first tweet that
-already exists in CURRENT.  It matches the user's visible notion of \"new posts\"
-at the top of the timeline instead of counting every unseen tweet anywhere in
-the refreshed page."
+For algorithmic timelines, especially \"For You\", the top recommendation can
+stay fixed while newer posts are inserted below it.  Count every unseen tweet in
+the refreshed head page so refresh feedback matches what the user will actually
+see after the merge."
   (if (null current)
       0
     (let ((current-keys (make-hash-table :test #'equal))
@@ -77,15 +77,16 @@ the refreshed page."
           (count 0))
       (dolist (tweet current)
         (puthash (chirp-timeline--tweet-key tweet) t current-keys))
-      (catch 'done
-        (dolist (tweet fetched)
-          (let ((key (chirp-timeline--tweet-key tweet)))
-            (unless (gethash key seen-keys)
-              (puthash key t seen-keys)
-              (if (gethash key current-keys)
-                  (throw 'done count)
-                (setq count (1+ count))))))
-        count))))
+      (dolist (tweet fetched count)
+        (let ((key (chirp-timeline--tweet-key tweet)))
+          (unless (gethash key seen-keys)
+            (puthash key t seen-keys)
+            (unless (gethash key current-keys)
+              (setq count (1+ count)))))))))
+
+(defun chirp-timeline--same-tweets-p (left right)
+  "Return non-nil when LEFT and RIGHT render the same timeline content."
+  (equal left right))
 
 (defun chirp-timeline--merge-refreshed-tweets (current fetched)
   "Return a plist describing how FETCHED should merge over CURRENT."
@@ -192,6 +193,8 @@ newly inserted posts at the top.  Otherwise preserve ANCHOR-ID."
             previous-next-cursor envelope)
   "Handle a successful feed response for BUFFER."
   (ignore previous-count)
+  (with-current-buffer buffer
+    (setq-local chirp--request-token nil))
   (let ((next-cursor (chirp-backend-envelope-next-cursor envelope)))
     (cond
      (loading-more
@@ -226,18 +229,27 @@ newly inserted posts at the top.  Otherwise preserve ANCHOR-ID."
              (effective-next-cursor
               (if (> (length previous-tweets) limit)
                   previous-next-cursor
-                (or next-cursor previous-next-cursor))))
-        (chirp-timeline--render
-         buffer
-         title
-         refresh
-         merged-tweets
-         kind
-         limit
-         (chirp-timeline--refresh-anchor-id new-count anchor-id)
-         previous-exhausted-p
-         t
-         effective-next-cursor)
+                (or next-cursor previous-next-cursor)))
+             (render-needed (not (chirp-timeline--same-tweets-p
+                                  previous-tweets
+                                  merged-tweets))))
+        (if render-needed
+            (chirp-timeline--render
+             buffer
+             title
+             refresh
+             merged-tweets
+             kind
+             limit
+             (chirp-timeline--refresh-anchor-id new-count anchor-id)
+             previous-exhausted-p
+             t
+             effective-next-cursor)
+          (with-current-buffer buffer
+            (setq-local chirp--timeline-loading-more nil)
+            (setq-local chirp--timeline-exhausted-p previous-exhausted-p)
+            (setq-local chirp--timeline-next-cursor effective-next-cursor)
+            (setq-local chirp--timeline-count (length previous-tweets))))
         (message "%s" (chirp-timeline--refresh-message new-count))))
      (t
       (chirp-timeline--render

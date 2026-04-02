@@ -195,6 +195,65 @@
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
+(ert-deftest chirp-media-open-video-renders-viewer-instead-of-launching-player ()
+  "Opening video media from a timeline should stay inside Chirp's viewer."
+  (let ((source (generate-new-buffer " *chirp-video-source*"))
+        (viewer (generate-new-buffer " *chirp-video-viewer*"))
+        played-command
+        prefetched)
+    (unwind-protect
+        (save-window-excursion
+          (switch-to-buffer source)
+          (with-current-buffer source
+            (chirp-view-mode))
+          (cl-letf (((symbol-function 'make-process)
+                     (lambda (&rest args)
+                       (setq played-command (plist-get args :command))
+                       'fake-process))
+                    ((symbol-function 'set-process-query-on-exit-flag)
+                     (lambda (&rest _args)))
+                    ((symbol-function 'chirp-media--cached-video-preview-image)
+                     (lambda (_media) nil))
+                    ((symbol-function 'chirp-media-prefetch-media)
+                     (lambda (_media _buffer)
+                       (setq prefetched t))))
+            (chirp-media-open
+             '((:type "video" :url "https://example.com/video.mp4"))
+             0
+             "Media"
+             viewer)
+            (should-not played-command)
+            (should prefetched)
+            (with-current-buffer viewer
+              (should (derived-mode-p 'chirp-media-view-mode))
+              (should (string-match-p "Press `v` to play externally"
+                                      (buffer-string))))))
+      (dolist (buffer (list source viewer))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest chirp-media-play-launches-configured-player ()
+  "Media viewer playback should launch the configured external player on demand."
+  (let ((chirp-video-player-command "/usr/bin/mpv")
+        captured-command
+        captured-query-flag)
+    (with-temp-buffer
+      (chirp-media-view-mode)
+      (setq-local chirp--media-list '((:type "animated_gif"
+                                       :url "https://example.com/anim.mp4")))
+      (setq-local chirp--media-index 0)
+      (cl-letf (((symbol-function 'make-process)
+                 (lambda (&rest args)
+                   (setq captured-command (plist-get args :command))
+                   'fake-process))
+                ((symbol-function 'set-process-query-on-exit-flag)
+                 (lambda (_process flag)
+                   (setq captured-query-flag flag))))
+        (chirp-media-play)))
+    (should (equal captured-command
+                   '("/usr/bin/mpv" "https://example.com/anim.mp4")))
+    (should (eq captured-query-flag nil))))
+
 (provide 'chirp-media-test)
 
 ;;; chirp-media-test.el ends here
