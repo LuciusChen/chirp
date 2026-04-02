@@ -316,13 +316,13 @@
                'chirp-quoted-tweet-block-face
                (get-text-property (match-beginning 0) 'face)))
       (goto-char (point-min))
-      (search-forward "┃ Quoted body text")
+      (search-forward "   Quoted body text")
       (should (chirp-test--face-member-p
                'chirp-quoted-tweet-block-face
                (get-text-property (match-beginning 0) 'face))))))
 
 (ert-deftest chirp-render-quoted-tweet-lines-use-wrap-prefix ()
-  "Quoted tweet body lines should keep the quote marker on visual wraps."
+  "Quoted tweet body lines should keep the quote indent on visual wraps."
   (let ((tweet (chirp-test--sample-quoted-tweet)))
     (with-temp-buffer
       (chirp-view-mode)
@@ -332,51 +332,36 @@
           (chirp-render-insert-tweet tweet)))
       (goto-char (point-min))
       (search-forward "Quoted body text")
-      (let* ((needle "Quoted body text")
-             (pos (- (point) (length needle)))
-             (wrap-prefix (get-text-property pos 'wrap-prefix)))
-        (should (stringp wrap-prefix))
-        (should (string-match-p "^┃ " wrap-prefix))))))
+        (let* ((needle "Quoted body text")
+               (pos (- (point) (length needle)))
+               (wrap-prefix (get-text-property pos 'wrap-prefix)))
+          (should (stringp wrap-prefix))
+        (should (string-match-p "^   " wrap-prefix))))))
 
-(ert-deftest chirp-render-quoted-tweet-media-uses-full-height-prefix-image ()
-  "Quoted tweet media should render as one image line with a full-height prefix."
+(ert-deftest chirp-render-quoted-tweet-media-uses-indented-single-line-image ()
+  "Quoted tweet media should render as one indented image line."
   (let ((tweet (chirp-test--sample-quoted-tweet-with-media))
-        (fake-image '(image :type png :file "/tmp/fake.png"))
-        (fake-prefix-image '(image :type svg :data "<svg/>")))
+        (fake-image '(image :type png :file "/tmp/fake.png")))
     (with-temp-buffer
       (chirp-view-mode)
       (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
                 ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) fake-image))
                 ((symbol-function 'chirp-media-thumbnail-placeholder-image) (lambda (&rest _args) nil))
-                ((symbol-function 'chirp-render--quote-bar-prefix-image)
-                 (lambda (&rest _args)
-                   fake-prefix-image))
                 ((symbol-function 'image-size)
                  (lambda (image &optional _pixels _frame)
                    (cons 64
                          (or (plist-get (cdr image) :height)
-                             96))))
-                ((symbol-function 'frame-char-height) (lambda (&optional _frame) 32)))
+                             96)))))
         (let ((inhibit-read-only t))
           (chirp-render-insert-tweet tweet)))
       (let ((quoted-prefix-lines 0)
-            prefix-display-pos
-            media-display-pos
+            display-pos
             slice-pos)
         (dolist (line (split-string (buffer-string) "\n"))
-          (when (string-prefix-p "┃ " line)
+          (when (string-prefix-p "   " line)
             (setq quoted-prefix-lines (1+ quoted-prefix-lines))))
-        (setq prefix-display-pos
+        (setq display-pos
               (next-single-property-change (point-min) 'display nil (point-max)))
-        (should prefix-display-pos)
-        (should (eq (car-safe (get-text-property prefix-display-pos 'display))
-                    'image))
-        (setq media-display-pos
-              (next-single-property-change
-               (1+ prefix-display-pos) 'display nil (point-max)))
-        (should media-display-pos)
-        (should (eq (car-safe (get-text-property media-display-pos 'display))
-                    'image))
         (setq slice-pos (point-min))
         (while (and (< slice-pos (point-max))
                     (not (eq (car-safe (car-safe (get-text-property slice-pos 'display)))
@@ -386,7 +371,9 @@
                      (1+ slice-pos) 'display nil (point-max))
                     (point-max))))
         (should (>= quoted-prefix-lines 2))
-        (should (>= (get-text-property media-display-pos 'line-height) 96))
+        (should display-pos)
+        (should (eq (car-safe (get-text-property display-pos 'display))
+                    'image))
         (should-not (< slice-pos (point-max)))))))
 
 (ert-deftest chirp-open-at-point-opens-profile-when-point-is-on-avatar ()

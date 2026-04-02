@@ -8,7 +8,6 @@
 (declare-function nerd-icons-mdicon "nerd-icons" (icon-name &rest args))
 
 (require 'cl-lib)
-(require 'svg)
 (require 'subr-x)
 (require 'chirp-core)
 (require 'chirp-media)
@@ -208,64 +207,12 @@ When ACTIVE is non-nil, prefer the action-specific face for LABEL."
                 (propertize prefix 'face face)
               prefix))))
 
-(defvar chirp-render--quote-bar-prefix-cache (make-hash-table :test #'equal)
-  "Cache of SVG quote-bar prefix images keyed by width/height/color.")
-
 (defun chirp-render--prefix-string (prefix face)
   "Return PREFIX propertized with FACE, or nil."
   (when prefix
     (if face
         (propertize prefix 'face face)
       prefix)))
-
-(defun chirp-render--quote-prefix-p (prefix)
-  "Return non-nil when PREFIX ends with the quote-bar marker."
-  (and prefix (string-suffix-p "┃ " prefix)))
-
-(defun chirp-render--quote-bar-prefix-image (prefix height)
-  "Return an image for PREFIX with a vertical quote bar of HEIGHT pixels."
-  (when (and (display-images-p)
-             (chirp-render--quote-prefix-p prefix))
-    (condition-case nil
-        (let* ((char-width (max 1 (frame-char-width)))
-               (width-chars (max 1 (string-width prefix)))
-               (width-px (* width-chars char-width))
-               (bar-column (max 0 (- width-chars 2)))
-               (bar-width (max 2 (round (* char-width 0.16))))
-               (bar-x (+ (* bar-column char-width)
-                         (round (* char-width 0.35))))
-               (bar-fill (or (face-foreground 'shadow nil t) "#7f8c8d"))
-               (cache-key (list width-px height bar-x bar-width bar-fill)))
-          (or (gethash cache-key chirp-render--quote-bar-prefix-cache)
-              (let ((svg (svg-create width-px height)))
-                (dom-append-child
-                 svg
-                 (dom-node 'rect
-                           `((x . ,bar-x)
-                             (y . 0)
-                             (width . ,bar-width)
-                             (height . ,height)
-                             (rx . 1)
-                             (ry . 1)
-                             (fill . ,bar-fill))))
-                (puthash cache-key
-                         (svg-image svg :ascent 'center)
-                         chirp-render--quote-bar-prefix-cache))))
-      (error nil))))
-
-(defun chirp-render--insert-slice-prefix (prefix height &optional face)
-  "Insert PREFIX for a media slice line of HEIGHT pixels."
-  (if-let* (((chirp-render--quote-prefix-p prefix))
-            (image (chirp-render--quote-bar-prefix-image prefix height)))
-      (let ((start (point)))
-        (insert (chirp-render--prefix-string prefix face))
-        (add-text-properties
-         start (point)
-         `(rear-nonsticky (display)
-                          line-height ,height
-                          line-spacing 0
-                          display ,image)))
-    (chirp-render--insert-prefix prefix face)))
 
 (defun chirp-render--apply-wrap-prefix (start end prefix face)
   "Apply PREFIX as the visual wrap prefix on text between START and END."
@@ -441,7 +388,7 @@ When DETAILP is non-nil, use a longer preview."
   (ignore prefix-face)
   (when-let* ((quoted (plist-get tweet :quoted-tweet)))
     (let* ((start (point))
-           (quoted-prefix (concat (or prefix "") "┃ "))
+           (quoted-prefix (concat (or prefix "") "   "))
            (quoted-prefix-face 'chirp-quoted-tweet-block-face)
            (handle (plist-get quoted :author-handle))
            (name (plist-get quoted :author-name))
@@ -485,82 +432,6 @@ When DETAILP is non-nil, use a longer preview."
       (insert "  "))
     (chirp-render--mark-author-region start (point) handle)))
 
-(defun chirp-render--prepare-image-for-slicing (image)
-  "Return IMAGE resized so each visual slice matches one text line."
-  (if (plist-get (cdr-safe image) :chirp-nslices)
-      image
-    (let* ((char-height (max 1 (frame-char-height)))
-           (display-size (image-size image t))
-           (display-width (max 1 (truncate (car display-size))))
-           (display-height (max 1 (truncate (cdr display-size))))
-           (nslices (max 1 (ceiling (/ display-height (float char-height)))))
-           (target-height (* nslices char-height))
-           (target-width (max 1 (round (* display-width
-                                         (/ (float target-height) display-height)))))
-           (copy (copy-tree image)))
-      (when (and (consp copy)
-                 (listp (cdr copy)))
-        (plist-put (cdr copy) :scale 1.0)
-        (plist-put (cdr copy) :width target-width)
-        (plist-put (cdr copy) :height target-height)
-        (plist-put (cdr copy) :chirp-nslices nslices)
-        (plist-put (cdr copy) :ascent 'center))
-      copy)))
-
-(defun chirp-render--insert-sliced-image (image prefix &optional prefix-face)
-  "Insert IMAGE as multiple line slices, each preceded by PREFIX."
-  (let* ((slice-height (max 1 (chirp-media--chars-xheight 1)))
-         (slice-overlap (max 2 (round (* slice-height 0.35))))
-         (prepared (chirp-render--prepare-image-for-slicing image))
-         (placeholder-width (max 1 (ceiling (car (image-size prepared nil)))))
-         (nslices (or (plist-get (cdr prepared) :chirp-nslices)
-                      (max 1 (ceiling (/ (cdr (image-size prepared t))
-                                         (float slice-height)))))))
-    (dotimes (slice-num nslices)
-      (let ((line-start (point)))
-        (chirp-render--insert-slice-prefix prefix (+ slice-height slice-overlap) prefix-face)
-        (let ((slice-start (point)))
-          (insert (make-string placeholder-width ?\s))
-          (add-text-properties
-           slice-start (point)
-           `(rear-nonsticky (display)
-                            line-height ,(+ slice-height slice-overlap)
-                            line-spacing 0
-                            display ((slice 0 ,(chirp-media--chars-xheight slice-num)
-                                             1.0 ,(+ slice-height slice-overlap))
-                                     ,prepared))))
-        (add-text-properties line-start (point)
-                             `(line-height ,(+ slice-height slice-overlap)
-                                           line-spacing 0))
-        (when (< (1+ slice-num) nslices)
-          (let ((newline-start (point)))
-            (insert "\n")
-            (add-text-properties
-             newline-start (point)
-             '(line-height t
-                           line-spacing 0))))))))
-
-(defun chirp-render--insert-prefixed-media-image (image placeholder prefix &optional prefix-face)
-  "Insert IMAGE on one line with a full-height quote PREFIX.
-Return non-nil when the specialized one-line path was used."
-  (when (chirp-render--quote-prefix-p prefix)
-    (when-let* ((height (and image (max 1 (ceiling (cdr (image-size image t))))))
-                (prefix-image (chirp-render--quote-bar-prefix-image prefix height)))
-      (let ((line-start (point)))
-        (insert (chirp-render--prefix-string prefix prefix-face))
-        (add-text-properties
-         line-start (point)
-         `(rear-nonsticky (display)
-                          line-height ,height
-                          line-spacing 0
-                          display ,prefix-image))
-        (let ((image-start (point)))
-          (insert-image image placeholder)
-          (add-text-properties image-start (point)
-                               `(line-height ,height
-                                             line-spacing 0)))
-        t))))
-
 (defun chirp-render--insert-media-cell (media media-list index &optional prefix prefix-face)
   "Insert one media cell for MEDIA."
   (let ((start (point))
@@ -576,19 +447,15 @@ Return non-nil when the specialized one-line path was used."
            (_ "[image]"))))
     (if-let* ((thumb (chirp-media-thumbnail-image media)))
         (if prefix
-            (or (chirp-render--insert-prefixed-media-image
-                 thumb placeholder prefix prefix-face)
-                (chirp-render--insert-sliced-image
-                 (or (chirp-media-sliced-thumbnail-image media)
-                     thumb)
-                 prefix
-                 prefix-face))
+            (progn
+              (chirp-render--insert-prefix prefix prefix-face)
+              (insert-image thumb placeholder))
           (insert-image thumb placeholder))
       (if-let* ((fallback (chirp-media-thumbnail-placeholder-image media)))
           (if prefix
-              (or (chirp-render--insert-prefixed-media-image
-                   fallback placeholder prefix prefix-face)
-                  (chirp-render--insert-sliced-image fallback prefix prefix-face))
+              (progn
+                (chirp-render--insert-prefix prefix prefix-face)
+                (insert-image fallback placeholder))
             (insert-image fallback placeholder))
         (insert (propertize placeholder 'face 'chirp-media-placeholder-face))))
     (add-text-properties
