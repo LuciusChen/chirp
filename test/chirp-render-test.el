@@ -262,6 +262,23 @@
                'chirp-quoted-tweet-block-face
                (get-text-property (match-beginning 0) 'face))))))
 
+(ert-deftest chirp-render-quoted-tweet-lines-use-wrap-prefix ()
+  "Quoted tweet body lines should keep the quote marker on visual wraps."
+  (let ((tweet (chirp-test--sample-quoted-tweet)))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet)))
+      (goto-char (point-min))
+      (search-forward "Quoted body text")
+      (let* ((needle "Quoted body text")
+             (pos (- (point) (length needle)))
+             (wrap-prefix (get-text-property pos 'wrap-prefix)))
+        (should (stringp wrap-prefix))
+        (should (string-match-p "^| " wrap-prefix))))))
+
 (ert-deftest chirp-open-at-point-opens-profile-when-point-is-on-avatar ()
   "RET on an avatar should open the author profile, not the tweet thread."
   (let ((tweet (chirp-test--sample-quoted-tweet))

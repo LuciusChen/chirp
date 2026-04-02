@@ -579,6 +579,15 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
        (setq-local chirp-compose-temp-attachments temp-attachments)
        (signal (car err) (cdr err))))))
 
+(defun chirp-compose--other-window-showing-buffer (buffer &optional except-window)
+  "Return a live window showing BUFFER other than EXCEPT-WINDOW, or nil."
+  (cl-find-if
+   (lambda (window)
+     (and (window-live-p window)
+          (not (eq window except-window))
+          (eq (window-buffer window) buffer)))
+   (window-list nil 'no-minibuf)))
+
 (defun chirp-compose--close (buffer &optional restore-buffer)
   "Close compose BUFFER and restore RESTORE-BUFFER when possible."
   (when (buffer-live-p buffer)
@@ -590,9 +599,22 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
         (set-buffer-modified-p nil)
         (chirp-compose--cleanup-temp-attachments))
       (when (window-live-p window)
-        (if restore
-            (set-window-buffer window restore)
-          (switch-to-prev-buffer window)))
+        (let ((other-restore-window
+               (and restore
+                    (chirp-compose--other-window-showing-buffer
+                     restore
+                     window))))
+          (cond
+           ((and other-restore-window
+                 (not (one-window-p t)))
+            (condition-case nil
+                (delete-window window)
+              (error
+               (set-window-buffer window restore))))
+           (restore
+            (set-window-buffer window restore))
+           (t
+            (switch-to-prev-buffer window)))))
       (kill-buffer buffer))))
 
 (defun chirp-compose-cancel ()

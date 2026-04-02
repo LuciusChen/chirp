@@ -164,6 +164,14 @@
         (propertize prefix 'face face)
       prefix)))
 
+(defun chirp-render--apply-wrap-prefix (start end prefix face)
+  "Apply PREFIX as the visual wrap prefix on text between START and END."
+  (when (and prefix
+             (< start end))
+    (put-text-property start end
+                       'wrap-prefix
+                       (chirp-render--prefix-string prefix face))))
+
 (defun chirp-render--metric-string (label value &optional active)
   "Return a metric string for LABEL and VALUE.
 
@@ -206,25 +214,31 @@ When ACTIVE is non-nil, emphasize the metric."
   "Insert TEXT and let Emacs wrap it visually in the current window."
   (dolist (line (split-string (chirp-clean-text text) "\n" nil))
     (chirp-render--insert-prefix prefix prefix-face)
-    (insert line)
-    (insert "\n")))
+    (let ((start (point)))
+      (insert line)
+      (insert "\n")
+      (chirp-render--apply-wrap-prefix start (point) prefix prefix-face))))
 
 (defun chirp-render--insert-face-text (text face &optional prefix prefix-face)
   "Insert TEXT using FACE, optionally preceded by PREFIX."
   (dolist (line (split-string (chirp-clean-text text) "\n" nil))
     (chirp-render--insert-prefix prefix prefix-face)
-    (if (string-empty-p line)
-        (insert "")
-      (insert (propertize line 'face face)))
-    (insert "\n")))
+    (let ((start (point)))
+      (if (string-empty-p line)
+          (insert "")
+        (insert (propertize line 'face face)))
+      (insert "\n")
+      (chirp-render--apply-wrap-prefix start (point) prefix prefix-face))))
 
 (defun chirp-render--insert-expanded-urls (urls &optional prefix prefix-face)
   "Insert URLS as separate readable lines."
   (when urls
     (dolist (url urls)
       (chirp-render--insert-prefix prefix prefix-face)
-      (insert (propertize url 'face 'chirp-link-face))
-      (insert "\n"))))
+      (let ((start (point)))
+        (insert (propertize url 'face 'chirp-link-face))
+        (insert "\n")
+        (chirp-render--apply-wrap-prefix start (point) prefix prefix-face)))))
 
 (defun chirp-render--insert-article-preview (tweet &optional detailp prefix prefix-face)
   "Insert article metadata for TWEET.
@@ -309,8 +323,10 @@ When DETAILP is non-nil, use a longer preview."
     (when (and url
                (not (string-empty-p url)))
       (chirp-render--insert-prefix prefix prefix-face)
-      (insert (propertize url 'face 'chirp-link-face))
-      (insert "\n"))
+      (let ((line-start (point)))
+        (insert (propertize url 'face 'chirp-link-face))
+        (insert "\n")
+        (chirp-render--apply-wrap-prefix line-start (point) prefix prefix-face)))
     (insert "\n")
     (chirp-render--mark-url-region start (point) url)))
 
@@ -338,10 +354,14 @@ When DETAILP is non-nil, use a longer preview."
                    (t
                     "Quoted tweet"))))
       (chirp-render--insert-prefix prefix quoted-prefix-face)
-      (insert (propertize label
-                          'face '(chirp-quoted-tweet-face
-                                  chirp-quoted-tweet-block-face)))
-      (insert "\n")
+      (let ((line-start (point)))
+        (chirp-render--insert-prefix quoted-prefix quoted-prefix-face)
+        (insert (propertize label
+                            'face '(chirp-quoted-tweet-face
+                                    chirp-quoted-tweet-block-face)))
+        (insert "\n")
+        (chirp-render--apply-wrap-prefix
+         line-start (point) quoted-prefix quoted-prefix-face))
       (when-let* ((text (chirp-tweet-preview-text quoted 140)))
         (unless (string-empty-p text)
           (chirp-render--insert-filled-text text quoted-prefix quoted-prefix-face)))

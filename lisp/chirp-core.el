@@ -65,6 +65,15 @@ These paths are consulted after `exec-path' when `chirp-cli-command' is nil."
   :type 'integer
   :group 'chirp)
 
+(defcustom chirp-rerender-idle-delay 0.2
+  "Seconds Chirp waits for Emacs to go idle before background rerenders.
+
+This applies to lightweight redraws triggered by async media, link-card, and
+quoted-tweet enrichment.  Using an idle timer keeps cursor and mouse movement
+smoother while background data arrives."
+  :type 'number
+  :group 'chirp)
+
 (defcustom chirp-timeline-load-more-step 20
   "Number of additional posts fetched when loading more timeline items."
   :type 'integer
@@ -260,16 +269,16 @@ Return a token that identifies the current request."
 (defun chirp-request-rerender (&optional buffer delay)
   "Schedule a lightweight rerender of BUFFER after DELAY seconds."
   (let ((target (or buffer (current-buffer)))
-        (wait (or delay 0.1)))
+        (wait (or delay chirp-rerender-idle-delay)))
     (when (buffer-live-p target)
       (with-current-buffer target
         (when (timerp chirp--rerender-timer)
           (cancel-timer chirp--rerender-timer))
         (setq-local
          chirp--rerender-timer
-         (run-at-time
+         (run-with-idle-timer
           wait nil
-         (lambda (buf)
+          (lambda (buf)
             (when (buffer-live-p buf)
               (with-current-buffer buf
                 (setq-local chirp--rerender-timer nil)

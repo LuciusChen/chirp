@@ -185,6 +185,45 @@ Return a list of (compose source foreign)."
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
 
+(ert-deftest chirp-compose-send-deletes-compose-window-when-source-is-still-visible ()
+  "Sending should remove the extra compose window instead of duplicating the source view."
+  (let ((source (generate-new-buffer " *chirp-source-window*"))
+        (compose (generate-new-buffer " *chirp-compose-window*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (let ((source-window (selected-window))
+                (compose-window (split-window-below)))
+            (with-current-buffer source
+              (chirp-view-mode)
+              (setq-local chirp--view-title "For You"))
+            (set-window-buffer source-window source)
+            (set-window-buffer compose-window compose)
+            (select-window compose-window)
+            (with-current-buffer compose
+              (chirp-compose-mode)
+              (setq-local chirp-compose-kind 'post)
+              (setq-local chirp-compose-source-buffer source)
+              (setq-local chirp-compose-attachments nil)
+              (setq-local chirp-compose-temp-attachments nil)
+              (setq-local chirp-compose-sending nil)
+              (erase-buffer)
+              (setq-local chirp-compose-body-start-marker (copy-marker (point-min)))
+              (insert "hello world")
+              (setq-local chirp-compose-body-end-marker (copy-marker (point-max) t)))
+            (cl-letf (((symbol-function 'chirp-actions--perform)
+                       (lambda (_args _on-success &optional _on-error)
+                         nil)))
+              (with-current-buffer compose
+                (chirp-compose-send)))
+            (should-not (buffer-live-p compose))
+            (should (= (length (window-list nil 'no-minibuf)) 1))
+            (should (eq (window-buffer (selected-window)) source))))
+      (when (buffer-live-p compose)
+        (kill-buffer compose))
+      (when (buffer-live-p source)
+        (kill-buffer source)))))
+
 (defun chirp-test--with-tweet-buffer (tweet fn)
   "Create a temporary Chirp view buffer with TWEET and call FN inside it."
   (let ((buffer (generate-new-buffer " *chirp-action-tweet*")))
