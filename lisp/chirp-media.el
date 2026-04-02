@@ -947,12 +947,9 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
       (browse-url url)
     (user-error "No media URL available")))
 
-(defun chirp-media-play ()
-  "Play the current video or GIF using the configured external player."
-  (interactive)
-  (if-let* ((media (or (chirp-media-at-point)
-                       (nth chirp--media-index chirp--media-list)))
-            ((chirp-media-video-like-p media))
+(defun chirp-media--play-external (media)
+  "Open video-like MEDIA in the configured external player."
+  (if-let* (((chirp-media-video-like-p media))
             (url (plist-get media :url)))
       (if chirp-video-player-command
           (let ((process-connection-type nil)
@@ -968,6 +965,13 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
             (message "Opening video with %s" chirp-video-player-command))
         (browse-url url))
     (user-error "Current media is not a video or GIF")))
+
+(defun chirp-media-play ()
+  "Play the current video or GIF using the configured external player."
+  (interactive)
+  (chirp-media--play-external
+   (or (chirp-media-at-point)
+       (nth chirp--media-index chirp--media-list))))
 
 (defun chirp-media--photo-file (media)
   "Return a local file path for photo MEDIA."
@@ -1109,43 +1113,44 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
   "Open MEDIA-LIST at INDEX."
   (let* ((safe-index (max 0 (min index (1- (length media-list)))))
          (media (nth safe-index media-list))
-         (base-title (or title "Chirp Media"))
-         (buffer (or buffer (chirp-buffer)))
-         (source-buffer
-          (or (and (buffer-live-p buffer)
-                   (with-current-buffer buffer
-                     chirp--media-source-buffer))
-              (current-buffer)))
-         (source-anchor
-          (or (and (buffer-live-p buffer)
-                   (with-current-buffer buffer
-                     chirp--media-source-anchor))
-              (and (buffer-live-p source-buffer)
-                   (with-current-buffer source-buffer
-                     (chirp-capture-point-anchor)))))
-         (source-window-state
-          (or (and (buffer-live-p buffer)
-                   (with-current-buffer buffer
-                     chirp--media-source-window-state))
-              (chirp-capture-window-state source-buffer))))
+         (base-title (or title "Chirp Media")))
     (if (null media)
         (user-error "No media available")
-      (progn
-        (if (string= (plist-get media :type) "photo")
-            (chirp-media--render-image-buffer
+      (if (chirp-media-video-like-p media)
+          (chirp-media--play-external media)
+        (let* ((buffer (or buffer (chirp-buffer)))
+               (source-buffer
+                (or (and (buffer-live-p buffer)
+                         (with-current-buffer buffer
+                           chirp--media-source-buffer))
+                    (current-buffer)))
+               (source-anchor
+                (or (and (buffer-live-p buffer)
+                         (with-current-buffer buffer
+                           chirp--media-source-anchor))
+                    (and (buffer-live-p source-buffer)
+                         (with-current-buffer source-buffer
+                           (chirp-capture-point-anchor)))))
+               (source-window-state
+                (or (and (buffer-live-p buffer)
+                         (with-current-buffer buffer
+                           chirp--media-source-window-state))
+                    (chirp-capture-window-state source-buffer))))
+          (if (string= (plist-get media :type) "photo")
+              (chirp-media--render-image-buffer
+               buffer
+               media-list
+               safe-index
+               base-title)
+            (chirp-media--render-buffer
              buffer
              media-list
              safe-index
-             base-title)
-          (chirp-media--render-buffer
-           buffer
-           media-list
-           safe-index
-           base-title))
-        (with-current-buffer buffer
-          (setq-local chirp--media-source-buffer source-buffer)
-          (setq-local chirp--media-source-anchor source-anchor)
-          (setq-local chirp--media-source-window-state source-window-state))))))
+             base-title))
+          (with-current-buffer buffer
+            (setq-local chirp--media-source-buffer source-buffer)
+            (setq-local chirp--media-source-anchor source-anchor)
+            (setq-local chirp--media-source-window-state source-window-state)))))))
 
 (defun chirp-media-open-at-point ()
   "Open the media item at point."

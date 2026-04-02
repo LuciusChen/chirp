@@ -206,12 +206,13 @@
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
-(ert-deftest chirp-media-open-video-renders-viewer-instead-of-launching-player ()
-  "Opening video media from a timeline should stay inside Chirp's viewer."
-  (let ((source (generate-new-buffer " *chirp-video-source*"))
-        (viewer (generate-new-buffer " *chirp-video-viewer*"))
-        played-command
-        prefetched)
+(ert-deftest chirp-media-open-video-launches-player-with-pipe-connection ()
+  "Opening video media should launch the external player without a PTY."
+  (let ((chirp-video-player-command "/usr/bin/mpv")
+        (source (generate-new-buffer " *chirp-video-source*"))
+        captured-command
+        captured-connection-type
+        captured-query-flag)
     (unwind-protect
         (save-window-excursion
           (switch-to-buffer source)
@@ -219,27 +220,21 @@
             (chirp-view-mode))
           (cl-letf (((symbol-function 'make-process)
                      (lambda (&rest args)
-                       (setq played-command (plist-get args :command))
+                       (setq captured-command (plist-get args :command))
+                       (setq captured-connection-type (plist-get args :connection-type))
                        'fake-process))
                     ((symbol-function 'set-process-query-on-exit-flag)
-                     (lambda (&rest _args)))
-                    ((symbol-function 'chirp-media--cached-video-preview-image)
-                     (lambda (_media) nil))
-                    ((symbol-function 'chirp-media-prefetch-media)
-                     (lambda (_media _buffer)
-                       (setq prefetched t))))
+                     (lambda (_process flag)
+                       (setq captured-query-flag flag))))
             (chirp-media-open
              '((:type "video" :url "https://example.com/video.mp4"))
              0
-             "Media"
-             viewer)
-            (should-not played-command)
-            (should prefetched)
-            (with-current-buffer viewer
-              (should (derived-mode-p 'chirp-media-view-mode))
-              (should (string-match-p "Press `v` to play externally"
-                                      (buffer-string))))))
-      (dolist (buffer (list source viewer))
+             "Media"))
+          (should (equal captured-command
+                         '("/usr/bin/mpv" "https://example.com/video.mp4")))
+          (should (eq captured-connection-type 'pipe))
+          (should (eq captured-query-flag nil)))
+      (dolist (buffer (list source))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
