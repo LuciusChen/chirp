@@ -225,6 +225,21 @@
         (should (string-match-p "Research and development agent" rendered))
         (should (string-match-p "https://github.com/example/project" rendered))))))
 
+(ert-deftest chirp-render-metric-string-uses-action-specific-active-faces ()
+  "Liked, bookmarked, and retweeted metrics should use distinct active faces."
+  (should (eq (get-text-property 0 'face
+                                 (chirp-render--metric-string 'like 12 t))
+              'chirp-liked-metric-face))
+  (should (eq (get-text-property 0 'face
+                                 (chirp-render--metric-string 'bookmark 3 t))
+              'chirp-bookmarked-metric-face))
+  (should (eq (get-text-property 0 'face
+                                 (chirp-render--metric-string 'retweet 5 t))
+              'chirp-retweeted-metric-face))
+  (should (eq (get-text-property 0 'face
+                                 (chirp-render--metric-string 'reply 1 nil))
+              'chirp-meta-face)))
+
 (ert-deftest chirp-render-insert-tweet-renders-quoted-tweet-preview ()
   "Tweet rendering should show quoted tweet text instead of just its link."
   (let ((tweet (chirp-test--sample-quoted-tweet)))

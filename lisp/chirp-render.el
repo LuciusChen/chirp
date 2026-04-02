@@ -94,6 +94,51 @@
   "Face used for active tweet state metrics."
   :group 'chirp)
 
+(defface chirp-liked-metric-face
+  '((((class color) (background light))
+     :inherit bold
+     :foreground "#d73a49")
+    (((class color) (background dark))
+     :inherit bold
+     :foreground "#ff7b8b")
+    (t :inherit chirp-active-metric-face))
+  "Face used for liked tweet metrics."
+  :group 'chirp)
+
+(defface chirp-retweeted-metric-face
+  '((((class color) (background light))
+     :inherit bold
+     :foreground "#1f9d55")
+    (((class color) (background dark))
+     :inherit bold
+     :foreground "#4ddf83")
+    (t :inherit chirp-active-metric-face))
+  "Face used for retweeted tweet metrics."
+  :group 'chirp)
+
+(defface chirp-bookmarked-metric-face
+  '((((class color) (background light))
+     :inherit bold
+     :foreground "#2563eb")
+    (((class color) (background dark))
+     :inherit bold
+     :foreground "#6ea8ff")
+    (t :inherit chirp-active-metric-face))
+  "Face used for bookmarked tweet metrics."
+  :group 'chirp)
+
+(defun chirp-render--metric-face (label active)
+  "Return the face used for metric LABEL.
+
+When ACTIVE is non-nil, prefer the action-specific face for LABEL."
+  (if active
+      (pcase label
+        ('like 'chirp-liked-metric-face)
+        ('retweet 'chirp-retweeted-metric-face)
+        ('bookmark 'chirp-bookmarked-metric-face)
+        (_ 'chirp-active-metric-face))
+    'chirp-meta-face))
+
 (defun chirp-render--mark-entry (start end entry)
   "Mark the region from START to END as ENTRY."
   (when (< start end)
@@ -176,9 +221,7 @@
   "Return a metric string for LABEL and VALUE.
 
 When ACTIVE is non-nil, emphasize the metric."
-  (let* ((face (if active
-                   'chirp-active-metric-face
-                 'chirp-meta-face))
+  (let* ((face (chirp-render--metric-face label active))
          (prefix
           (pcase label
             ('reply
