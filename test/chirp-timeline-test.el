@@ -24,6 +24,43 @@
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
+(ert-deftest chirp-quit-current-buffer-keeps-main-timeline-buffers ()
+  "Quitting For You/Following should keep the timeline buffer alive."
+  (let ((previous (generate-new-buffer " *chirp-prev*"))
+        (timeline (generate-new-buffer " *chirp-home*")))
+    (unwind-protect
+        (save-window-excursion
+          (switch-to-buffer previous)
+          (switch-to-buffer timeline)
+          (with-current-buffer timeline
+            (chirp-view-mode)
+            (setq-local chirp--timeline-kind 'home))
+          (chirp-quit-current-buffer)
+          (should (eq (window-buffer (selected-window)) previous))
+          (should (buffer-live-p timeline)))
+      (dolist (buffer (list previous timeline))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest chirp-quit-current-buffer-kills-secondary-chirp-views ()
+  "Quitting secondary Chirp views should still kill the current buffer."
+  (let ((previous (generate-new-buffer " *chirp-prev*"))
+        (detail (generate-new-buffer " *chirp-detail*")))
+    (unwind-protect
+        (save-window-excursion
+          (switch-to-buffer previous)
+          (switch-to-buffer detail)
+          (with-current-buffer detail
+            (chirp-view-mode)
+            (setq-local chirp--timeline-kind nil)
+            (setq-local chirp--view-title "Thread"))
+          (chirp-quit-current-buffer)
+          (should (eq (window-buffer (selected-window)) previous))
+          (should-not (buffer-live-p detail)))
+      (dolist (buffer (list previous detail))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
 (ert-deftest chirp-collect-top-level-tweets-hides-promoted-posts ()
   "Promoted tweets should be dropped when filtering is enabled."
   (let ((chirp-hide-promoted-posts t))

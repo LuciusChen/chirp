@@ -207,10 +207,19 @@ smoother while background data arrives."
       (derived-mode-p 'chirp-media-image-mode)
       (derived-mode-p 'chirp-media-view-mode)))
 
+(defun chirp--persistent-timeline-buffer-p (&optional buffer)
+  "Return non-nil when BUFFER is a main timeline Chirp buffer.
+
+For You and Following stay alive when the user quits the window so they can be
+revisited later."
+  (when (buffer-live-p (or buffer (current-buffer)))
+    (with-current-buffer (or buffer (current-buffer))
+      (memq chirp--timeline-kind '(home following)))))
+
 (defun chirp-quit-current-buffer ()
   "Close the current Chirp buffer."
   (interactive)
-  (quit-window t))
+  (quit-window (not (chirp--persistent-timeline-buffer-p))))
 
 (defun chirp-show-loading (buffer title refresh)
   "Display a loading message in BUFFER for TITLE.
