@@ -316,13 +316,35 @@ Return a list of (compose source foreign)."
   "The Chirp transient should expose only toggle entries for like/RT/bookmark."
   (let ((retweet-suffix (transient-get-suffix 'chirp-dispatch "R"))
         (like-suffix (transient-get-suffix 'chirp-dispatch "l"))
-        (bookmark-suffix (transient-get-suffix 'chirp-dispatch "B")))
+        (bookmark-suffix (transient-get-suffix 'chirp-dispatch "B"))
+        (copy-suffix (transient-get-suffix 'chirp-dispatch "y")))
     (should (eq (plist-get (cdr retweet-suffix) :command) 'chirp-toggle-retweet-at-point))
     (should (eq (plist-get (cdr like-suffix) :command) 'chirp-toggle-like-at-point))
     (should (eq (plist-get (cdr bookmark-suffix) :command) 'chirp-toggle-bookmark-at-point))
+    (should (eq (plist-get (cdr copy-suffix) :command) 'chirp-copy-fixupx-url-at-point))
     (should-error (transient-get-suffix 'chirp-dispatch "T"))
     (should-error (transient-get-suffix 'chirp-dispatch "u"))
     (should-error (transient-get-suffix 'chirp-dispatch "U"))))
+
+(ert-deftest chirp-copy-fixupx-url-at-point-copies-rewritten-url ()
+  "Copy action should rewrite tweet URLs from x.com to fixupx.com."
+  (let (captured-url last-message)
+    (chirp-test--with-tweet-buffer
+     '(:kind tweet
+       :id "123"
+       :author-handle "alice"
+       :url "https://x.com/alice/status/123")
+     (lambda (_buffer)
+       (cl-letf (((symbol-function 'kill-new)
+                  (lambda (text &optional _replace)
+                    (setq captured-url text)))
+                 ((symbol-function 'message)
+                  (lambda (format-string &rest args)
+                    (setq last-message (apply #'format format-string args)))))
+         (chirp-copy-fixupx-url-at-point)
+         (should (equal captured-url "https://fixupx.com/alice/status/123"))
+         (should (equal last-message
+                        "Copied https://fixupx.com/alice/status/123")))))))
 
 (provide 'chirp-actions-test)
 

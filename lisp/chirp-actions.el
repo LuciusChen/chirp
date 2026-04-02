@@ -684,6 +684,15 @@ When TWEET is non-nil, use it as the reply or quote target."
   (interactive)
   (chirp-compose-open 'quote (chirp-actions--tweet-at-point)))
 
+(defun chirp-copy-fixupx-url-at-point ()
+  "Copy the current tweet URL as a fixupx.com link."
+  (interactive)
+  (if-let* ((url (chirp-tweet-fixupx-url (chirp-actions--tweet-at-point))))
+      (progn
+        (kill-new url)
+        (message "Copied %s" url))
+    (user-error "Current tweet has no canonical URL")))
+
 (transient-define-prefix chirp-dispatch ()
   "Show Chirp write actions."
   [["Timeline"
@@ -700,6 +709,7 @@ When TWEET is non-nil, use it as the reply or quote target."
     ("B" "Bookmark" chirp-toggle-bookmark-at-point)]
    ["Other"
     ("d" "Delete" chirp-delete-at-point)
+    ("y" "Copy fixupx" chirp-copy-fixupx-url-at-point)
     ("o" "Browser" chirp-browse-at-point)]])
 
 (provide 'chirp-actions)

@@ -709,6 +709,14 @@ Return a token that identifies the current request."
         (push (format "https://x.com/%s/status/%s" handle id) urls)))
     (delete-dups (delq nil urls))))
 
+(defun chirp-tweet-fixupx-url (tweet)
+  "Return a fixupx.com URL for TWEET, or nil when unavailable."
+  (when-let* ((url (car (chirp-tweet-candidate-urls tweet))))
+    (replace-regexp-in-string
+     "\\`https?://\\(?:www\\.\\)?\\(?:x\\.com\\|twitter\\.com\\)"
+     "https://fixupx.com"
+     url)))
+
 (defun chirp-tweet-preview-text (tweet &optional max-length)
   "Return a short one-paragraph preview for TWEET."
   (let* ((limit (or max-length 160))
