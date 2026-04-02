@@ -432,18 +432,49 @@ When DETAILP is non-nil, use a longer preview."
       (insert "  "))
     (chirp-render--mark-author-region start (point) handle)))
 
-(defun chirp-render--insert-prefixed-media-image (image placeholder prefix prefix-face)
-  "Insert IMAGE with PREFIX, replacing the quote bar glyph with a tall image bar."
-  (chirp-render--insert-prefix prefix prefix-face)
-  (when (and prefix
-             (string-suffix-p "│ " prefix))
-    (when-let* ((height (truncate (cdr (image-size image t))))
-                (bar (chirp-media-quote-bar-image height)))
-      (add-text-properties
-       (- (point) 2) (1- (point))
-       `(rear-nonsticky (display)
-                        display ,bar))))
-  (insert-image image placeholder))
+(defun chirp-render--prepare-image-for-slicing (image)
+  "Return IMAGE resized so each visual slice matches one text line."
+  (let* ((char-height (max 1 (frame-char-height)))
+         (display-size (image-size image t))
+         (display-width (max 1 (truncate (car display-size))))
+         (display-height (max 1 (truncate (cdr display-size))))
+         (nslices (max 1 (ceiling (/ display-height (float char-height)))))
+         (target-height (* nslices char-height))
+         (target-width (max 1 (round (* display-width
+                                       (/ (float target-height) display-height)))))
+         (copy (copy-tree image)))
+    (when (and (consp copy)
+               (listp (cdr copy)))
+      (plist-put (cdr copy) :scale 1.0)
+      (plist-put (cdr copy) :width target-width)
+      (plist-put (cdr copy) :height target-height)
+      (plist-put (cdr copy) :chirp-nslices nslices)
+      (plist-put (cdr copy) :ascent 'center))
+    copy))
+
+(defun chirp-render--insert-sliced-image (image prefix &optional prefix-face)
+  "Insert IMAGE as multiple line slices, each preceded by PREFIX."
+  (let* ((char-height (max 1 (frame-char-height)))
+         (prepared (chirp-render--prepare-image-for-slicing image))
+         (nslices (or (plist-get (cdr prepared) :chirp-nslices)
+                      (max 1 (ceiling (/ (cdr (image-size prepared t))
+                                         (float char-height)))))))
+    (dotimes (slice-num nslices)
+      (chirp-render--insert-prefix prefix prefix-face)
+      (let ((slice-start (point)))
+        (insert " ")
+        (add-text-properties
+         slice-start (point)
+         `(rear-nonsticky (display)
+                          display ((slice 0 ,(* slice-num char-height) 1.0 ,char-height)
+                                   ,prepared))))
+      (when (< (1+ slice-num) nslices)
+        (let ((newline-start (point)))
+          (insert "\n")
+          (add-text-properties
+           newline-start (point)
+           '(line-height t
+                         line-spacing 0)))))))
 
 (defun chirp-render--insert-media-cell (media media-list index &optional prefix prefix-face)
   "Insert one media cell for MEDIA."
@@ -460,11 +491,11 @@ When DETAILP is non-nil, use a longer preview."
            (_ "[image]"))))
     (if-let* ((thumb (chirp-media-thumbnail-image media)))
         (if prefix
-            (chirp-render--insert-prefixed-media-image thumb placeholder prefix prefix-face)
+            (chirp-render--insert-sliced-image thumb prefix prefix-face)
           (insert-image thumb placeholder))
       (if-let* ((fallback (chirp-media-thumbnail-placeholder-image media)))
           (if prefix
-              (chirp-render--insert-prefixed-media-image fallback placeholder prefix prefix-face)
+              (chirp-render--insert-sliced-image fallback prefix prefix-face)
             (insert-image fallback placeholder))
         (insert (propertize placeholder 'face 'chirp-media-placeholder-face))))
     (add-text-properties
