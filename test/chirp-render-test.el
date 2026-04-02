@@ -316,7 +316,7 @@
                'chirp-quoted-tweet-block-face
                (get-text-property (match-beginning 0) 'face)))
       (goto-char (point-min))
-      (search-forward "| Quoted body text")
+      (search-forward "│ Quoted body text")
       (should (chirp-test--face-member-p
                'chirp-quoted-tweet-block-face
                (get-text-property (match-beginning 0) 'face))))))
@@ -336,7 +336,7 @@
              (pos (- (point) (length needle)))
              (wrap-prefix (get-text-property pos 'wrap-prefix)))
         (should (stringp wrap-prefix))
-        (should (string-match-p "^| " wrap-prefix))))))
+        (should (string-match-p "^│ " wrap-prefix))))))
 
 (ert-deftest chirp-render-quoted-tweet-media-uses-prefix-on-every-image-slice ()
   "Quoted tweet media should repeat the quote prefix on every image slice line."
@@ -347,13 +347,17 @@
       (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
                 ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) fake-image))
                 ((symbol-function 'chirp-media-thumbnail-placeholder-image) (lambda (&rest _args) nil))
-                ((symbol-function 'image-size) (lambda (&rest _args) '(64 . 96)))
+                ((symbol-function 'image-size)
+                 (lambda (image &optional _pixels _frame)
+                   (if (plist-get (cdr image) :scale)
+                       '(64 . 96)
+                     '(128 . 192))))
                 ((symbol-function 'frame-char-height) (lambda (&optional _frame) 32)))
         (let ((inhibit-read-only t))
           (chirp-render-insert-tweet tweet)))
       (let ((quoted-prefix-lines 0))
         (dolist (line (split-string (buffer-string) "\n"))
-          (when (string-prefix-p "| " line)
+          (when (string-prefix-p "│ " line)
             (setq quoted-prefix-lines (1+ quoted-prefix-lines))))
         (should (>= quoted-prefix-lines 4))))))
 
