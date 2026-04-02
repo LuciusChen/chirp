@@ -8,6 +8,7 @@
 (declare-function nerd-icons-mdicon "nerd-icons" (icon-name &rest args))
 
 (require 'cl-lib)
+(require 'svg)
 (require 'subr-x)
 (require 'chirp-core)
 (require 'chirp-media)
@@ -207,12 +208,64 @@ When ACTIVE is non-nil, prefer the action-specific face for LABEL."
                 (propertize prefix 'face face)
               prefix))))
 
+(defvar chirp-render--quote-bar-prefix-cache (make-hash-table :test #'equal)
+  "Cache of SVG quote-bar prefix images keyed by width/height/color.")
+
 (defun chirp-render--prefix-string (prefix face)
   "Return PREFIX propertized with FACE, or nil."
   (when prefix
     (if face
         (propertize prefix 'face face)
       prefix)))
+
+(defun chirp-render--quote-prefix-p (prefix)
+  "Return non-nil when PREFIX ends with the quote-bar marker."
+  (and prefix (string-suffix-p "┃ " prefix)))
+
+(defun chirp-render--quote-bar-prefix-image (prefix height)
+  "Return an image for PREFIX with a vertical quote bar of HEIGHT pixels."
+  (when (and (display-images-p)
+             (chirp-render--quote-prefix-p prefix))
+    (condition-case nil
+        (let* ((char-width (max 1 (frame-char-width)))
+               (width-chars (max 1 (string-width prefix)))
+               (width-px (* width-chars char-width))
+               (bar-column (max 0 (- width-chars 2)))
+               (bar-width (max 2 (round (* char-width 0.16))))
+               (bar-x (+ (* bar-column char-width)
+                         (round (* char-width 0.35))))
+               (bar-fill (or (face-foreground 'shadow nil t) "#7f8c8d"))
+               (cache-key (list width-px height bar-x bar-width bar-fill)))
+          (or (gethash cache-key chirp-render--quote-bar-prefix-cache)
+              (let ((svg (svg-create width-px height)))
+                (dom-append-child
+                 svg
+                 (dom-node 'rect
+                           `((x . ,bar-x)
+                             (y . 0)
+                             (width . ,bar-width)
+                             (height . ,height)
+                             (rx . 1)
+                             (ry . 1)
+                             (fill . ,bar-fill))))
+                (puthash cache-key
+                         (svg-image svg :ascent 'center)
+                         chirp-render--quote-bar-prefix-cache))))
+      (error nil))))
+
+(defun chirp-render--insert-slice-prefix (prefix height &optional face)
+  "Insert PREFIX for a media slice line of HEIGHT pixels."
+  (if-let* (((chirp-render--quote-prefix-p prefix))
+            (image (chirp-render--quote-bar-prefix-image prefix height)))
+      (let ((start (point)))
+        (insert (chirp-render--prefix-string prefix face))
+        (add-text-properties
+         start (point)
+         `(rear-nonsticky (display)
+                          line-height t
+                          line-spacing 0
+                          display ,image)))
+    (chirp-render--insert-prefix prefix face)))
 
 (defun chirp-render--apply-wrap-prefix (start end prefix face)
   "Apply PREFIX as the visual wrap prefix on text between START and END."
@@ -459,14 +512,15 @@ When DETAILP is non-nil, use a longer preview."
   (let* ((slice-height (max 1 (chirp-media--chars-xheight 1)))
          (slice-overlap 1)
          (prepared (chirp-render--prepare-image-for-slicing image))
+         (placeholder-width (max 1 (ceiling (car (image-size prepared nil)))))
          (nslices (or (plist-get (cdr prepared) :chirp-nslices)
                       (max 1 (ceiling (/ (cdr (image-size prepared t))
                                          (float slice-height)))))))
     (dotimes (slice-num nslices)
       (let ((line-start (point)))
-        (chirp-render--insert-prefix prefix prefix-face)
+        (chirp-render--insert-slice-prefix prefix (+ slice-height slice-overlap) prefix-face)
         (let ((slice-start (point)))
-          (insert " ")
+          (insert (make-string placeholder-width ?\s))
           (add-text-properties
            slice-start (point)
            `(rear-nonsticky (display)
