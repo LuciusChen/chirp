@@ -80,6 +80,9 @@
   "Face used for reply context lines in thread views."
   :group 'chirp)
 
+(defconst chirp-render-list-reply-prefix "  "
+  "Indentation used for direct replies to the previous visible tweet.")
+
 (defface chirp-social-context-face
   '((t :inherit shadow))
   "Face used for home/following social context lines."
@@ -418,6 +421,46 @@ When DETAILP is non-nil, use a longer preview."
       (add-face-text-property start (point) 'chirp-quoted-tweet-block-face 'append)
       (chirp-render--mark-subentry start (point) quoted))))
 
+(defun chirp-render--insert-list-reply-context (tweet reply-parent &optional prefix prefix-face)
+  "Insert a lightweight reply context line for TWEET above REPLY-PARENT."
+  (let ((parent-id (plist-get reply-parent :id))
+        (handle (or (plist-get tweet :reply-to-handle)
+                    (plist-get reply-parent :author-handle))))
+    (when parent-id
+      (chirp-render--insert-prefix prefix prefix-face)
+      (let ((start (point)))
+        (insert (propertize
+                 (if handle
+                     (format "↳ replying to @%s above" handle)
+                   "↳ reply to above")
+                 'face 'chirp-thread-reply-context-face))
+        (insert "\n")
+        (chirp-render--apply-wrap-prefix start (point) prefix prefix-face)
+        (add-text-properties
+         start (max start (1- (point)))
+         `(chirp-reply-parent-id ,parent-id
+                                 pointer hand))))))
+
+(defun chirp-render--list-reply-parent (tweet previous)
+  "Return PREVIOUS when TWEET looks like a reply to it."
+  (when previous
+    (let ((reply-to-id (plist-get tweet :reply-to-id))
+          (reply-to-handle (plist-get tweet :reply-to-handle))
+          (conversation-id (plist-get tweet :conversation-id))
+          (previous-id (plist-get previous :id))
+          (previous-handle (plist-get previous :author-handle))
+          (previous-conversation-id (plist-get previous :conversation-id)))
+      (when (or (and reply-to-id
+                     previous-id
+                     (equal reply-to-id previous-id))
+                (and reply-to-handle
+                     previous-handle
+                     (equal reply-to-handle previous-handle)
+                     conversation-id
+                     (or (equal conversation-id previous-id)
+                         (equal conversation-id previous-conversation-id))))
+        previous))))
+
 (defun chirp-render--insert-avatar (url &optional handle)
   "Insert an avatar for URL when possible."
   (let ((start (point)))
@@ -476,7 +519,8 @@ When DETAILP is non-nil, use a longer preview."
                do (chirp-render--insert-media-cell media media-list index)))
     (insert "\n\n")))
 
-(defun chirp-render--insert-tweet (tweet &optional prefix prefix-face show-reply-context article-mode)
+(defun chirp-render--insert-tweet
+    (tweet &optional prefix prefix-face show-reply-context article-mode reply-parent)
   "Insert TWEET at point, optionally prefixed for thread rendering."
   (let* ((start (point))
          (author (or (plist-get tweet :author-name) "Unknown"))
@@ -484,6 +528,8 @@ When DETAILP is non-nil, use a longer preview."
          (retweeted-by (plist-get tweet :retweeted-by))
          (created-at (plist-get tweet :created-at))
          (meta-start nil))
+    (when reply-parent
+      (chirp-render--insert-list-reply-context tweet reply-parent prefix prefix-face))
     (when retweeted-by
       (chirp-render--insert-prefix prefix prefix-face)
       (insert (propertize (format "retweeted by @%s" retweeted-by)
@@ -551,6 +597,21 @@ When DETAILP is non-nil, use a longer preview."
 (defun chirp-render-insert-tweet (tweet)
   "Insert TWEET at point."
   (chirp-render--insert-tweet tweet))
+
+(defun chirp-render-insert-tweet-list (tweets)
+  "Insert TWEETS, highlighting direct replies to the previous visible tweet."
+  (let (previous)
+    (dolist (tweet tweets)
+      (if-let* ((reply-parent (chirp-render--list-reply-parent tweet previous)))
+          (chirp-render--insert-tweet
+           tweet
+           chirp-render-list-reply-prefix
+           nil
+           nil
+           nil
+           reply-parent)
+        (chirp-render-insert-tweet tweet))
+      (setq previous tweet))))
 
 (defun chirp-render-insert-thread-focus-tweet (tweet)
   "Insert the focus TWEET in a thread view."

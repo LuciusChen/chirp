@@ -36,8 +36,7 @@
               (chirp-render-insert-user-summary saved-user)
               (chirp-render-insert-section "Recent Posts")
               (if saved-tweets
-                  (dolist (tweet saved-tweets)
-                    (chirp-render-insert-tweet tweet))
+                  (chirp-render-insert-tweet-list saved-tweets)
                 (chirp-render-insert-empty "No recent posts returned."))))
            (with-current-buffer buffer
              (setq-local chirp--rerender-function

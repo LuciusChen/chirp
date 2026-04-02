@@ -309,6 +309,24 @@ Return a token that identifies the current request."
       (and (> (point) (point-min))
            (get-text-property (1- (point)) 'chirp-author-profile-url))))
 
+(defun chirp-reply-parent-id-at-point ()
+  "Return the inline reply parent id stored at point, or nil."
+  (or (get-text-property (point) 'chirp-reply-parent-id)
+      (and (> (point) (point-min))
+           (get-text-property (1- (point)) 'chirp-reply-parent-id))))
+
+(defun chirp-open-reply-parent-at-point ()
+  "Jump to the visible parent tweet referenced at point."
+  (interactive)
+  (if-let* ((parent-id (chirp-reply-parent-id-at-point)))
+      (or (chirp-goto-entry-id parent-id)
+          (let ((entry (chirp-entry-at-point)))
+            (when (eq (plist-get entry :kind) 'tweet)
+              (chirp-thread-open entry parent-id)
+              t))
+          (user-error "No parent tweet available at point"))
+    (user-error "No reply parent available at point")))
+
 (defun chirp-show-error (buffer title refresh message)
   "Display MESSAGE in BUFFER for TITLE."
   (chirp-render-into-buffer
@@ -501,13 +519,15 @@ Return a token that identifies the current request."
   (interactive)
   (if-let* ((author-handle (chirp-author-handle-at-point)))
       (chirp-profile-open author-handle)
-    (if (chirp-media-at-point)
-        (chirp-media-open-at-point)
-      (pcase (plist-get (chirp-entry-at-point) :kind)
-        ('tweet (chirp-thread-open (chirp-entry-at-point)
-                                   (plist-get (chirp-entry-at-point) :id)))
-        ('user (chirp-profile-open (plist-get (chirp-entry-at-point) :handle)))
-        (_ (user-error "No entry at point"))))))
+    (if-let* (((chirp-reply-parent-id-at-point)))
+        (chirp-open-reply-parent-at-point)
+      (if (chirp-media-at-point)
+          (chirp-media-open-at-point)
+        (pcase (plist-get (chirp-entry-at-point) :kind)
+          ('tweet (chirp-thread-open (chirp-entry-at-point)
+                                     (plist-get (chirp-entry-at-point) :id)))
+          ('user (chirp-profile-open (plist-get (chirp-entry-at-point) :handle)))
+          (_ (user-error "No entry at point")))))))
 
 (defun chirp-open-primary-media ()
   "Open the media at point or the first media of the current entry."

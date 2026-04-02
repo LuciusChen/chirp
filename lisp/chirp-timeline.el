@@ -144,8 +144,7 @@ newly inserted posts at the top.  Otherwise preserve ANCHOR-ID."
      buffer title refresh
      (lambda ()
        (if tweets
-           (dolist (tweet tweets)
-             (chirp-render-insert-tweet tweet))
+           (chirp-render-insert-tweet-list tweets)
          (chirp-render-insert-empty "No posts returned."))))
     (with-current-buffer buffer
       (setq-local chirp--timeline-kind kind)

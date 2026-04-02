@@ -80,6 +80,39 @@
      ("author" . (("screenName" . "alice")
                   ("name" . "Alice"))))))
 
+(defun chirp-test--sample-adjacent-reply-tweets ()
+  "Return two tweets where the second replies to the first."
+  (list
+   (chirp-normalize-tweet
+    '(("id" . "100")
+      ("text" . "Parent body text")
+      ("author" . (("screenName" . "dingyi")
+                   ("name" . "Ding")))))
+   (chirp-normalize-tweet
+    '(("id" . "101")
+      ("text" . "Reply body text")
+      ("inReplyToStatusId" . "100")
+      ("inReplyToScreenName" . "dingyi")
+      ("author" . (("screenName" . "nowazhu")
+                   ("name" . "Nowa")))))))
+
+(defun chirp-test--sample-adjacent-reply-tweets-with-handle-fallback ()
+  "Return two tweets linked by handle and conversation metadata."
+  (list
+   (chirp-normalize-tweet
+    '(("id" . "200")
+      ("conversationId" . "200")
+      ("text" . "Parent body text")
+      ("author" . (("screenName" . "dingyi")
+                   ("name" . "Ding")))))
+   (chirp-normalize-tweet
+    '(("id" . "201")
+      ("conversationId" . "200")
+      ("text" . "Reply body text")
+      ("inReplyToScreenName" . "dingyi")
+      ("author" . (("screenName" . "nowazhu")
+                   ("name" . "Nowa")))))))
+
 (defun chirp-test--sample-note-tweet-with-entity-links ()
   "Return a normalized note tweet whose expanded URLs live in entity metadata."
   (chirp-normalize-tweet
@@ -213,6 +246,61 @@
       (should (chirp-test--face-member-p
                'chirp-social-context-face
                (get-text-property (match-beginning 0) 'face))))))
+
+(ert-deftest chirp-render-insert-tweet-list-links-adjacent-replies ()
+  "List rendering should indent replies to the previous visible tweet."
+  (pcase-let ((`(,parent ,reply) (chirp-test--sample-adjacent-reply-tweets)))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet-list (list parent reply))))
+      (goto-char (point-min))
+      (should (search-forward "↳ replying to @dingyi above" nil t))
+      (should (equal (get-text-property (match-beginning 0) 'chirp-reply-parent-id)
+                     "100"))
+      (goto-char (point-min))
+      (search-forward "Reply body text")
+      (let* ((needle "Reply body text")
+             (pos (- (point) (length needle)))
+             (wrap-prefix (get-text-property pos 'wrap-prefix)))
+        (should (stringp wrap-prefix))
+        (should (string-match-p "^  " wrap-prefix))))))
+
+(ert-deftest chirp-open-at-point-jumps-to-visible-reply-parent ()
+  "RET on an inline reply context should jump to the visible parent tweet."
+  (pcase-let ((`(,parent ,reply) (chirp-test--sample-adjacent-reply-tweets)))
+    (let (opened-thread)
+      (with-temp-buffer
+        (chirp-view-mode)
+        (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                  ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) nil))
+                  ((symbol-function 'chirp-thread-open)
+                   (lambda (&rest args)
+                     (setq opened-thread args))))
+          (let ((inhibit-read-only t))
+            (chirp-render-insert-tweet-list (list parent reply)))
+          (goto-char (point-min))
+          (search-forward "↳ replying to @dingyi above")
+          (goto-char (match-beginning 0))
+          (chirp-open-at-point)
+          (should (equal (plist-get (chirp-entry-at-point) :id) "100"))
+          (should-not opened-thread))))))
+
+(ert-deftest chirp-render-insert-tweet-list-links-replies-via-handle-fallback ()
+  "List rendering should also catch replies linked by handle and conversation."
+  (pcase-let ((`(,parent ,reply) (chirp-test--sample-adjacent-reply-tweets-with-handle-fallback)))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet-list (list parent reply))))
+      (goto-char (point-min))
+      (should (search-forward "↳ replying to @dingyi above" nil t))
+      (should (equal (get-text-property (match-beginning 0) 'chirp-reply-parent-id)
+                     "200")))))
 
 (ert-deftest chirp-render-insert-thread-focus-tweet-renders-full-article-body ()
   "Thread focus rendering should include the full article text."
