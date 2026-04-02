@@ -14,6 +14,15 @@
 (declare-function chirp-timeline-open-home "chirp-timeline" ())
 (declare-function chirp-timeline-open-following "chirp-timeline" ())
 
+(defcustom chirp-compose-temporary-directory
+  (expand-file-name "compose/" (locate-user-emacs-file "chirp/"))
+  "Directory used for temporary clipboard image attachments.
+
+Files created here are owned by the compose buffer and removed when the draft is
+cancelled, the attachment is removed, or the send completes."
+  :type 'directory
+  :group 'chirp)
+
 (defvar-local chirp-compose-kind nil
   "Compose action kind for the current Chirp compose buffer.")
 
@@ -61,6 +70,13 @@
   (setq-local header-line-format nil)
   (setq-local require-final-newline nil)
   (visual-line-mode 1))
+
+(defun chirp-compose--temp-directory ()
+  "Return the directory used for temporary compose attachments."
+  (let ((dir (file-name-as-directory
+              (expand-file-name chirp-compose-temporary-directory))))
+    (make-directory dir t)
+    dir))
 
 (defun chirp-actions--tweet-at-point ()
   "Return the tweet entry at point, or signal a user error."
@@ -478,7 +494,10 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
          (attached nil))
     (unless backend
       (user-error "No clipboard image available or no supported paste backend"))
-    (setq file (make-temp-file "chirp-compose-" nil
+    (setq file (make-temp-file
+                (expand-file-name "chirp-compose-"
+                                  (chirp-compose--temp-directory))
+                nil
                                (plist-get backend :extension)))
     (unwind-protect
         (progn

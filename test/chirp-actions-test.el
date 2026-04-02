@@ -109,6 +109,37 @@ Return a list of (compose source foreign)."
         (when (buffer-live-p source)
           (kill-buffer source))))))
 
+(ert-deftest chirp-compose-paste-image-uses-chirp-temp-directory ()
+  "Clipboard pastes should create temporary files under Chirp's own cache tree."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "")))
+    (let* ((temp-root (make-temp-file "chirp-compose-dir-" t))
+           (chirp-compose-temporary-directory temp-root)
+           pasted-path)
+      (unwind-protect
+          (progn
+            (cl-letf (((symbol-function 'chirp-compose--clipboard-image-backend)
+                       (lambda ()
+                         '(:kind stdout :program "fake" :args nil :extension ".png")))
+                      ((symbol-function 'chirp-compose--paste-image-to-file)
+                       (lambda (_backend file)
+                         (setq pasted-path file)
+                         (with-temp-file file
+                           (insert "png"))
+                         t)))
+              (with-current-buffer compose
+                (chirp-compose-paste-image)
+                (should (string-prefix-p (file-name-as-directory temp-root)
+                                         pasted-path))
+                (should (member pasted-path chirp-compose-attachments))
+                (should (member pasted-path chirp-compose-temp-attachments)))))
+        (when (buffer-live-p compose)
+          (kill-buffer compose))
+        (when (buffer-live-p source)
+          (kill-buffer source))
+        (when (file-directory-p temp-root)
+          (delete-directory temp-root t))))))
+
 (ert-deftest chirp-compose-empty-body-allows-insert-and-delete ()
   "An empty compose buffer should keep the body editable."
   (let ((buffer (generate-new-buffer " *chirp-compose-empty*")))
