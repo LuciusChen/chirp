@@ -754,6 +754,31 @@ When FALLBACK is non-nil, call it if remote extraction fails."
     (cons (max 1 (round (* width scale)))
           (max 1 (round (* height scale))))))
 
+(defun chirp-media-quote-bar-image (height)
+  "Return a full-height quote bar image with HEIGHT pixels."
+  (when (and (display-images-p)
+             (numberp height)
+             (> height 0))
+    (condition-case nil
+        (let* ((dark-p (eq (frame-parameter nil 'background-mode) 'dark))
+               (width 8)
+               (bar-width 2)
+               (x (/ (- width bar-width) 2.0))
+               (color (if dark-p "#8b98a5" "#93a1ad"))
+               (svg (svg-create width height)))
+          (dom-append-child
+           svg
+           (dom-node 'rect
+                     `((x . ,x)
+                       (y . 0)
+                       (width . ,bar-width)
+                       (height . ,height)
+                       (rx . 1)
+                       (ry . 1)
+                       (fill . ,color))))
+          (svg-image svg :ascent 100))
+      (error nil))))
+
 (defun chirp-media--mime-type (file)
   "Return a MIME type for FILE."
   (pcase (downcase (or (file-name-extension file) ""))

@@ -338,8 +338,8 @@
         (should (stringp wrap-prefix))
         (should (string-match-p "^│ " wrap-prefix))))))
 
-(ert-deftest chirp-render-quoted-tweet-media-uses-prefix-on-every-image-slice ()
-  "Quoted tweet media should repeat the quote prefix on every image slice line."
+(ert-deftest chirp-render-quoted-tweet-media-uses-tall-quote-bar-image ()
+  "Quoted tweet media should replace the bar glyph with a full-height image bar."
   (let ((tweet (chirp-test--sample-quoted-tweet-with-media))
         (fake-image '(image :type png :file "/tmp/fake.png")))
     (with-temp-buffer
@@ -348,24 +348,23 @@
                 ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) fake-image))
                 ((symbol-function 'chirp-media-thumbnail-placeholder-image) (lambda (&rest _args) nil))
                 ((symbol-function 'image-size)
-                 (lambda (image &optional _pixels _frame)
-                   (if (plist-get (cdr image) :scale)
-                       '(64 . 96)
-                     '(128 . 192))))
-                ((symbol-function 'frame-char-height) (lambda (&optional _frame) 32)))
+                 (lambda (_image &optional _pixels _frame)
+                   '(128 . 128)))
+                ((symbol-function 'chirp-media-quote-bar-image)
+                 (lambda (_height)
+                   '(image :type svg :data "<svg/>"))))
         (let ((inhibit-read-only t))
           (chirp-render-insert-tweet tweet)))
       (let ((quoted-prefix-lines 0)
-            (zero-spacing-newlines 0))
+            media-pos)
         (dolist (line (split-string (buffer-string) "\n"))
           (when (string-prefix-p "│ " line)
             (setq quoted-prefix-lines (1+ quoted-prefix-lines))))
-        (dotimes (idx (1- (point-max)))
-          (when (and (eq (char-after (1+ idx)) ?\n)
-                     (eq (get-text-property (1+ idx) 'line-spacing) 0))
-            (setq zero-spacing-newlines (1+ zero-spacing-newlines))))
-        (should (>= quoted-prefix-lines 4))
-        (should (>= zero-spacing-newlines 2))))))
+        (setq media-pos (next-single-property-change
+                         (point-min) 'chirp-media-item nil (point-max)))
+        (should (= quoted-prefix-lines 2))
+        (should media-pos)
+        (should (equal (car-safe (get-text-property media-pos 'display)) 'image))))))
 
 (ert-deftest chirp-open-at-point-opens-profile-when-point-is-on-avatar ()
   "RET on an avatar should open the author profile, not the tweet thread."
