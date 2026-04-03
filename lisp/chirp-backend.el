@@ -402,7 +402,9 @@ When FOLLOWING is non-nil, fetch the Following timeline."
    (chirp-backend--thread-cache-key tweet-or-url)
    (lambda (success error)
      (chirp-backend-request
-      (list "tweet" tweet-or-url)
+      (list "tweet"
+            tweet-or-url
+            "--max" (number-to-string chirp-thread-max-results))
       (lambda (data envelope)
         (funcall success (chirp-collect-tweets data) envelope))
       error))

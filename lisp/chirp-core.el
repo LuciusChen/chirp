@@ -84,6 +84,14 @@ smoother while background data arrives."
   :type 'integer
   :group 'chirp)
 
+(defcustom chirp-thread-max-results 20
+  "Number of tweets to request when opening a thread.
+
+This caps the initial `twitter tweet --max` fetch so Chirp does not inherit the
+CLI's larger default reply count."
+  :type 'integer
+  :group 'chirp)
+
 (defcustom chirp-hide-promoted-posts t
   "When non-nil, hide tweets explicitly marked as promoted by twitter-cli."
   :type 'boolean

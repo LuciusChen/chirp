@@ -118,6 +118,21 @@
     (should (equal tweets '((:id "1"))))
     (should (equal next-cursor "cursor-next"))))
 
+(ert-deftest chirp-backend-thread-passes-explicit-max-results ()
+  "Thread requests should pass Chirp's explicit thread fetch limit."
+  (let ((chirp-thread-max-results 20)
+        captured-args)
+    (cl-letf (((symbol-function 'chirp-backend-request)
+               (lambda (args callback &optional _errback)
+                 (setq captured-args args)
+                 (funcall callback 'raw '((ok . t)))))
+              ((symbol-function 'chirp-collect-tweets)
+               (lambda (_data)
+                 (list (list :id "1")))))
+      (chirp-backend-thread "123" #'ignore))
+    (should (equal captured-args
+                   '("tweet" "123" "--max" "20")))))
+
 (provide 'chirp-backend-test)
 
 ;;; chirp-backend-test.el ends here
