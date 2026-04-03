@@ -184,7 +184,9 @@ newly inserted posts at the top.  Otherwise preserve ANCHOR-ID."
     (when display-p
       (chirp-display-buffer buffer))
     (chirp-media-prefetch-tweets tweets buffer)
-    (chirp-enrich-quoted-tweets tweets buffer)))
+    (chirp-enrich-quoted-tweets tweets buffer)
+    (with-current-buffer buffer
+      (chirp--schedule-thread-prefetch-at-point))))
 
 (defun chirp-timeline--handle-feed-success
     (buffer title refresh tweets kind limit anchor-id
