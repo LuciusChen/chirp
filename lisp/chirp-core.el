@@ -8,7 +8,6 @@
 (require 'subr-x)
 (require 'browse-url)
 
-(declare-function chirp-backend-thread "chirp-backend" (tweet-or-url callback &optional errback))
 (declare-function chirp-backend-tweet "chirp-backend" (tweet-id callback &optional errback))
 (declare-function chirp-profile-open "chirp-profile" (handle &optional buffer))
 (declare-function chirp-thread-open "chirp-thread" (tweet-or-url &optional focus-id buffer))
@@ -93,16 +92,6 @@ CLI's larger default reply count."
   :type 'integer
   :group 'chirp)
 
-(defcustom chirp-thread-prefetch-enabled t
-  "When non-nil, idle on a timeline tweet prefetches its thread into cache."
-  :type 'boolean
-  :group 'chirp)
-
-(defcustom chirp-thread-prefetch-idle-delay 0.35
-  "Seconds to stay idle on a timeline tweet before prefetching its thread."
-  :type 'number
-  :group 'chirp)
-
 (defcustom chirp-hide-promoted-posts t
   "When non-nil, hide tweets explicitly marked as promoted by twitter-cli."
   :type 'boolean
@@ -144,15 +133,6 @@ CLI's larger default reply count."
 (defvar-local chirp--rerender-timer nil
   "Pending timer used to coalesce lightweight Chirp rerenders.")
 
-(defvar-local chirp--thread-prefetch-timer nil
-  "Pending timer used to prefetch the current timeline tweet's thread.")
-
-(defvar-local chirp--thread-prefetch-last-id nil
-  "Most recent tweet id whose thread was prefetched for this buffer.")
-
-(defvar-local chirp--thread-prefetch-pending-id nil
-  "Tweet id whose thread prefetch is currently in flight for this buffer.")
-
 (put 'chirp--request-token 'permanent-local t)
 (put 'chirp--timeline-kind 'permanent-local t)
 (put 'chirp--timeline-limit 'permanent-local t)
@@ -161,9 +141,6 @@ CLI's larger default reply count."
 (put 'chirp--timeline-load-more-function 'permanent-local t)
 (put 'chirp--timeline-exhausted-p 'permanent-local t)
 (put 'chirp--rerender-function 'permanent-local t)
-(put 'chirp--thread-prefetch-last-id 'permanent-local t)
-(put 'chirp--thread-prefetch-pending-id 'permanent-local t)
-
 (defvar chirp-tweet-state-overrides (make-hash-table :test #'equal)
   "Map tweet ids to local state overrides such as likes and bookmarks.")
 
@@ -198,7 +175,6 @@ CLI's larger default reply count."
   (setq-local truncate-lines nil)
   (setq-local word-wrap t)
   (setq-local line-spacing 0.1)
-  (add-hook 'post-command-hook #'chirp--schedule-thread-prefetch-at-point nil t)
   (visual-line-mode 1))
 
 (defun chirp--base-buffer-stem ()
@@ -299,11 +275,6 @@ Return a token that identifies the current request."
     (when (timerp chirp--rerender-timer)
       (cancel-timer chirp--rerender-timer))
     (setq-local chirp--rerender-timer nil)
-    (when (timerp chirp--thread-prefetch-timer)
-      (cancel-timer chirp--thread-prefetch-timer))
-    (setq-local chirp--thread-prefetch-timer nil)
-    (setq-local chirp--thread-prefetch-last-id nil)
-    (setq-local chirp--thread-prefetch-pending-id nil)
     (setq-local header-line-format nil)
     (chirp--apply-buffer-name buffer title)
     (let ((inhibit-read-only t))
@@ -332,55 +303,6 @@ Return a token that identifies the current request."
                     (funcall chirp--rerender-function)
                     (chirp-restore-window-state window-state))))))
           target))))))
-
-(defun chirp--thread-prefetch-entry-at-point ()
-  "Return the current timeline tweet suitable for thread prefetch, or nil."
-  (when (and chirp-thread-prefetch-enabled
-             (memq chirp--timeline-kind '(home following))
-             (eq (current-buffer) (window-buffer (selected-window))))
-    (let ((entry (chirp-entry-at-point)))
-      (when (and (eq (plist-get entry :kind) 'tweet)
-                 (plist-get entry :id))
-        entry))))
-
-(defun chirp--prefetch-thread-at-point-now (buffer tweet-id)
-  "Prefetch TWEET-ID for BUFFER when point is still on that tweet."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (setq-local chirp--thread-prefetch-timer nil)
-      (when-let* ((entry (chirp--thread-prefetch-entry-at-point))
-                  ((equal (plist-get entry :id) tweet-id)))
-        (setq-local chirp--thread-prefetch-pending-id tweet-id)
-        (chirp-backend-thread
-         tweet-id
-         (lambda (_tweets _envelope)
-           (when (buffer-live-p buffer)
-             (with-current-buffer buffer
-               (when (equal chirp--thread-prefetch-pending-id tweet-id)
-                 (setq-local chirp--thread-prefetch-pending-id nil)
-                 (setq-local chirp--thread-prefetch-last-id tweet-id)))))
-         (lambda (_message)
-           (when (buffer-live-p buffer)
-             (with-current-buffer buffer
-               (when (equal chirp--thread-prefetch-pending-id tweet-id)
-                 (setq-local chirp--thread-prefetch-pending-id nil))))))))))
-
-(defun chirp--schedule-thread-prefetch-at-point ()
-  "Schedule a background thread prefetch for the current timeline tweet."
-  (when (timerp chirp--thread-prefetch-timer)
-    (cancel-timer chirp--thread-prefetch-timer))
-  (setq-local chirp--thread-prefetch-timer nil)
-  (when-let* ((entry (chirp--thread-prefetch-entry-at-point))
-              (tweet-id (plist-get entry :id))
-              ((not (equal tweet-id chirp--thread-prefetch-last-id)))
-              ((not (equal tweet-id chirp--thread-prefetch-pending-id))))
-    (setq-local chirp--thread-prefetch-timer
-                (run-with-idle-timer
-                 chirp-thread-prefetch-idle-delay
-                 nil
-                 #'chirp--prefetch-thread-at-point-now
-                 (current-buffer)
-                 tweet-id))))
 
 (defun chirp-author-handle-at-point ()
   "Return the author handle stored at point, or nil."

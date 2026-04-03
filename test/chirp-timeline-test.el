@@ -316,8 +316,7 @@
                    (lambda (target)
                      (setq displayed target)))
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
-                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
-                  ((symbol-function 'chirp--schedule-thread-prefetch-at-point) #'ignore))
+                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
           (chirp-timeline--render buffer "For You" #'ignore (list (list :id "1")) 'home 20 nil nil t))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))
@@ -328,8 +327,7 @@
   (let ((buffer (generate-new-buffer " *chirp-next-cursor*")))
     (unwind-protect
         (cl-letf (((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
-                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
-                  ((symbol-function 'chirp--schedule-thread-prefetch-at-point) #'ignore))
+                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
           (chirp-timeline--render
            buffer
            "For You"
@@ -343,30 +341,6 @@
            "cursor-next")
           (with-current-buffer buffer
             (should (equal chirp--timeline-next-cursor "cursor-next"))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest chirp-timeline-render-schedules-current-thread-prefetch ()
-  "Timeline render should queue prefetch for the current tweet."
-  (let ((buffer (generate-new-buffer " *chirp-prefetch-schedule*"))
-        scheduled)
-    (unwind-protect
-        (cl-letf (((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
-                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
-                  ((symbol-function 'chirp--schedule-thread-prefetch-at-point)
-                   (lambda ()
-                     (setq scheduled t))))
-          (chirp-timeline--render
-           buffer
-           "For You"
-           #'ignore
-           (list (list :kind 'tweet :id "1"))
-           'home
-           20
-           nil
-           nil
-           nil)
-          (should scheduled))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -389,8 +363,7 @@
                    (lambda (target)
                      (setq displayed target)))
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
-                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
-                  ((symbol-function 'chirp--schedule-thread-prefetch-at-point) #'ignore))
+                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
           (chirp-timeline--render buffer "For You" #'ignore (list (list :id "1")) 'home 20 nil nil nil)
           (should-not displayed))
       (when (buffer-live-p buffer)
@@ -403,46 +376,13 @@
         (tweet-b '(:id "2" :text "Beta line one\nBeta line two")))
     (unwind-protect
         (with-current-buffer buffer
-          (cl-letf (((symbol-function 'chirp--schedule-thread-prefetch-at-point) #'ignore))
-            (chirp-timeline--render buffer "For You" #'ignore (list tweet-a tweet-b) 'home 20 nil nil nil)
-            (search-forward "Beta line two")
-            (let ((before (point)))
-              (funcall chirp--rerender-function)
-              (should (equal (plist-get (chirp-entry-at-point) :id) "2"))
-              (should (> (point) (chirp--current-entry-start)))
-              (should (equal before (point))))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest chirp-thread-prefetch-at-point-fetches-current-home-entry ()
-  "Idle prefetch should fetch the current Home timeline tweet once point is stable."
-  (let ((buffer (generate-new-buffer " *chirp-prefetch-now*"))
-        fetched-id)
-    (unwind-protect
-        (save-window-excursion
-          (switch-to-buffer buffer)
-          (cl-letf (((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
-                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
-                    ((symbol-function 'chirp--schedule-thread-prefetch-at-point) #'ignore)
-                    ((symbol-function 'chirp-backend-thread)
-                     (lambda (tweet-id callback &optional _errback)
-                       (setq fetched-id tweet-id)
-                       (funcall callback (list (list :id tweet-id)) nil))))
-            (chirp-timeline--render
-             buffer
-             "For You"
-             #'ignore
-             (list (list :kind 'tweet :id "123" :text "hello"))
-             'home
-             20
-             nil
-             nil
-             t)
-            (with-current-buffer buffer
-              (chirp--prefetch-thread-at-point-now buffer "123")
-              (should (equal fetched-id "123"))
-              (should (equal chirp--thread-prefetch-last-id "123"))
-              (should-not chirp--thread-prefetch-pending-id))))
+          (chirp-timeline--render buffer "For You" #'ignore (list tweet-a tweet-b) 'home 20 nil nil nil)
+          (search-forward "Beta line two")
+          (let ((before (point)))
+            (funcall chirp--rerender-function)
+            (should (equal (plist-get (chirp-entry-at-point) :id) "2"))
+            (should (> (point) (chirp--current-entry-start)))
+            (should (equal before (point)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
