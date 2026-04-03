@@ -65,6 +65,16 @@ These paths are consulted after `exec-path' when `chirp-cli-command' is nil."
   :type 'integer
   :group 'chirp)
 
+(defcustom chirp-timeline-refresh-max-results 10
+  "Number of head posts requested when refreshing a timeline with `g'.
+
+Refreshing only needs a recent head window to detect and merge newer posts, so
+this can stay smaller than `chirp-default-max-results' for better latency.
+Set it to nil to refresh using the current timeline size instead."
+  :type '(choice (const :tag "Use current timeline size" nil)
+                 integer)
+  :group 'chirp)
+
 (defcustom chirp-rerender-idle-delay 0.2
   "Seconds Chirp waits for Emacs to go idle before background rerenders.
 

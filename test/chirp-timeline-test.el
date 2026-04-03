@@ -407,6 +407,30 @@
       (should-not (nth 5 captured))
       (should (equal (nth 6 captured) "cursor-next")))))
 
+(ert-deftest chirp-timeline-refresh-uses-smaller-head-window ()
+  "Refreshing should fetch a smaller head page when configured."
+  (with-temp-buffer
+    (chirp-view-mode)
+    (let ((chirp-timeline-refresh-max-results 10)
+          captured)
+      (cl-letf (((symbol-function 'chirp-backend-feed)
+                 (lambda (_callback _following _errback max-results cursor)
+                   (setq captured (list max-results cursor)))))
+        (chirp-timeline--open 'home 20 nil (current-buffer) nil t))
+      (should (equal captured '(10 nil))))))
+
+(ert-deftest chirp-timeline-refresh-can-use-current-limit ()
+  "Refreshing should keep the old fetch size when the head-window override is disabled."
+  (with-temp-buffer
+    (chirp-view-mode)
+    (let ((chirp-timeline-refresh-max-results nil)
+          captured)
+      (cl-letf (((symbol-function 'chirp-backend-feed)
+                 (lambda (_callback _following _errback max-results cursor)
+                   (setq captured (list max-results cursor)))))
+        (chirp-timeline--open 'home 20 nil (current-buffer) nil t))
+      (should (equal captured '(20 nil))))))
+
 (ert-deftest chirp-window-state-restore-preserves-point-and-scroll ()
   "Window-state helpers should preserve point and scroll position."
   (let ((buffer (generate-new-buffer " *chirp-window-state*")))

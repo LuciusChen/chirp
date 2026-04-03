@@ -278,9 +278,17 @@ When REFRESHING is non-nil, merge newer tweets at the top on success."
   (let* ((buffer (or buffer (chirp-buffer)))
          (title (chirp-timeline--title kind))
          (limit (or limit chirp-default-max-results))
-         (fetch-count (if loading-more
-                          (max 1 chirp-timeline-load-more-step)
-                        limit))
+         (refresh-count (and refreshing
+                             (or (and chirp-timeline-refresh-max-results
+                                      (max 1 chirp-timeline-refresh-max-results))
+                                 limit)))
+         (fetch-count (cond
+                       (loading-more
+                        (max 1 chirp-timeline-load-more-step))
+                       (refreshing
+                        (min limit refresh-count))
+                       (t
+                        limit)))
          (refresh (chirp-timeline--refresh-function kind buffer))
          (previous-count (and (or loading-more refreshing)
                               (chirp-timeline--current-count buffer)))
