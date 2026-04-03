@@ -190,6 +190,43 @@ Return a list of (compose source foreign)."
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
 
+(ert-deftest chirp-compose-source-buffer-prefers-minibuffer-origin-view ()
+  "Source buffer lookup should prefer the minibuffer-origin Chirp view."
+  (let ((thread (generate-new-buffer " *chirp-thread-source*"))
+        (home (generate-new-buffer " *chirp-home-source*"))
+        (foreign (generate-new-buffer " *chirp-transient*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer home
+            (chirp-view-mode)
+            (setq-local chirp--view-title "For You"))
+          (with-current-buffer thread
+            (chirp-view-mode)
+            (setq-local chirp--view-title "Thread"))
+          (with-current-buffer foreign
+            (cl-letf (((symbol-function 'active-minibuffer-window)
+                       (lambda ()
+                         t))
+                      ((symbol-function 'selected-window)
+                       (lambda ()
+                         'selected-win))
+                      ((symbol-function 'minibuffer-selected-window)
+                       (lambda ()
+                         'origin-win))
+                      ((symbol-function 'window-live-p)
+                       (lambda (window)
+                         (memq window '(selected-win origin-win))))
+                      ((symbol-function 'window-buffer)
+                       (lambda (window)
+                         (pcase window
+                           ('selected-win home)
+                           ('origin-win thread)
+                           (_ foreign)))))
+              (should (eq (chirp-compose--source-buffer) thread)))))
+      (dolist (buffer (list thread home foreign))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
 (ert-deftest chirp-quote-send-closes-buffer-and-restores-source-view ()
   "Quote sending should close the compose buffer and return to the source view."
   (pcase-let* ((`(,compose ,source ,foreign)

@@ -641,10 +641,25 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
   (interactive)
   (chirp-compose--close (current-buffer) chirp-compose-source-buffer))
 
+(defun chirp-compose--view-buffer-p (buffer)
+  "Return non-nil when BUFFER is a live Chirp view buffer."
+  (and (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (derived-mode-p 'chirp-view-mode))))
+
 (defun chirp-compose--source-buffer ()
   "Return the view buffer that should own a newly opened compose buffer."
-  (or (window-buffer (selected-window))
-      (current-buffer)))
+  (let* ((current (current-buffer))
+         (selected (window-buffer (selected-window)))
+         (minibuffer-source
+          (and (active-minibuffer-window)
+               (window-live-p (minibuffer-selected-window))
+               (window-buffer (minibuffer-selected-window)))))
+    (or (and (chirp-compose--view-buffer-p current) current)
+        (and (chirp-compose--view-buffer-p minibuffer-source) minibuffer-source)
+        (and (chirp-compose--view-buffer-p selected) selected)
+        selected
+        current)))
 
 (defun chirp-compose-open (kind &optional tweet)
   "Open a compose buffer for KIND.
