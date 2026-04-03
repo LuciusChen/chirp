@@ -354,6 +354,49 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest chirp-timeline-open-list-prompts-from-accessible-lists ()
+  "List selection should prompt with accessible lists and open the chosen id."
+  (let ((buffer (generate-new-buffer " *chirp-list-picker-test*"))
+        captured-target
+        render-args
+        seen-prompt
+        seen-collection)
+    (unwind-protect
+        (cl-letf (((symbol-function 'chirp-backend-lists-sync)
+                   (lambda ()
+                     '((("id" . "1956792682412345678")
+                        ("name" . "Emacs")
+                        ("mode" . "private")
+                        ("sources" . ("owned"))
+                        ("owner" . (("screenName" . "lucius")))))))
+                  ((symbol-function 'completing-read)
+                   (lambda (prompt collection &rest _args)
+                     (setq seen-prompt prompt
+                           seen-collection collection)
+                     (caar collection)))
+                  ((symbol-function 'chirp-begin-background-request)
+                   (lambda (_buffer _title)
+                     'token))
+                  ((symbol-function 'chirp-request-current-p)
+                   (lambda (_buffer _token)
+                     t))
+                  ((symbol-function 'chirp-backend-list)
+                   (lambda (list-target callback &optional _errback)
+                     (setq captured-target list-target)
+                     (funcall callback (list (list :id "1")) nil)))
+                  ((symbol-function 'chirp-timeline--render)
+                   (lambda (&rest args)
+                     (setq render-args args))))
+          (chirp-timeline-open-list nil buffer)
+          (should (equal seen-prompt "List (1): "))
+          (should (string-match-p "@lucius" (caar seen-collection)))
+          (should (string-match-p "owned" (caar seen-collection)))
+          (should (equal captured-target "1956792682412345678"))
+          (should (equal (nth 1 render-args) "List: 1956792682412345678"))
+          (should (equal (nth 3 render-args) '((:id "1")))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest chirp-timeline-open-list-uses-list-title-and-renderer ()
   "List view should fetch tweets and render under a list-specific title."
   (let ((buffer (generate-new-buffer " *chirp-list-test*"))

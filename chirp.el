@@ -57,9 +57,11 @@
   (chirp-timeline-open-likes))
 
 ;;;###autoload
-(defun chirp-list (list-id-or-url)
-  "Open a list timeline for LIST-ID-OR-URL."
-  (interactive "sList ID or URL: ")
+(defun chirp-list (&optional list-id-or-url)
+  "Open a list timeline.
+
+When LIST-ID-OR-URL is nil, prompt from the authenticated account's lists."
+  (interactive)
   (chirp-timeline-open-list list-id-or-url))
 
 ;;;###autoload

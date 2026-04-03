@@ -38,6 +38,50 @@
   "Return the buffer title for list TARGET."
   (format "List: %s" (chirp-timeline--list-id target)))
 
+(defun chirp-timeline--list-source-labels (list-info)
+  "Return human-readable source labels for LIST-INFO."
+  (mapcar (lambda (source)
+            (pcase source
+              ("owned" "owned")
+              ("subscribed" "subscribed")
+              ("member" "member")
+              (_ source)))
+          (or (chirp-get list-info "sources") '())))
+
+(defun chirp-timeline--list-candidate (list-info)
+  "Return a minibuffer display candidate for LIST-INFO."
+  (let* ((name (or (chirp-get list-info "name")
+                   (chirp-get list-info "fullName")
+                   (chirp-get list-info "id")))
+         (owner (chirp-get-in list-info '("owner" "screenName")))
+         (mode (chirp-get list-info "mode"))
+         (sources (chirp-timeline--list-source-labels list-info))
+         (list-id (chirp-get list-info "id"))
+         (parts (delq nil
+                      (list (and owner (format "@%s" owner))
+                            (and mode (not (string-empty-p mode)) mode)
+                            (and sources (string-join sources ", "))
+                            list-id))))
+    (if parts
+        (format "%s (%s)" name (string-join parts " · "))
+      name)))
+
+(defun chirp-timeline--read-list-target ()
+  "Prompt for one accessible list and return its id."
+  (let* ((lists (chirp-backend-lists-sync))
+         (choices (mapcar (lambda (list-info)
+                            (cons (chirp-timeline--list-candidate list-info)
+                                  (chirp-get list-info "id")))
+                          lists)))
+    (unless choices
+      (user-error "No accessible lists found"))
+    (cdr (assoc (completing-read
+                 (format "List (%d): " (length choices))
+                 choices
+                 nil
+                 t)
+                choices))))
+
 (defun chirp-timeline--following-p (kind)
   "Return non-nil when KIND is the Following timeline."
   (eq kind 'following))
@@ -451,13 +495,15 @@ When HANDLE is nil, resolve the currently authenticated account first."
               (lambda () (chirp-timeline-open-likes nil buffer))
               message))))))))
 
-(defun chirp-timeline-open-list (list-target &optional buffer)
+(defun chirp-timeline-open-list (&optional list-target buffer)
   "Open the timeline for LIST-TARGET.
 
 LIST-TARGET may be a numeric list id or a full list URL."
-  (interactive (list (read-string "List ID or URL: ")))
+  (interactive)
   (let* ((buffer (or buffer (chirp-buffer)))
-         (clean-target (string-trim (format "%s" list-target)))
+         (target (or list-target
+                     (chirp-timeline--read-list-target)))
+         (clean-target (string-trim (format "%s" target)))
          (title (chirp-timeline--list-title clean-target))
          (refresh (lambda () (chirp-timeline-open-list clean-target buffer))))
     (when (string-empty-p clean-target)

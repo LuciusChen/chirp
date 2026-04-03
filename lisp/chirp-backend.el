@@ -17,6 +17,9 @@
 (defconst chirp-backend--compact-json-env "TWITTER_CLI_COMPACT_JSON=1"
   "Environment flag that asks twitter-cli for compact structured JSON.")
 
+(defconst chirp-backend--lists-cache-key '(:lists)
+  "Cache key for the authenticated account's list catalog.")
+
 (defcustom chirp-backend-read-cache-ttl 15
   "Seconds to keep successful thread/profile/article reads in memory.
 
@@ -333,6 +336,45 @@ Use STDOUT-BUFFER and STDERR-BUFFER for process output."
   (condition-case nil
       (chirp-backend--parse-json-buffer buffer)
     (error nil)))
+
+(defun chirp-backend--request-sync (args)
+  "Run twitter-cli synchronously with ARGS and return (DATA . ENVELOPE)."
+  (let ((command (chirp-backend-command)))
+    (unless command
+      (error "%s" (chirp-backend--missing-command-message)))
+    (with-temp-buffer
+      (let ((process-environment (cons chirp-backend--compact-json-env
+                                       process-environment)))
+        (condition-case err
+            (let* ((status (apply #'process-file
+                                  command
+                                  nil
+                                  (current-buffer)
+                                  nil
+                                  (append args '("--json"))))
+                   (payload (chirp-backend--maybe-parse-json-buffer (current-buffer))))
+              (cond
+               (payload
+                (let (result error-message)
+                  (chirp-backend--dispatch
+                   payload
+                   (lambda (data envelope)
+                     (setq result (cons data envelope)))
+                   (lambda (message)
+                     (setq error-message message)))
+                  (if error-message
+                      (error "%s" error-message)
+                    result)))
+               ((zerop status)
+                (error "twitter-cli exited successfully but did not return valid JSON."))
+               (t
+                (error "Command failed: %s %s"
+                       command
+                       (string-join args " ")))))
+          (file-missing
+           (error "%s" (chirp-backend--missing-command-message)))
+          (error
+           (signal (car err) (cdr err))))))))
 
 (defun chirp-backend--daemon-request-p (args)
   "Return non-nil when ARGS can be served by the twitter-cli daemon."
@@ -829,6 +871,22 @@ When FOLLOWING is non-nil, fetch the Following timeline."
    (lambda (data envelope)
      (funcall callback (chirp-collect-top-level-tweets data) envelope))
    errback))
+
+(defun chirp-backend-lists-sync ()
+  "Return accessible list metadata for the authenticated account."
+  (if-let* ((entry (chirp-backend--cached-result chirp-backend--lists-cache-key)))
+      (chirp-backend--clone-data (plist-get entry :value))
+    (let* ((result (chirp-backend--request-sync '("lists")))
+           (lists (chirp-backend--clone-data (car result)))
+           (envelope (chirp-backend--clone-data (cdr result))))
+      (when (> chirp-backend-read-cache-ttl 0)
+        (puthash chirp-backend--lists-cache-key
+                 (list :value (chirp-backend--clone-data lists)
+                       :envelope envelope
+                       :expires-at (+ (float-time)
+                                      chirp-backend-read-cache-ttl))
+                 chirp-backend--read-cache))
+      lists)))
 
 (defun chirp-backend-list (list-target callback &optional errback)
   "Fetch list timeline data for LIST-TARGET and call CALLBACK."

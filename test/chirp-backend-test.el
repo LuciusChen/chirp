@@ -127,6 +127,37 @@
     (should (equal tweets '((:id "1"))))
     (should (equal next-cursor "cursor-next"))))
 
+(ert-deftest chirp-backend-lists-sync-uses-cache-and-lists-command ()
+  "List catalog lookups should reuse the read cache."
+  (let ((chirp-backend-read-cache-ttl 15)
+        (now 1000)
+        (request-count 0)
+        captured-args
+        first second)
+    (unwind-protect
+        (progn
+          (chirp-backend-clear-cache)
+          (cl-letf (((symbol-function 'float-time)
+                     (lambda (&rest _args)
+                       now))
+                    ((symbol-function 'chirp-backend--request-sync)
+                     (lambda (args)
+                       (setq request-count (1+ request-count)
+                             captured-args args)
+                       (cons '((("id" . "1")
+                                ("name" . "Emacs")))
+                             '((("ok" . t)))))))
+            (setq first (chirp-backend-lists-sync))
+            (setq second (chirp-backend-lists-sync))
+            (should (equal captured-args '("lists")))
+            (should (= request-count 1))
+            (should (equal first second))
+            (should-not (eq first second))
+            (setq now 1016)
+            (chirp-backend-lists-sync)
+            (should (= request-count 2))))
+      (chirp-backend-clear-cache))))
+
 (ert-deftest chirp-backend-whoami-cache-reuses-fresh-results ()
   "Fresh cached whoami results should avoid a second backend request."
   (let ((chirp-backend-read-cache-ttl 15)

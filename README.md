@@ -71,7 +71,7 @@ M-x chirp-home
 M-x chirp-following
 M-x chirp-bookmarks
 M-x chirp-likes
-M-x chirp-list
+M-x chirp-list      ;; choose from your lists in the minibuffer
 M-x chirp-search
 M-x chirp-thread
 M-x chirp-profile
