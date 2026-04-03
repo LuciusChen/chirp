@@ -245,6 +245,21 @@
     (should chirp-backend--daemon-unsupported-p)
     (should (equal fallback '((("tweet" "123" "--max" "20") 0))))))
 
+(ert-deftest chirp-backend-process-requests-enable-compact-json ()
+  "One-shot backend requests should ask twitter-cli for compact structured JSON."
+  (let (captured-env captured-command)
+    (cl-letf (((symbol-function 'chirp-backend-command)
+               (lambda ()
+                 "/tmp/twitter"))
+              ((symbol-function 'make-process)
+               (lambda (&rest plist)
+                 (setq captured-env process-environment
+                       captured-command (plist-get plist :command))
+                 'process)))
+      (chirp-backend--request-via-process '("feed" "--max" "20") #'ignore nil 0))
+    (should (equal captured-command '("/tmp/twitter" "feed" "--max" "20" "--json")))
+    (should (member "TWITTER_CLI_COMPACT_JSON=1" captured-env))))
+
 (provide 'chirp-backend-test)
 
 ;;; chirp-backend-test.el ends here

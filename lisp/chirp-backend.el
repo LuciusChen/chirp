@@ -14,6 +14,9 @@
 (defconst chirp-backend--default-cli-commands '("twitter" "twitter-cli")
   "Executable names Chirp tries when `chirp-cli-command' is nil.")
 
+(defconst chirp-backend--compact-json-env "TWITTER_CLI_COMPACT_JSON=1"
+  "Environment flag that asks twitter-cli for compact structured JSON.")
+
 (defcustom chirp-backend-read-cache-ttl 15
   "Seconds to keep successful thread/profile/article reads in memory.
 
@@ -671,40 +674,42 @@ ATTEMPT tracks how many retries have already been used."
         (funcall error-fn (chirp-backend--missing-command-message))
       (let ((stdout-buffer (generate-new-buffer " *chirp-cli-stdout*"))
             (stderr-buffer (generate-new-buffer " *chirp-cli-stderr*")))
-        (make-process
-         :name "chirp-cli"
-         :buffer stdout-buffer
-         :command (append (list command) args '("--json"))
-         :stderr stderr-buffer
-         :noquery t
-         :sentinel
-         (lambda (process _event)
-           (when (memq (process-status process) '(exit signal))
-             (unwind-protect
-                 (let* ((payload (chirp-backend--maybe-parse-json-buffer stdout-buffer))
-                        (wrapped-error-fn
-                         (lambda (message)
-                           (funcall error-fn
-                                    (chirp-backend--format-retried-message
-                                     message attempt)))))
-                   (cond
-                    ((and payload
-                          (< attempt chirp-cli-max-retries)
-                          (chirp-backend--transient-error-p payload))
-                     (chirp-backend--schedule-retry args callback errback attempt))
-                    (payload
-                     (chirp-backend--dispatch payload callback wrapped-error-fn))
-                    ((zerop (process-exit-status process))
-                     (funcall wrapped-error-fn
-                              "twitter-cli exited successfully but did not return valid JSON."))
-                    (t
-                     (funcall wrapped-error-fn
-                              (chirp-backend--error-message command
-                                                            args
-                                                            stdout-buffer
-                                                            stderr-buffer)))))
-               (kill-buffer stdout-buffer)
-               (kill-buffer stderr-buffer)))))))))
+        (let ((process-environment (cons chirp-backend--compact-json-env
+                                         process-environment)))
+          (make-process
+           :name "chirp-cli"
+           :buffer stdout-buffer
+           :command (append (list command) args '("--json"))
+           :stderr stderr-buffer
+           :noquery t
+           :sentinel
+           (lambda (process _event)
+             (when (memq (process-status process) '(exit signal))
+               (unwind-protect
+                   (let* ((payload (chirp-backend--maybe-parse-json-buffer stdout-buffer))
+                          (wrapped-error-fn
+                           (lambda (message)
+                             (funcall error-fn
+                                      (chirp-backend--format-retried-message
+                                       message attempt)))))
+                     (cond
+                      ((and payload
+                            (< attempt chirp-cli-max-retries)
+                            (chirp-backend--transient-error-p payload))
+                       (chirp-backend--schedule-retry args callback errback attempt))
+                      (payload
+                       (chirp-backend--dispatch payload callback wrapped-error-fn))
+                      ((zerop (process-exit-status process))
+                       (funcall wrapped-error-fn
+                                "twitter-cli exited successfully but did not return valid JSON."))
+                      (t
+                       (funcall wrapped-error-fn
+                                (chirp-backend--error-message command
+                                                              args
+                                                              stdout-buffer
+                                                              stderr-buffer)))))
+                 (kill-buffer stdout-buffer)
+                 (kill-buffer stderr-buffer))))))))))
 
 (defun chirp-backend--request-via-daemon (args callback errback attempt)
   "Run daemon-backed read request with ARGS and call CALLBACK.
