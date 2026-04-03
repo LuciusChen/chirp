@@ -462,6 +462,19 @@ When IMMEDIATE is non-nil, kill the daemon process without waiting."
      (plist-get entry :errback)
      (plist-get entry :attempt))))
 
+(defun chirp-backend--daemon-crash (message)
+  "Disable the daemon after a protocol MESSAGE and fall back pending reads."
+  (let ((queued (chirp-backend--daemon-drain-queue))
+        (pending (chirp-backend--daemon-drain-pending))
+        (process chirp-backend--daemon-process))
+    (setq chirp-backend--daemon-shutting-down t)
+    (when (process-live-p process)
+      (delete-process process))
+    (chirp-backend--daemon-clear-state)
+    (setq chirp-backend--daemon-unsupported-p t)
+    (message "%s Falling back to one-shot twitter-cli processes." message)
+    (chirp-backend--daemon-fallback-entries (append queued pending))))
+
 (defun chirp-backend--daemon-handle-ready ()
   "Mark the daemon ready and flush queued requests."
   (setq chirp-backend--daemon-ready-p t
@@ -517,8 +530,10 @@ When IMMEDIATE is non-nil, kill the daemon process without waiting."
               (chirp-backend--daemon-handle-ready)
             (chirp-backend--daemon-handle-response payload)))
       (error
-       (message "Chirp daemon emitted invalid JSON: %s"
-                (error-message-string err))))))
+       (chirp-backend--daemon-crash
+        (format "Chirp daemon emitted invalid JSON: %s\n\nOutput: %s"
+                (error-message-string err)
+                (truncate-string-to-width line 160 nil nil t)))))))
 
 (defun chirp-backend--daemon-filter (_process chunk)
   "Consume daemon stdout CHUNK."

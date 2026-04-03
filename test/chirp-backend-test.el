@@ -20,6 +20,7 @@
 (defvar chirp-backend--daemon-queue)
 (defvar chirp-backend--daemon-stderr-buffer)
 (defvar chirp-backend--daemon-shutdown-timer)
+(defvar chirp-backend--daemon-pending)
 
 (ert-deftest chirp-backend-thread-cache-reuses-fresh-results ()
   "Fresh cached thread results should avoid a second backend request."
@@ -211,6 +212,38 @@
           (should (equal fallback '((("feed" "--max" "20") 0)))))
       (when (buffer-live-p chirp-backend--daemon-stderr-buffer)
         (kill-buffer chirp-backend--daemon-stderr-buffer)))))
+
+(ert-deftest chirp-backend-daemon-invalid-json-falls-back-to-one-shot ()
+  "Protocol corruption should disable daemon mode and retry pending requests."
+  (let ((chirp-backend--daemon-process 'daemon)
+        (chirp-backend--daemon-ready-p t)
+        (chirp-backend--daemon-shutting-down nil)
+        (chirp-backend--daemon-unsupported-p nil)
+        (chirp-backend--daemon-queue nil)
+        (chirp-backend--daemon-pending (make-hash-table :test #'equal))
+        fallback)
+    (puthash "1"
+             (list :id "1"
+                   :args '("tweet" "123" "--max" "20")
+                   :callback #'ignore
+                   :errback nil
+                   :attempt 0)
+             chirp-backend--daemon-pending)
+    (cl-letf (((symbol-function 'process-live-p)
+               (lambda (_process)
+                 t))
+              ((symbol-function 'delete-process)
+               (lambda (&rest _args)
+                 nil))
+              ((symbol-function 'chirp-backend--request-via-process)
+               (lambda (args _callback _errback attempt)
+                 (push (list args attempt) fallback)))
+              ((symbol-function 'message)
+               (lambda (&rest _args)
+                 nil)))
+      (chirp-backend--daemon-handle-line "x"))
+    (should chirp-backend--daemon-unsupported-p)
+    (should (equal fallback '((("tweet" "123" "--max" "20") 0))))))
 
 (provide 'chirp-backend-test)
 
