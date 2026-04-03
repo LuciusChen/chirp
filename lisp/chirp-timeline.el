@@ -21,6 +21,23 @@
     ('following "Following")
     (_ "Timeline")))
 
+(defun chirp-timeline--likes-title (handle)
+  "Return the buffer title for liked tweets by HANDLE."
+  (if (and handle (not (string-empty-p handle)))
+      (format "Liked: @%s" handle)
+    "Liked"))
+
+(defun chirp-timeline--list-id (target)
+  "Return a display-friendly list id extracted from TARGET."
+  (let ((text (string-trim (format "%s" target))))
+    (if (string-match "/lists?/\\([0-9]+\\)" text)
+        (match-string 1 text)
+      text)))
+
+(defun chirp-timeline--list-title (target)
+  "Return the buffer title for list TARGET."
+  (format "List: %s" (chirp-timeline--list-id target)))
+
 (defun chirp-timeline--following-p (kind)
   "Return non-nil when KIND is the Following timeline."
   (eq kind 'following))
@@ -379,6 +396,83 @@ When REFRESHING is non-nil, merge newer tweets at the top on success."
          (when (chirp-request-current-p buffer token)
            (chirp-timeline--set-kind buffer nil)
            (chirp-show-error buffer "Bookmarks" refresh message)))))))
+
+(defun chirp-timeline-open-likes (&optional handle buffer)
+  "Open liked tweets for HANDLE.
+
+When HANDLE is nil, resolve the currently authenticated account first."
+  (interactive)
+  (let* ((buffer (or buffer (chirp-buffer)))
+         (clean-handle (and handle
+                            (string-remove-prefix "@"
+                                                  (string-trim (format "%s" handle)))))
+         (title (chirp-timeline--likes-title clean-handle)))
+    (let ((token (chirp-begin-background-request buffer title)))
+      (chirp-timeline--set-kind buffer nil)
+      (if clean-handle
+          (let ((refresh (lambda () (chirp-timeline-open-likes clean-handle buffer))))
+            (chirp-backend-likes
+             clean-handle
+             (lambda (tweets _envelope)
+               (when (chirp-request-current-p buffer token)
+                 (chirp-timeline--render buffer title refresh tweets nil nil nil nil t)))
+             (lambda (message)
+               (when (chirp-request-current-p buffer token)
+                 (chirp-timeline--set-kind buffer nil)
+                 (chirp-show-error buffer title refresh message)))))
+        (chirp-backend-whoami
+         (lambda (user _envelope)
+           (when (chirp-request-current-p buffer token)
+             (if-let* ((resolved-handle (plist-get user :handle)))
+                 (let* ((resolved-title (chirp-timeline--likes-title resolved-handle))
+                        (refresh (lambda ()
+                                   (chirp-timeline-open-likes resolved-handle buffer))))
+                   (chirp-backend-likes
+                    resolved-handle
+                    (lambda (tweets _likes-envelope)
+                      (when (chirp-request-current-p buffer token)
+                        (chirp-timeline--render
+                         buffer resolved-title refresh tweets nil nil nil nil t)))
+                    (lambda (message)
+                      (when (chirp-request-current-p buffer token)
+                        (chirp-timeline--set-kind buffer nil)
+                        (chirp-show-error buffer resolved-title refresh message)))))
+               (chirp-show-error
+                buffer
+                title
+                (lambda () (chirp-timeline-open-likes nil buffer))
+                "twitter-cli returned a whoami payload Chirp could not parse."))))
+         (lambda (message)
+           (when (chirp-request-current-p buffer token)
+             (chirp-timeline--set-kind buffer nil)
+             (chirp-show-error
+              buffer
+              title
+              (lambda () (chirp-timeline-open-likes nil buffer))
+              message))))))))
+
+(defun chirp-timeline-open-list (list-target &optional buffer)
+  "Open the timeline for LIST-TARGET.
+
+LIST-TARGET may be a numeric list id or a full list URL."
+  (interactive (list (read-string "List ID or URL: ")))
+  (let* ((buffer (or buffer (chirp-buffer)))
+         (clean-target (string-trim (format "%s" list-target)))
+         (title (chirp-timeline--list-title clean-target))
+         (refresh (lambda () (chirp-timeline-open-list clean-target buffer))))
+    (when (string-empty-p clean-target)
+      (user-error "List ID or URL cannot be empty"))
+    (let ((token (chirp-begin-background-request buffer title)))
+      (chirp-timeline--set-kind buffer nil)
+      (chirp-backend-list
+       clean-target
+       (lambda (tweets _envelope)
+         (when (chirp-request-current-p buffer token)
+           (chirp-timeline--render buffer title refresh tweets nil nil nil nil t)))
+       (lambda (message)
+         (when (chirp-request-current-p buffer token)
+           (chirp-timeline--set-kind buffer nil)
+           (chirp-show-error buffer title refresh message)))))))
 
 (defun chirp-timeline-open-search (query &optional buffer)
   "Open search results for QUERY."

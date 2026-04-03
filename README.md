@@ -9,6 +9,8 @@ This first cut is intentionally narrow:
 - Home timeline
 - Following timeline
 - Bookmarks
+- Liked tweets for the current account
+- Lists
 - Search
 - Tweet thread/detail
 - Profile with recent posts
@@ -68,6 +70,8 @@ user bin directories such as `~/.local/bin`. You can extend that list with:
 M-x chirp-home
 M-x chirp-following
 M-x chirp-bookmarks
+M-x chirp-likes
+M-x chirp-list
 M-x chirp-search
 M-x chirp-thread
 M-x chirp-profile
@@ -84,7 +88,7 @@ M-x chirp-profile
 - `RET`: open the current tweet or profile, or open large media when point is on a thumbnail
 - `m`: open the first media item for the current tweet
 - `A`: open the author profile
-- `x`: open the actions menu for For You/Following, post/reply/quote, and tweet actions
+- `x`: open the actions menu for timeline switching, bookmarks, liked tweets, lists, post/reply/quote, and tweet actions
 - `o`: open the current item in a browser
 - `q`: close the current Chirp buffer
 

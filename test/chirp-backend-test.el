@@ -127,6 +127,64 @@
     (should (equal tweets '((:id "1"))))
     (should (equal next-cursor "cursor-next"))))
 
+(ert-deftest chirp-backend-whoami-cache-reuses-fresh-results ()
+  "Fresh cached whoami results should avoid a second backend request."
+  (let ((chirp-backend-read-cache-ttl 15)
+        (request-count 0)
+        first second)
+    (unwind-protect
+        (progn
+          (chirp-backend-clear-cache)
+          (cl-letf (((symbol-function 'chirp-backend-request)
+                     (lambda (_args callback &optional _errback)
+                       (setq request-count (1+ request-count))
+                       (funcall callback 'raw '((ok . t)))))
+                    ((symbol-function 'chirp-normalize-user)
+                     (lambda (_data)
+                       (list :kind 'user :handle "alice"))))
+            (chirp-backend-whoami
+             (lambda (user _envelope)
+               (setq first user)))
+            (chirp-backend-whoami
+             (lambda (user _envelope)
+               (setq second user)))
+            (should (= request-count 1))
+            (should (equal first second))
+            (should-not (eq first second))))
+      (chirp-backend-clear-cache))))
+
+(ert-deftest chirp-backend-likes-passes-handle-and-max-results ()
+  "Likes requests should strip @ and reuse timeline normalization."
+  (let (captured-args tweets)
+    (cl-letf (((symbol-function 'chirp-backend-request)
+               (lambda (args callback &optional _errback)
+                 (setq captured-args args)
+                 (funcall callback 'raw '((ok . t)))))
+              ((symbol-function 'chirp-collect-top-level-tweets)
+               (lambda (_data)
+                 (list (list :id "1")))))
+      (chirp-backend-likes
+       "@Alice"
+       (lambda (items _envelope)
+         (setq tweets items))))
+    (should (equal captured-args
+                   '("likes" "Alice" "--max" "20")))
+    (should (equal tweets '((:id "1"))))))
+
+(ert-deftest chirp-backend-list-normalizes-list-urls ()
+  "List requests should accept either a raw id or a full list URL."
+  (let (captured-args)
+    (cl-letf (((symbol-function 'chirp-backend-request)
+               (lambda (args callback &optional _errback)
+                 (setq captured-args args)
+                 (funcall callback 'raw '((ok . t)))))
+              ((symbol-function 'chirp-collect-top-level-tweets)
+               (lambda (_data)
+                 nil)))
+      (chirp-backend-list "https://x.com/i/lists/1956792682412345678" #'ignore))
+    (should (equal captured-args
+                   '("list" "1956792682412345678" "--max" "20")))))
+
 (ert-deftest chirp-backend-thread-passes-explicit-max-results ()
   "Thread requests should pass Chirp's explicit thread fetch limit."
   (let ((chirp-thread-max-results 20)

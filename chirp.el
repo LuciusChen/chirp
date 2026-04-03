@@ -51,6 +51,18 @@
   (chirp-timeline-open-bookmarks))
 
 ;;;###autoload
+(defun chirp-likes ()
+  "Open liked tweets for the current account."
+  (interactive)
+  (chirp-timeline-open-likes))
+
+;;;###autoload
+(defun chirp-list (list-id-or-url)
+  "Open a list timeline for LIST-ID-OR-URL."
+  (interactive "sList ID or URL: ")
+  (chirp-timeline-open-list list-id-or-url))
+
+;;;###autoload
 (defun chirp-search (query)
   "Search X for QUERY."
   (interactive "sSearch X: ")

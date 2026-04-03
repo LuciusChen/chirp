@@ -177,9 +177,20 @@ explicitly shuts it down."
   "Return the cache key for HANDLE profile metadata."
   (list :user (chirp-backend--normalize-handle handle)))
 
+(defun chirp-backend--whoami-cache-key ()
+  "Return the cache key for the current authenticated user."
+  '(:whoami))
+
 (defun chirp-backend--user-posts-cache-key (handle)
   "Return the cache key for HANDLE recent posts."
   (list :user-posts (chirp-backend--normalize-handle handle)))
+
+(defun chirp-backend--list-id-from-target (target)
+  "Return a likely list id extracted from TARGET, or TARGET as-is."
+  (let ((text (string-trim (format "%s" target))))
+    (if (string-match "/lists?/\\([0-9]+\\)" text)
+        (match-string 1 text)
+      text)))
 
 (defun chirp-backend-invalidate-thread (tweet-or-url)
   "Drop cached thread and article data for TWEET-OR-URL."
@@ -788,6 +799,43 @@ When FOLLOWING is non-nil, fetch the Following timeline."
   "Search for QUERY and call CALLBACK."
   (chirp-backend-request
    (list "search" query "--max" (number-to-string chirp-default-max-results))
+   (lambda (data envelope)
+     (funcall callback (chirp-collect-top-level-tweets data) envelope))
+   errback))
+
+(defun chirp-backend-whoami (callback &optional errback)
+  "Fetch the authenticated user profile and call CALLBACK."
+  (chirp-backend--cached-read
+   (chirp-backend--whoami-cache-key)
+   (lambda (success error)
+     (chirp-backend-request
+      '("whoami")
+      (lambda (data envelope)
+        (let ((user (chirp-normalize-user data)))
+          (if user
+              (funcall success user envelope)
+            (funcall error
+                     "twitter-cli returned a whoami payload Chirp could not parse."))))
+      error))
+   callback
+   errback))
+
+(defun chirp-backend-likes (handle callback &optional errback)
+  "Fetch liked tweets for HANDLE and call CALLBACK."
+  (chirp-backend-request
+   (list "likes"
+         (string-remove-prefix "@" handle)
+         "--max" (number-to-string chirp-default-max-results))
+   (lambda (data envelope)
+     (funcall callback (chirp-collect-top-level-tweets data) envelope))
+   errback))
+
+(defun chirp-backend-list (list-target callback &optional errback)
+  "Fetch list timeline data for LIST-TARGET and call CALLBACK."
+  (chirp-backend-request
+   (list "list"
+         (chirp-backend--list-id-from-target list-target)
+         "--max" (number-to-string chirp-default-max-results))
    (lambda (data envelope)
      (funcall callback (chirp-collect-top-level-tweets data) envelope))
    errback))

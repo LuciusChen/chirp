@@ -13,6 +13,9 @@
 (declare-function chirp-backend-clear-cache "chirp-backend" ())
 (declare-function chirp-timeline-open-home "chirp-timeline" ())
 (declare-function chirp-timeline-open-following "chirp-timeline" ())
+(declare-function chirp-timeline-open-bookmarks "chirp-timeline" (&optional buffer))
+(declare-function chirp-timeline-open-likes "chirp-timeline" (&optional handle buffer))
+(declare-function chirp-timeline-open-list "chirp-timeline" (list-target &optional buffer))
 
 (defcustom chirp-compose-temporary-directory
   (expand-file-name "compose/" (locate-user-emacs-file "chirp/"))
@@ -712,7 +715,10 @@ When TWEET is non-nil, use it as the reply or quote target."
   "Show Chirp write actions."
   [["Timeline"
     ("h" "For You" chirp-timeline-open-home)
-    ("f" "Following" chirp-timeline-open-following)]
+    ("f" "Following" chirp-timeline-open-following)
+    ("b" "Bookmarks" chirp-timeline-open-bookmarks)
+    ("L" "Liked" chirp-timeline-open-likes)
+    ("s" "List" chirp-timeline-open-list)]
    ["Compose"
     ("c" "Post" chirp-compose-post)
     ("r" "Reply" chirp-reply-at-point)
