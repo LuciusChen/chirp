@@ -10,8 +10,11 @@
 
 (declare-function chirp-backend-tweet "chirp-backend" (tweet-id callback &optional errback))
 (declare-function chirp-profile-open "chirp-profile" (handle &optional buffer))
+(declare-function chirp-profile-followers "chirp-profile" (handle &optional buffer))
+(declare-function chirp-profile-following-users "chirp-profile" (handle &optional buffer))
 (declare-function chirp-thread-open "chirp-thread" (tweet-or-url &optional focus-id buffer))
 (declare-function chirp-dispatch "chirp-actions" ())
+(declare-function chirp-toggle-follow-user-at-point "chirp-actions" ())
 (declare-function chirp-load-more "chirp-timeline" (&optional anchor-id))
 (declare-function chirp-toggle-home-following "chirp-timeline" ())
 (declare-function chirp-media-at-point "chirp-media" ())
@@ -90,7 +93,7 @@ smoother while background data arrives."
   :group 'chirp)
 
 (defcustom chirp-profile-post-limit 15
-  "Number of recent posts to fetch for profile buffers."
+  "Number of posts fetched per profile page."
   :type 'integer
   :group 'chirp)
 
@@ -143,6 +146,21 @@ CLI's larger default reply count."
 (defvar-local chirp--rerender-timer nil
   "Pending timer used to coalesce lightweight Chirp rerenders.")
 
+(defvar-local chirp--entry-wrap-navigation t
+  "When non-nil, entry navigation wraps around at buffer boundaries.")
+
+(defvar-local chirp--profile-handle nil
+  "Profile handle represented by the current profile buffer, or nil.")
+
+(defvar-local chirp--profile-view-mode nil
+  "Current profile subview mode for the active profile buffer.")
+
+(defvar-local chirp--profile-view-modes nil
+  "Available profile subview modes for the active profile buffer.")
+
+(defvar-local chirp--profile-switch-mode-function nil
+  "Function used to switch the current profile buffer to another subview.")
+
 (put 'chirp--request-token 'permanent-local t)
 (put 'chirp--timeline-kind 'permanent-local t)
 (put 'chirp--timeline-limit 'permanent-local t)
@@ -151,6 +169,11 @@ CLI's larger default reply count."
 (put 'chirp--timeline-load-more-function 'permanent-local t)
 (put 'chirp--timeline-exhausted-p 'permanent-local t)
 (put 'chirp--rerender-function 'permanent-local t)
+(put 'chirp--entry-wrap-navigation 'permanent-local t)
+(put 'chirp--profile-handle 'permanent-local t)
+(put 'chirp--profile-view-mode 'permanent-local t)
+(put 'chirp--profile-view-modes 'permanent-local t)
+(put 'chirp--profile-switch-mode-function 'permanent-local t)
 (defvar chirp-tweet-state-overrides (make-hash-table :test #'equal)
   "Map tweet ids to local state overrides such as likes and bookmarks.")
 
@@ -282,6 +305,11 @@ Return a token that identifies the current request."
     (setq-local chirp--timeline-exhausted-p nil)
     (setq-local chirp--timeline-loading-more nil)
     (setq-local chirp--rerender-function nil)
+    (setq-local chirp--entry-wrap-navigation t)
+    (setq-local chirp--profile-handle nil)
+    (setq-local chirp--profile-view-mode nil)
+    (setq-local chirp--profile-view-modes nil)
+    (setq-local chirp--profile-switch-mode-function nil)
     (when (timerp chirp--rerender-timer)
       (cancel-timer chirp--rerender-timer))
     (setq-local chirp--rerender-timer nil)
@@ -331,6 +359,30 @@ Return a token that identifies the current request."
   (or (get-text-property (point) 'chirp-reply-parent-id)
       (and (> (point) (point-min))
            (get-text-property (1- (point)) 'chirp-reply-parent-id))))
+
+(defun chirp-profile-list-kind-at-point ()
+  "Return the profile list kind stored at point, or nil."
+  (or (get-text-property (point) 'chirp-profile-list-kind)
+      (and (> (point) (point-min))
+           (get-text-property (1- (point)) 'chirp-profile-list-kind))))
+
+(defun chirp-profile-list-handle-at-point ()
+  "Return the profile list handle stored at point, or nil."
+  (or (get-text-property (point) 'chirp-profile-list-handle)
+      (and (> (point) (point-min))
+           (get-text-property (1- (point)) 'chirp-profile-list-handle))))
+
+(defun chirp-profile-view-mode-at-point ()
+  "Return the profile subview mode stored at point, or nil."
+  (or (get-text-property (point) 'chirp-profile-view-mode)
+      (and (> (point) (point-min))
+           (get-text-property (1- (point)) 'chirp-profile-view-mode))))
+
+(defun chirp-profile-action-at-point ()
+  "Return the profile action stored at point, or nil."
+  (or (get-text-property (point) 'chirp-profile-action)
+      (and (> (point) (point-min))
+           (get-text-property (1- (point)) 'chirp-profile-action))))
 
 (defun chirp-open-reply-parent-at-point ()
   "Jump to the visible parent tweet referenced at point."
@@ -470,10 +522,12 @@ Return a token that identifies the current request."
                 (chirp--entry-position-forward (point-min)))))
     (cond
      (pos
-      (goto-char pos))
+     (goto-char pos))
      ((and chirp--timeline-load-more-function
            (chirp-entry-at-point))
       (funcall chirp--timeline-load-more-function (chirp-entry-id-at-point)))
+     ((not chirp--entry-wrap-navigation)
+      (user-error "Already at last entry"))
      ((setq pos (chirp--entry-position-forward (point-min)))
       (goto-char pos))
      (t
@@ -485,6 +539,9 @@ Return a token that identifies the current request."
   (let* ((current-start (chirp--current-entry-start))
          (pos (and current-start
                    (chirp--entry-position-backward current-start))))
+    (when (and (not pos)
+               (not chirp--entry-wrap-navigation))
+      (user-error "Already at first entry"))
     (unless pos
       (setq pos (chirp--entry-position-backward (point-max))))
     (if pos
@@ -534,17 +591,38 @@ Return a token that identifies the current request."
 (defun chirp-open-at-point ()
   "Open the entry at point."
   (interactive)
-  (if-let* ((author-handle (chirp-author-handle-at-point)))
-      (chirp-profile-open author-handle)
-    (if-let* (((chirp-reply-parent-id-at-point)))
-        (chirp-open-reply-parent-at-point)
-      (if (chirp-media-at-point)
-          (chirp-media-open-at-point)
-        (pcase (plist-get (chirp-entry-at-point) :kind)
-          ('tweet (chirp-thread-open (chirp-entry-at-point)
-                                     (plist-get (chirp-entry-at-point) :id)))
-          ('user (chirp-profile-open (plist-get (chirp-entry-at-point) :handle)))
-          (_ (user-error "No entry at point")))))))
+  (if-let* ((profile-view-mode (chirp-profile-view-mode-at-point))
+            ((functionp chirp--profile-switch-mode-function)))
+      (funcall chirp--profile-switch-mode-function profile-view-mode)
+    (if-let* ((profile-action (chirp-profile-action-at-point)))
+        (pcase profile-action
+          ('toggle-follow (chirp-toggle-follow-user-at-point))
+          (_ (user-error "Unknown profile action at point")))
+      (if-let* ((author-handle (chirp-author-handle-at-point)))
+          (let* ((entry (chirp-entry-at-point))
+                 (clean-author (string-remove-prefix "@" author-handle))
+                 (clean-profile (and chirp--profile-handle
+                                     (string-remove-prefix "@" chirp--profile-handle))))
+            (if (and (eq (plist-get entry :kind) 'tweet)
+                     clean-profile
+                     (equal clean-author clean-profile))
+                (chirp-thread-open entry (plist-get entry :id))
+              (chirp-profile-open author-handle)))
+        (if-let* ((profile-list-kind (chirp-profile-list-kind-at-point))
+                  (profile-list-handle (chirp-profile-list-handle-at-point)))
+            (pcase profile-list-kind
+              ('followers (chirp-profile-followers profile-list-handle))
+              ('following (chirp-profile-following-users profile-list-handle))
+              (_ (user-error "Unknown profile list at point")))
+          (if-let* (((chirp-reply-parent-id-at-point)))
+              (chirp-open-reply-parent-at-point)
+            (if (chirp-media-at-point)
+                (chirp-media-open-at-point)
+              (pcase (plist-get (chirp-entry-at-point) :kind)
+                ('tweet (chirp-thread-open (chirp-entry-at-point)
+                                           (plist-get (chirp-entry-at-point) :id)))
+                ('user (chirp-profile-open (plist-get (chirp-entry-at-point) :handle)))
+                (_ (user-error "No entry at point"))))))))))
 
 (defun chirp-open-primary-media ()
   "Open the media at point or the first media of the current entry."
@@ -1134,7 +1212,23 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
                       (chirp-get user "profileImageUrl")
                       (chirp-get user "profile_image_url_https")
                       (chirp-get user "profile_image_url")
-                      (chirp-get legacy "profile_image_url_https" "profile_image_url"))))
+                      (chirp-get legacy "profile_image_url_https" "profile_image_url")))
+         (viewer-following-p (chirp-boolean-value
+                              (chirp-coalesce
+                               (chirp-get user "viewerFollowing" "viewer_following")
+                               (chirp-get-in user '("relationship_perspectives" "following")))))
+         (viewer-followed-by-p (chirp-boolean-value
+                                (chirp-coalesce
+                                 (chirp-get user "viewerFollowedBy" "viewer_followed_by")
+                                 (chirp-get-in user '("relationship_perspectives" "followed_by")))))
+         (viewer-blocking-p (chirp-boolean-value
+                             (chirp-coalesce
+                              (chirp-get user "viewerBlocking" "viewer_blocking")
+                              (chirp-get-in user '("relationship_perspectives" "blocking")))))
+         (viewer-muting-p (chirp-boolean-value
+                           (chirp-coalesce
+                            (chirp-get user "viewerMuting" "viewer_muting")
+                            (chirp-get-in user '("relationship_perspectives" "muting"))))))
     (when (or handle id name)
       (list :kind 'user
             :id id
@@ -1144,6 +1238,10 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
             :avatar-url avatar-url
             :followers followers
             :following following
+            :viewer-following-p viewer-following-p
+            :viewer-followed-by-p viewer-followed-by-p
+            :viewer-blocking-p viewer-blocking-p
+            :viewer-muting-p viewer-muting-p
             :posts posts
             :joined joined
             :profile-url (and handle

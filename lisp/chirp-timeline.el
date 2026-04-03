@@ -539,21 +539,28 @@ LIST-TARGET may be a numeric list id or a full list URL."
            (chirp-show-error buffer title refresh message)))))))
 
 (defun chirp-toggle-home-following ()
-  "Toggle between the home and following timelines."
+  "Toggle between primary Chirp subviews.
+
+On Home/Following, switch between the two timelines.  In profile buffers that
+expose subviews, cycle the current profile mode."
   (interactive)
-  (pcase chirp--timeline-kind
-    ('home
-     (chirp-timeline--open 'following
-                           chirp-default-max-results
-                           nil
-                           (current-buffer)))
-    ('following
-     (chirp-timeline--open 'home
-                           chirp-default-max-results
-                           nil
-                           (current-buffer)))
-    (_
-     (user-error "Current view is not a home timeline"))))
+  (cond
+   ((functionp chirp--profile-switch-mode-function)
+    (funcall chirp--profile-switch-mode-function :next))
+   (t
+    (pcase chirp--timeline-kind
+      ('home
+       (chirp-timeline--open 'following
+                             chirp-default-max-results
+                             nil
+                             (current-buffer)))
+      ('following
+       (chirp-timeline--open 'home
+                             chirp-default-max-results
+                             nil
+                             (current-buffer)))
+      (_
+       (user-error "Current view does not support TAB switching"))))))
 
 (provide 'chirp-timeline)
 

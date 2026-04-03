@@ -196,13 +196,17 @@
                  ("followers" . 148033)
                  ("following" . 4908)
                  ("tweets" . 59745)
-                 ("profileImageUrl" . "")))))
+                 ("profileImageUrl" . "")
+                 ("viewerFollowing" . t)
+                 ("viewerFollowedBy" . chirp-json-false)))))
     (should user)
     (should (equal (plist-get user :handle) "dingyi"))
     (should (equal (plist-get user :name) "dingyi"))
     (should (equal (plist-get user :bio) "promote"))
     (should (= (plist-get user :followers) 148033))
-    (should (= (plist-get user :posts) 59745))))
+    (should (= (plist-get user :posts) 59745))
+    (should (plist-get user :viewer-following-p))
+    (should-not (plist-get user :viewer-followed-by-p))))
 
 (ert-deftest chirp-render-insert-tweet-renders-expanded-links-and-article-preview ()
   "Tweet rendering should show expanded links and article metadata."
@@ -527,6 +531,204 @@
         (chirp-open-at-point)))
     (should (equal opened-profile "alice"))
     (should-not opened-thread)))
+
+(ert-deftest chirp-render-insert-user-summary-marks-followers-and-following-regions ()
+  "Profile summaries should expose clickable followers/following regions."
+  (let ((user '(:kind user
+                :name "Alice"
+                :handle "alice"
+                :followers 34
+                :following 12
+                :posts 56)))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-user-summary user)))
+      (goto-char (point-min))
+      (search-forward "Following 12")
+      (should (eq (get-text-property (match-beginning 0) 'chirp-profile-list-kind)
+                  'following))
+      (should (equal (get-text-property (match-beginning 0) 'chirp-profile-list-handle)
+                     "alice"))
+      (goto-char (point-min))
+      (search-forward "Followers 34")
+      (should (eq (get-text-property (match-beginning 0) 'chirp-profile-list-kind)
+                  'followers))
+      (should (equal (get-text-property (match-beginning 0) 'chirp-profile-list-handle)
+                     "alice")))))
+
+(ert-deftest chirp-render-insert-user-summary-adds-follow-action-region ()
+  "Profile summaries should expose a clickable follow-state action."
+  (let ((user '(:kind user
+                :name "Alice"
+                :handle "alice"
+                :followers 34
+                :following 12
+                :posts 56
+                :viewer-followed-by-p t)))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-user-summary user)))
+      (goto-char (point-min))
+      (search-forward "Follow back")
+      (should (eq (get-text-property (match-beginning 0) 'chirp-profile-action)
+                  'toggle-follow)))))
+
+(ert-deftest chirp-open-at-point-opens-followers-list-from-profile-summary ()
+  "RET on profile follower/following counts should open the matching list."
+  (let ((user '(:kind user
+                :name "Alice"
+                :handle "alice"
+                :followers 34
+                :following 12
+                :posts 56))
+        opened-followers
+        opened-following)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-profile-followers)
+                 (lambda (handle &optional _buffer)
+                   (setq opened-followers handle)))
+                ((symbol-function 'chirp-profile-following-users)
+                 (lambda (handle &optional _buffer)
+                   (setq opened-following handle))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-user-summary user))
+        (goto-char (point-min))
+        (search-forward "Followers 34")
+        (goto-char (match-beginning 0))
+        (chirp-open-at-point)
+        (should (equal opened-followers "alice"))
+        (goto-char (point-min))
+        (search-forward "Following 12")
+        (goto-char (match-beginning 0))
+        (chirp-open-at-point)
+        (should (equal opened-following "alice"))))))
+
+(ert-deftest chirp-open-at-point-toggles-follow-from-profile-summary ()
+  "RET on the profile follow button should toggle follow state."
+  (let ((user '(:kind user
+                :name "Alice"
+                :handle "alice"
+                :followers 34
+                :following 12
+                :posts 56
+                :viewer-following-p t))
+        toggled)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-toggle-follow-user-at-point)
+                 (lambda ()
+                   (setq toggled t))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-user-summary user))
+        (goto-char (point-min))
+        (search-forward "Following")
+        (goto-char (match-beginning 0))
+        (chirp-open-at-point)
+        (should toggled)))))
+
+(ert-deftest chirp-open-at-point-opens-profile-post-thread-in-composite-profile-buffer ()
+  "RET on a recent post inside a profile buffer should open the tweet thread."
+  (let ((user '(:kind user
+                :name "Alice"
+                :handle "alice"
+                :followers 34
+                :following 12
+                :posts 56))
+        (tweet '(:kind tweet
+                 :id "123"
+                 :text "Hello world"
+                 :author-name "Alice"
+                 :author-handle "alice"
+                 :reply-count 0
+                 :retweet-count 0
+                 :like-count 0
+                 :quote-count 0
+                 :bookmark-count 0
+                 :view-count 0))
+        opened-thread
+        opened-profile)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-thread-open)
+                 (lambda (tweet-or-url &optional focus-id _buffer)
+                   (setq opened-thread (list (plist-get tweet-or-url :id) focus-id))))
+                ((symbol-function 'chirp-profile-open)
+                 (lambda (handle &optional _buffer)
+                   (setq opened-profile handle))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-user-summary user)
+          (chirp-render-insert-section "Recent Posts")
+          (chirp-render-insert-tweet-list (list tweet)))
+        (goto-char (point-min))
+        (search-forward "Hello world")
+        (goto-char (match-beginning 0))
+        (chirp-open-at-point)
+        (should (equal opened-thread '("123" "123")))
+        (should-not opened-profile)))))
+
+(ert-deftest chirp-open-at-point-uses-thread-for-profile-owned-post-author-region ()
+  "RET on the current profile owner's post avatar/name should open thread, not reopen profile."
+  (let ((tweet '(:kind tweet
+                 :id "123"
+                 :text "Hello world"
+                 :author-name "Alice"
+                 :author-handle "alice"
+                 :reply-count 0
+                 :retweet-count 0
+                 :like-count 0
+                 :quote-count 0
+                 :bookmark-count 0
+                 :view-count 0))
+        opened-thread
+        opened-profile)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (setq-local chirp--profile-handle "alice")
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-thread-open)
+                 (lambda (tweet-or-url &optional focus-id _buffer)
+                   (setq opened-thread (list (plist-get tweet-or-url :id) focus-id))))
+                ((symbol-function 'chirp-profile-open)
+                 (lambda (handle &optional _buffer)
+                   (setq opened-profile handle))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet))
+        (goto-char (point-min))
+        (search-forward "@alice")
+        (goto-char (match-beginning 0))
+        (chirp-open-at-point)
+        (should (equal opened-thread '("123" "123")))
+        (should-not opened-profile)))))
+
+(ert-deftest chirp-entry-navigation-can-disable-wraparound ()
+  "List-style buffers should be able to stop at the ends instead of wrapping."
+  (let ((tweets (list
+                 '(:kind tweet :id "100" :text "First" :author-name "Alice" :author-handle "alice"
+                   :reply-count 0 :retweet-count 0 :like-count 0 :quote-count 0 :bookmark-count 0 :view-count 0)
+                 '(:kind tweet :id "101" :text "Second" :author-name "Bob" :author-handle "bob"
+                   :reply-count 0 :retweet-count 0 :like-count 0 :quote-count 0 :bookmark-count 0 :view-count 0))))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (setq-local chirp--entry-wrap-navigation nil)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet-list tweets)))
+      (goto-char (point-min))
+      (search-forward "Second")
+      (goto-char (match-beginning 0))
+      (should-error (chirp-next-entry) :type 'user-error)
+      (goto-char (point-min))
+      (search-forward "First")
+      (goto-char (match-beginning 0))
+      (should-error (chirp-previous-entry) :type 'user-error))))
 
 (ert-deftest chirp-enrich-quoted-tweets-upgrades-preview-and-prefetches-media ()
   "Quoted tweet enrichment should replace the preview and kick media prefetch."

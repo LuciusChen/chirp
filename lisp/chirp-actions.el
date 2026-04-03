@@ -16,6 +16,7 @@
 (declare-function chirp-timeline-open-bookmarks "chirp-timeline" (&optional buffer))
 (declare-function chirp-timeline-open-likes "chirp-timeline" (&optional handle buffer))
 (declare-function chirp-timeline-open-list "chirp-timeline" (list-target &optional buffer))
+(declare-function chirp-me "chirp" ())
 
 (defcustom chirp-compose-temporary-directory
   (expand-file-name "compose/" (locate-user-emacs-file "chirp/"))
@@ -93,6 +94,19 @@ cancelled, the attachment is removed, or the send completes."
   (or (plist-get (chirp-actions--tweet-at-point) :id)
       (user-error "Current tweet has no id")))
 
+(defun chirp-actions--user-at-point ()
+  "Return the current user entry, or signal a user error."
+  (let* ((entry (chirp-entry-at-point))
+         (handle (or (plist-get entry :handle)
+                     (plist-get entry :author-handle)
+                     (chirp-author-handle-at-point))))
+    (if handle
+        (list :kind 'user
+              :handle (string-remove-prefix "@" handle)
+              :profile-url (format "https://x.com/%s"
+                                   (string-remove-prefix "@" handle)))
+      (user-error "No profile available at point"))))
+
 (defun chirp-actions--show-error (message)
   "Show MESSAGE as a condensed action failure."
   (message "Chirp action failed: %s"
@@ -108,6 +122,13 @@ cancelled, the attachment is removed, or the send completes."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (chirp-actions--refresh-current-view))))
+
+(defun chirp-actions--refresh-user-buffer-if-needed (buffer)
+  "Refresh BUFFER after a user action when it currently shows a user entry."
+  (when (and (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (eq (plist-get (chirp-entry-at-point) :kind) 'user)))
+    (chirp-actions--refresh-buffer buffer)))
 
 (defun chirp-actions--perform (args on-success &optional on-error)
   "Run twitter-cli ARGS and call ON-SUCCESS with the decoded payload.
@@ -234,6 +255,39 @@ COUNT-KEY is adjusted locally to reflect STATE-VALUE."
    :retweet-count
    "Retweeted."
    "Retweet removed."))
+
+(defun chirp-follow-user-at-point ()
+  "Follow the user at point."
+  (interactive)
+  (let* ((user (chirp-actions--user-at-point))
+         (handle (plist-get user :handle))
+         (buffer (current-buffer)))
+    (chirp-actions--perform
+     (list "follow" handle)
+     (lambda (_data _envelope)
+       (chirp-actions--refresh-user-buffer-if-needed buffer)
+       (message "Now following @%s." handle)))))
+
+(defun chirp-unfollow-user-at-point ()
+  "Unfollow the user at point."
+  (interactive)
+  (let* ((user (chirp-actions--user-at-point))
+         (handle (plist-get user :handle))
+         (buffer (current-buffer)))
+    (chirp-actions--perform
+     (list "unfollow" handle)
+     (lambda (_data _envelope)
+       (chirp-actions--refresh-user-buffer-if-needed buffer)
+       (message "Unfollowed @%s." handle)))))
+
+(defun chirp-toggle-follow-user-at-point ()
+  "Toggle follow state for the user at point."
+  (interactive)
+  (let* ((entry (chirp-entry-at-point))
+         (following (chirp-boolean-value (plist-get entry :viewer-following-p))))
+    (if following
+        (chirp-unfollow-user-at-point)
+      (chirp-follow-user-at-point))))
 
 (defun chirp-delete-at-point ()
   "Delete the tweet at point after confirmation."
@@ -716,6 +770,7 @@ When TWEET is non-nil, use it as the reply or quote target."
   [["Timeline"
     ("h" "For You" chirp-timeline-open-home)
     ("f" "Following" chirp-timeline-open-following)
+    ("u" "Me" chirp-me)
     ("b" "Bookmarks" chirp-timeline-open-bookmarks)
     ("L" "Liked" chirp-timeline-open-likes)
     ("s" "List" chirp-timeline-open-list)]
@@ -725,6 +780,9 @@ When TWEET is non-nil, use it as the reply or quote target."
     ("Q" "Quote" chirp-quote-at-point)]
    ["Tweet"
     ("R" "Retweet" chirp-toggle-retweet-at-point)]
+   ["People"
+    ("+" "Follow" chirp-follow-user-at-point)
+    ("-" "Unfollow" chirp-unfollow-user-at-point)]
    ["Engage"
     ("l" "Like" chirp-toggle-like-at-point)
     ("B" "Bookmark" chirp-toggle-bookmark-at-point)]

@@ -32,6 +32,9 @@
 (require 'chirp-profile)
 (require 'chirp-timeline)
 
+(declare-function chirp-profile-open-followers "chirp-profile" (handle &optional buffer))
+(declare-function chirp-profile-open-following-users "chirp-profile" (handle &optional buffer))
+
 ;;;###autoload
 (defun chirp-home ()
   "Open the home timeline."
@@ -55,6 +58,18 @@
   "Open liked tweets for the current account."
   (interactive)
   (chirp-timeline-open-likes))
+
+;;;###autoload
+(defun chirp-me ()
+  "Open the authenticated account's profile."
+  (interactive)
+  (chirp-backend-whoami
+   (lambda (user _envelope)
+     (if-let* ((handle (plist-get user :handle)))
+         (chirp-profile-open handle)
+       (message "twitter-cli returned a whoami payload Chirp could not parse.")))
+   (lambda (message)
+     (message "%s" message))))
 
 ;;;###autoload
 (defun chirp-list (&optional list-id-or-url)
@@ -81,6 +96,18 @@ When LIST-ID-OR-URL is nil, prompt from the authenticated account's lists."
   "Open HANDLE's profile."
   (interactive "sProfile handle: ")
   (chirp-profile-open handle))
+
+;;;###autoload
+(defun chirp-profile-followers (handle)
+  "Open followers for HANDLE."
+  (interactive "sProfile handle: ")
+  (chirp-profile-open-followers handle))
+
+;;;###autoload
+(defun chirp-profile-following-users (handle)
+  "Open followed accounts for HANDLE."
+  (interactive "sProfile handle: ")
+  (chirp-profile-open-following-users handle))
 
 (provide 'chirp)
 

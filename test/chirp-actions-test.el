@@ -309,6 +309,23 @@ Return a list of (compose source foreign)."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(defun chirp-test--with-user-buffer (user fn)
+  "Create a temporary Chirp view buffer with USER and call FN inside it."
+  (let ((buffer (generate-new-buffer " *chirp-action-user*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (chirp-view-mode)
+          (let ((inhibit-read-only t))
+            (insert "user\n")
+            (add-text-properties
+             (point-min) (point-max)
+             `(chirp-entry-item ,user))
+            (put-text-property (point-min) (1+ (point-min)) 'chirp-entry-start t)
+            (goto-char (point-min)))
+          (funcall fn buffer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest chirp-toggle-like-at-point-uses-like-and-unlike-commands ()
   "Toggle like should choose the backend command from the current local state."
   (clrhash chirp-tweet-state-overrides)
@@ -349,28 +366,55 @@ Return a list of (compose source foreign)."
                (should (= (plist-get (chirp-entry-at-point) :like-count) 9))))))
       (clrhash chirp-tweet-state-overrides))))
 
+(ert-deftest chirp-follow-and-unfollow-user-at-point-use-explicit-commands ()
+  "User follow actions should dispatch follow and unfollow commands."
+  (let (captured-args refreshed)
+    (chirp-test--with-user-buffer
+     '(:kind user :handle "alice")
+     (lambda (_buffer)
+       (cl-letf (((symbol-function 'chirp-actions--perform)
+                  (lambda (args on-success &optional _on-error)
+                    (setq captured-args args)
+                    (funcall on-success nil nil)))
+                 ((symbol-function 'chirp-actions--refresh-buffer)
+                  (lambda (_target)
+                    (setq refreshed t))))
+         (chirp-follow-user-at-point)
+         (should (equal captured-args '("follow" "alice")))
+         (should refreshed)
+         (setq captured-args nil
+               refreshed nil)
+         (chirp-unfollow-user-at-point)
+         (should (equal captured-args '("unfollow" "alice")))
+         (should refreshed))))))
+
 (ert-deftest chirp-dispatch-uses-toggle-actions-for-stateful-tweet-actions ()
   "The Chirp transient should expose only toggle entries for like/RT/bookmark."
   (let ((home-suffix (transient-get-suffix 'chirp-dispatch "h"))
         (following-suffix (transient-get-suffix 'chirp-dispatch "f"))
+        (me-suffix (transient-get-suffix 'chirp-dispatch "u"))
         (bookmarks-suffix (transient-get-suffix 'chirp-dispatch "b"))
         (liked-suffix (transient-get-suffix 'chirp-dispatch "L"))
         (list-suffix (transient-get-suffix 'chirp-dispatch "s"))
+        (follow-suffix (transient-get-suffix 'chirp-dispatch "+"))
+        (unfollow-suffix (transient-get-suffix 'chirp-dispatch "-"))
         (retweet-suffix (transient-get-suffix 'chirp-dispatch "R"))
         (like-suffix (transient-get-suffix 'chirp-dispatch "l"))
         (bookmark-suffix (transient-get-suffix 'chirp-dispatch "B"))
         (copy-suffix (transient-get-suffix 'chirp-dispatch "y")))
     (should (eq (plist-get (cdr home-suffix) :command) 'chirp-timeline-open-home))
     (should (eq (plist-get (cdr following-suffix) :command) 'chirp-timeline-open-following))
+    (should (eq (plist-get (cdr me-suffix) :command) 'chirp-me))
     (should (eq (plist-get (cdr bookmarks-suffix) :command) 'chirp-timeline-open-bookmarks))
     (should (eq (plist-get (cdr liked-suffix) :command) 'chirp-timeline-open-likes))
     (should (eq (plist-get (cdr list-suffix) :command) 'chirp-timeline-open-list))
+    (should (eq (plist-get (cdr follow-suffix) :command) 'chirp-follow-user-at-point))
+    (should (eq (plist-get (cdr unfollow-suffix) :command) 'chirp-unfollow-user-at-point))
     (should (eq (plist-get (cdr retweet-suffix) :command) 'chirp-toggle-retweet-at-point))
     (should (eq (plist-get (cdr like-suffix) :command) 'chirp-toggle-like-at-point))
     (should (eq (plist-get (cdr bookmark-suffix) :command) 'chirp-toggle-bookmark-at-point))
     (should (eq (plist-get (cdr copy-suffix) :command) 'chirp-copy-fixupx-url-at-point))
     (should-error (transient-get-suffix 'chirp-dispatch "T"))
-    (should-error (transient-get-suffix 'chirp-dispatch "u"))
     (should-error (transient-get-suffix 'chirp-dispatch "U"))))
 
 (ert-deftest chirp-copy-fixupx-url-at-point-copies-rewritten-url ()

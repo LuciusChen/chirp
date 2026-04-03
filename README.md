@@ -13,9 +13,10 @@ This first cut is intentionally narrow:
 - Lists
 - Search
 - Tweet thread/detail
-- Profile with recent posts
+- Profile header with a direct posts stream
+- Profile follower/following lists
 - Basic write actions via a `transient` menu: post, reply, quote, retweet,
-  like, and bookmark
+  like, bookmark, follow, and unfollow
 
 It does not implement DMs, notifications, or paid features.
 
@@ -71,24 +72,28 @@ M-x chirp-home
 M-x chirp-following
 M-x chirp-bookmarks
 M-x chirp-likes
+M-x chirp-me
 M-x chirp-list      ;; choose from your lists in the minibuffer
 M-x chirp-search
 M-x chirp-thread
 M-x chirp-profile
+M-x chirp-profile-followers
+M-x chirp-profile-following-users
 ```
 
 ## Keys
 
 - `g`: refresh; on Home and Following, Chirp keeps the current timeline visible and merges newer posts at the top
-- `TAB`: switch between Home and Following when you are on either timeline
+- `TAB`: switch between Home and Following on those timelines; in profile buffers, cycle the available profile subviews
 - `n` / `p`: next or previous entry; on Home and Following, `n` on the last entry loads more older posts
 - `N`: load more older posts on Home and Following
 - `q`: close the current Chirp window; on For You and Following, keep the timeline buffer alive so you can switch back later
 - When Home or Following has no more older posts, Chirp says so instead of leaving the last loading message in place
 - `RET`: open the current tweet or profile, or open large media when point is on a thumbnail
+- In profile summaries, `RET` on `Followers` or `Following` opens that user list
 - `m`: open the first media item for the current tweet
 - `A`: open the author profile
-- `x`: open the actions menu for timeline switching, bookmarks, liked tweets, lists, post/reply/quote, and tweet actions
+- `x`: open the actions menu for timeline switching, your own profile, bookmarks, liked tweets, lists, post/reply/quote, follow/unfollow, and tweet actions
 - `o`: open the current item in a browser
 - `q`: close the current Chirp buffer
 

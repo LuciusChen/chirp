@@ -93,6 +93,26 @@
   "Face used for separators inside thread views."
   :group 'chirp)
 
+(defface chirp-profile-view-active-face
+  '((t :inherit (mode-line-emphasis link)))
+  "Face used for the active profile subview label."
+  :group 'chirp)
+
+(defface chirp-profile-view-inactive-face
+  '((t :inherit shadow))
+  "Face used for inactive profile subview labels."
+  :group 'chirp)
+
+(defface chirp-profile-action-face
+  '((t :inherit button))
+  "Face used for clickable profile action buttons."
+  :group 'chirp)
+
+(defface chirp-profile-action-secondary-face
+  '((t :inherit shadow))
+  "Face used for secondary profile relationship labels."
+  :group 'chirp)
+
 (defface chirp-active-metric-face
   '((t :inherit (bold success)))
   "Face used for active tweet state metrics."
@@ -153,7 +173,8 @@ When ACTIVE is non-nil, prefer the action-specific face for LABEL."
                         ,(or (plist-get entry :url)
                              (plist-get entry :profile-url))
                         pointer hand
-                        help-echo "RET: open  m: media  A: author  o: browser"))
+                        help-echo "RET: open  m: media  A: author  o: browser"
+                        rear-nonsticky t))
     (put-text-property start (1+ start) 'chirp-entry-start t)))
 
 (defun chirp-render--mark-subentry (start end entry)
@@ -188,6 +209,70 @@ When ACTIVE is non-nil, prefer the action-specific face for LABEL."
                            ,(format "https://x.com/%s" handle)
                            pointer hand
                            help-echo "RET: open author profile  o: browser"))))
+
+(defun chirp-render--mark-profile-list-region (start end kind handle)
+  "Mark the region from START to END as profile list KIND for HANDLE."
+  (when (and handle
+             (< start end))
+    (add-text-properties
+     start end
+     `(chirp-profile-list-kind ,kind
+                               chirp-profile-list-handle ,handle
+                               pointer hand
+                               help-echo
+                               ,(pcase kind
+                                  ('followers "RET: open followers")
+                                  ('following "RET: open following")
+                                  (_ "RET: open profile list"))))))
+
+(defun chirp-render--mark-profile-view-region (start end mode)
+  "Mark the region from START to END as profile subview MODE."
+  (when (< start end)
+    (add-text-properties
+     start end
+     `(chirp-profile-view-mode ,mode
+                               pointer hand
+                               help-echo "RET/TAB: switch profile view"))))
+
+(defun chirp-render--mark-profile-action-region (start end action handle)
+  "Mark the region from START to END as profile ACTION for HANDLE."
+  (when (and handle
+             (< start end))
+    (add-text-properties
+     start end
+     `(chirp-profile-action ,action
+                            chirp-profile-action-handle ,handle
+                            pointer hand
+                            help-echo "RET: toggle follow"))))
+
+(defun chirp-render--profile-follow-action-label (user)
+  "Return the primary follow button label for USER, or nil."
+  (cond
+   ((plist-get user :self-p) nil)
+   ((plist-get user :viewer-following-p) "Following")
+   ((plist-get user :viewer-followed-by-p) "Follow back")
+   (t "Follow")))
+
+(defun chirp-render-insert-profile-view-strip (current-mode modes)
+  "Insert a lightweight profile subview strip for MODES.
+
+CURRENT-MODE marks the active entry."
+  (when modes
+    (dolist (mode modes)
+      (let ((start (point)))
+        (insert
+         (propertize
+          (pcase mode
+            ('posts "Posts")
+            ('likes "Likes")
+            (_ (capitalize (symbol-name mode))))
+          'face (if (eq mode current-mode)
+                    'chirp-profile-view-active-face
+                  'chirp-profile-view-inactive-face)))
+        (chirp-render--mark-profile-view-region start (point) mode))
+      (unless (eq mode (car (last modes)))
+        (insert (propertize "  " 'face 'shadow))))
+    (insert "\n\n")))
 
 (defun chirp-render-insert-section (title)
   "Insert section heading TITLE."
@@ -642,13 +727,32 @@ When DETAILP is non-nil, use a longer preview."
     (when-let* ((bio (plist-get user :bio)))
       (unless (string-empty-p bio)
         (chirp-render--insert-filled-text bio)))
-    (insert
-     (propertize
-      (format "Posts %s   Following %s   Followers %s"
-              (chirp-format-count (plist-get user :posts))
-              (chirp-format-count (plist-get user :following))
-              (chirp-format-count (plist-get user :followers)))
-      'face 'chirp-meta-face))
+    (when-let* ((action-label (chirp-render--profile-follow-action-label user))
+                (handle (plist-get user :handle)))
+      (let ((action-start (point)))
+        (insert (propertize action-label 'face 'chirp-profile-action-face))
+        (chirp-render--mark-profile-action-region
+         action-start (point) 'toggle-follow handle))
+      (when (and (plist-get user :viewer-following-p)
+                 (plist-get user :viewer-followed-by-p))
+        (insert (propertize "  Mutuals" 'face 'chirp-profile-action-secondary-face)))
+      (insert "\n"))
+    (insert (propertize (format "Posts %s" (chirp-format-count (plist-get user :posts)))
+                        'face 'chirp-meta-face))
+    (insert (propertize "   " 'face 'chirp-meta-face))
+    (let ((following-start (point)))
+      (insert (propertize
+               (format "Following %s" (chirp-format-count (plist-get user :following)))
+               'face 'chirp-meta-face))
+      (chirp-render--mark-profile-list-region
+       following-start (point) 'following (plist-get user :handle)))
+    (insert (propertize "   " 'face 'chirp-meta-face))
+    (let ((followers-start (point)))
+      (insert (propertize
+               (format "Followers %s" (chirp-format-count (plist-get user :followers)))
+               'face 'chirp-meta-face))
+      (chirp-render--mark-profile-list-region
+       followers-start (point) 'followers (plist-get user :handle)))
     (insert "\n")
     (when-let* ((joined (plist-get user :joined)))
       (insert (propertize (format "Joined %s" joined) 'face 'chirp-meta-face))
@@ -658,6 +762,13 @@ When DETAILP is non-nil, use a longer preview."
       (insert "\n"))
     (insert "\n")
     (chirp-render--mark-entry start (point) user)))
+
+(defun chirp-render-insert-user-list (users)
+  "Insert a sequence of USERS."
+  (if users
+      (dolist (user users)
+        (chirp-render-insert-user-summary user))
+    (chirp-render-insert-empty "No users returned.")))
 
 (provide 'chirp-render)
 

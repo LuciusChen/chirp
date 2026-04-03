@@ -12,15 +12,6 @@
 (declare-function chirp-backend-invalidate-user "chirp-backend" (handle))
 (defvar chirp-backend-read-cache-ttl)
 (defvar chirp-backend--bypass-read-cache)
-(defvar chirp-backend-use-daemon)
-(defvar chirp-backend--daemon-process)
-(defvar chirp-backend--daemon-ready-p)
-(defvar chirp-backend--daemon-shutting-down)
-(defvar chirp-backend--daemon-unsupported-p)
-(defvar chirp-backend--daemon-queue)
-(defvar chirp-backend--daemon-stderr-buffer)
-(defvar chirp-backend--daemon-shutdown-timer)
-(defvar chirp-backend--daemon-pending)
 
 (ert-deftest chirp-backend-thread-cache-reuses-fresh-results ()
   "Fresh cached thread results should avoid a second backend request."
@@ -127,6 +118,32 @@
     (should (equal tweets '((:id "1"))))
     (should (equal next-cursor "cursor-next"))))
 
+(ert-deftest chirp-backend-user-posts-passes-cursor-without-cache ()
+  "Profile post pagination should forward the next cursor directly."
+  (let (captured-args tweets next-cursor)
+    (cl-letf (((symbol-function 'chirp-backend-request)
+               (lambda (args callback &optional _errback)
+                 (setq captured-args args)
+                 (funcall callback
+                          '(("id" . "1"))
+                          '(("ok" . t)
+                            ("pagination" . (("nextCursor" . "cursor-next")))))))
+              ((symbol-function 'chirp-collect-top-level-tweets)
+               (lambda (_data)
+                 (list (list :id "1")))))
+      (chirp-backend-user-posts
+       "@Alice"
+       (lambda (items envelope)
+         (setq tweets items
+               next-cursor (chirp-backend-envelope-next-cursor envelope)))
+       nil
+       15
+       "cursor-prev"))
+    (should (equal captured-args
+                   '("user-posts" "Alice" "--cursor" "cursor-prev" "--max" "15")))
+    (should (equal tweets '((:id "1"))))
+    (should (equal next-cursor "cursor-next"))))
+
 (ert-deftest chirp-backend-lists-sync-uses-cache-and-lists-command ()
   "List catalog lookups should reuse the read cache."
   (let ((chirp-backend-read-cache-ttl 15)
@@ -202,6 +219,46 @@
                    '("likes" "Alice" "--max" "20")))
     (should (equal tweets '((:id "1"))))))
 
+(ert-deftest chirp-backend-followers-passes-handle-and-normalizes-users ()
+  "Followers requests should strip @ and normalize returned users."
+  (let (captured-args users)
+    (cl-letf (((symbol-function 'chirp-backend-request)
+               (lambda (args callback &optional _errback)
+                 (setq captured-args args)
+                 (funcall callback '((("screenName" . "alice")
+                                      ("name" . "Alice")))
+                          '((ok . t)))))
+              ((symbol-function 'chirp-normalize-user)
+               (lambda (_data)
+                 (list :kind 'user :handle "alice"))))
+      (chirp-backend-followers
+       "@Bob"
+       (lambda (items _envelope)
+         (setq users items))))
+    (should (equal captured-args
+                   '("followers" "Bob" "--max" "20")))
+    (should (equal users '((:kind user :handle "alice"))))))
+
+(ert-deftest chirp-backend-following-users-passes-handle-and-normalizes-users ()
+  "Following requests should strip @ and normalize returned users."
+  (let (captured-args users)
+    (cl-letf (((symbol-function 'chirp-backend-request)
+               (lambda (args callback &optional _errback)
+                 (setq captured-args args)
+                 (funcall callback '((("screenName" . "alice")
+                                      ("name" . "Alice")))
+                          '((ok . t)))))
+              ((symbol-function 'chirp-normalize-user)
+               (lambda (_data)
+                 (list :kind 'user :handle "alice"))))
+      (chirp-backend-following-users
+       "@Bob"
+       (lambda (items _envelope)
+         (setq users items))))
+    (should (equal captured-args
+                   '("following" "Bob" "--max" "20")))
+    (should (equal users '((:kind user :handle "alice"))))))
+
 (ert-deftest chirp-backend-list-normalizes-list-urls ()
   "List requests should accept either a raw id or a full list URL."
   (let (captured-args)
@@ -230,109 +287,6 @@
       (chirp-backend-thread "123" #'ignore))
     (should (equal captured-args
                    '("tweet" "123" "--max" "20")))))
-
-(ert-deftest chirp-backend-request-routes-read-commands-through-daemon ()
-  "Read commands should use the daemon while writes stay one-shot."
-  (let ((chirp-backend-use-daemon t)
-        (chirp-backend--daemon-unsupported-p nil)
-        daemon-call
-        process-call)
-    (cl-letf (((symbol-function 'chirp-backend--request-via-daemon)
-               (lambda (args _callback _errback attempt)
-                 (setq daemon-call (list args attempt))))
-              ((symbol-function 'chirp-backend--request-via-process)
-               (lambda (args _callback _errback attempt)
-                 (setq process-call (list args attempt)))))
-      (chirp-backend-request '("feed" "--max" "20") #'ignore)
-      (chirp-backend-request '("like" "123") #'ignore))
-    (should (equal daemon-call '(("feed" "--max" "20") 0)))
-    (should (equal process-call '(("like" "123") 0)))))
-
-(ert-deftest chirp-backend-shutdown-daemon-sends-graceful-shutdown ()
-  "Daemon shutdown should send a shutdown request before forcing a kill."
-  (let ((chirp-backend--daemon-process 'daemon)
-        (chirp-backend--daemon-ready-p t)
-        (chirp-backend--daemon-shutting-down nil)
-        (chirp-backend--daemon-shutdown-timer nil)
-        sent)
-    (cl-letf (((symbol-function 'process-live-p)
-               (lambda (_process)
-                 t))
-              ((symbol-function 'process-send-string)
-               (lambda (_process payload)
-                 (setq sent payload)))
-              ((symbol-function 'run-at-time)
-               (lambda (&rest _args)
-                 'timer)))
-      (chirp-backend-shutdown-daemon))
-    (should chirp-backend--daemon-shutting-down)
-    (should (string-match-p "\"shutdown\"" sent))
-    (should (eq chirp-backend--daemon-shutdown-timer 'timer))))
-
-(ert-deftest chirp-backend-daemon-sentinel-falls-back-before-ready ()
-  "A daemon startup failure should fall back to one-shot requests."
-  (let ((chirp-backend--daemon-process 'daemon)
-        (chirp-backend--daemon-ready-p nil)
-        (chirp-backend--daemon-shutting-down nil)
-        (chirp-backend--daemon-unsupported-p nil)
-        (chirp-backend--daemon-queue
-         (list (list :id "1"
-                     :args '("feed" "--max" "20")
-                     :callback #'ignore
-                     :errback nil
-                     :attempt 0)))
-        (chirp-backend--daemon-stderr-buffer (generate-new-buffer " *chirp-daemon-stderr-test*"))
-        fallback)
-    (unwind-protect
-        (progn
-          (with-current-buffer chirp-backend--daemon-stderr-buffer
-            (insert "No such command"))
-          (cl-letf (((symbol-function 'process-status)
-                     (lambda (_process)
-                       'exit))
-                    ((symbol-function 'chirp-backend--request-via-process)
-                     (lambda (args _callback _errback attempt)
-                       (push (list args attempt) fallback)))
-                    ((symbol-function 'message)
-                     (lambda (&rest _args)
-                       nil)))
-            (chirp-backend--daemon-sentinel 'daemon "finished"))
-          (should chirp-backend--daemon-unsupported-p)
-          (should (equal fallback '((("feed" "--max" "20") 0)))))
-      (when (buffer-live-p chirp-backend--daemon-stderr-buffer)
-        (kill-buffer chirp-backend--daemon-stderr-buffer)))))
-
-(ert-deftest chirp-backend-daemon-invalid-json-falls-back-to-one-shot ()
-  "Protocol corruption should disable daemon mode and retry pending requests."
-  (let ((chirp-backend--daemon-process 'daemon)
-        (chirp-backend--daemon-ready-p t)
-        (chirp-backend--daemon-shutting-down nil)
-        (chirp-backend--daemon-unsupported-p nil)
-        (chirp-backend--daemon-queue nil)
-        (chirp-backend--daemon-pending (make-hash-table :test #'equal))
-        fallback)
-    (puthash "1"
-             (list :id "1"
-                   :args '("tweet" "123" "--max" "20")
-                   :callback #'ignore
-                   :errback nil
-                   :attempt 0)
-             chirp-backend--daemon-pending)
-    (cl-letf (((symbol-function 'process-live-p)
-               (lambda (_process)
-                 t))
-              ((symbol-function 'delete-process)
-               (lambda (&rest _args)
-                 nil))
-              ((symbol-function 'chirp-backend--request-via-process)
-               (lambda (args _callback _errback attempt)
-                 (push (list args attempt) fallback)))
-              ((symbol-function 'message)
-               (lambda (&rest _args)
-                 nil)))
-      (chirp-backend--daemon-handle-line "x"))
-    (should chirp-backend--daemon-unsupported-p)
-    (should (equal fallback '((("tweet" "123" "--max" "20") 0))))))
 
 (ert-deftest chirp-backend-process-requests-enable-compact-json ()
   "One-shot backend requests should ask twitter-cli for compact structured JSON."
