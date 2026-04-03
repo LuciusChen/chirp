@@ -21,7 +21,7 @@ When zero or negative, the in-memory read cache is disabled."
   :type 'number
   :group 'chirp)
 
-(defcustom chirp-backend-use-daemon t
+(defcustom chirp-backend-use-daemon nil
   "When non-nil, reuse a persistent twitter-cli daemon for read requests."
   :type 'boolean
   :group 'chirp)
