@@ -219,6 +219,67 @@
                    '("likes" "Alice" "--max" "20")))
     (should (equal tweets '((:id "1"))))))
 
+(ert-deftest chirp-backend-user-replies-passes-cursor-and-normalizes-tweets ()
+  "Replies requests should pass through handle, cursor, and tweet normalization."
+  (let (captured-args tweets)
+    (cl-letf (((symbol-function 'chirp-backend-request)
+               (lambda (args callback &optional _errback)
+                 (setq captured-args args)
+                 (funcall callback 'raw '((ok . t)))))
+              ((symbol-function 'chirp-collect-top-level-tweets)
+               (lambda (_data)
+                 (list (list :id "1")))))
+      (chirp-backend-user-replies
+       "@Alice"
+       (lambda (items _envelope)
+         (setq tweets items))
+       nil
+       10
+       "cursor-prev"))
+    (should (equal captured-args
+                   '("user-replies" "Alice" "--cursor" "cursor-prev" "--max" "10")))
+    (should (equal tweets '((:id "1"))))))
+
+(ert-deftest chirp-backend-user-highlights-passes-max-results ()
+  "Highlights requests should strip @ and forward max-results."
+  (let (captured-args tweets)
+    (cl-letf (((symbol-function 'chirp-backend-request)
+               (lambda (args callback &optional _errback)
+                 (setq captured-args args)
+                 (funcall callback 'raw '((ok . t)))))
+              ((symbol-function 'chirp-collect-top-level-tweets)
+               (lambda (_data)
+                 (list (list :id "1")))))
+      (chirp-backend-user-highlights
+       "@Alice"
+       (lambda (items _envelope)
+         (setq tweets items))
+       nil
+       7))
+    (should (equal captured-args
+                   '("user-highlights" "Alice" "--max" "7")))
+    (should (equal tweets '((:id "1"))))))
+
+(ert-deftest chirp-backend-user-media-passes-max-results ()
+  "Media requests should strip @ and forward max-results."
+  (let (captured-args tweets)
+    (cl-letf (((symbol-function 'chirp-backend-request)
+               (lambda (args callback &optional _errback)
+                 (setq captured-args args)
+                 (funcall callback 'raw '((ok . t)))))
+              ((symbol-function 'chirp-collect-top-level-tweets)
+               (lambda (_data)
+                 (list (list :id "1")))))
+      (chirp-backend-user-media
+       "@Alice"
+       (lambda (items _envelope)
+         (setq tweets items))
+       nil
+       6))
+    (should (equal captured-args
+                   '("user-media" "Alice" "--max" "6")))
+    (should (equal tweets '((:id "1"))))))
+
 (ert-deftest chirp-backend-followers-passes-handle-and-normalizes-users ()
   "Followers requests should strip @ and normalize returned users."
   (let (captured-args users)

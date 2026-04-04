@@ -84,13 +84,14 @@ M-x chirp-profile-following-users
 ## Keys
 
 - `g`: refresh; on Home and Following, Chirp keeps the current timeline visible and merges newer posts at the top
-- `TAB`: switch between Home and Following on those timelines; in profile buffers, cycle the available profile subviews
+- `TAB`: switch between Home and Following on those timelines; in profile buffers, cycle `Posts`, `Replies`, `Highlights`, `Media`, and `Likes` when available
 - `n` / `p`: next or previous entry; on Home and Following, `n` on the last entry loads more older posts
 - `N`: load more older posts on Home and Following
 - `q`: close the current Chirp window; on For You and Following, keep the timeline buffer alive so you can switch back later
 - When Home or Following has no more older posts, Chirp says so instead of leaving the last loading message in place
 - `RET`: open the current tweet or profile, or open large media when point is on a thumbnail
 - In profile summaries, `RET` on `Followers` or `Following` opens that user list
+- In profile buffers, `RET` on the subview strip switches between available profile timelines
 - `m`: open the first media item for the current tweet
 - `D`: download the current media, or choose one media item from the current tweet; photos try the original-resolution URL and videos use the highest-quality variant
 - `A`: open the author profile

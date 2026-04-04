@@ -11,12 +11,16 @@
 
 (declare-function chirp-backend-invalidate-user "chirp-backend" (handle))
 (declare-function chirp-backend-envelope-next-cursor "chirp-backend" (envelope))
+(declare-function chirp-backend-user-highlights "chirp-backend" (handle callback &optional errback max-results cursor))
+(declare-function chirp-backend-user-media "chirp-backend" (handle callback &optional errback max-results cursor))
 (defvar chirp-backend--bypass-read-cache)
+(defconst chirp-profile--base-modes '(posts replies highlights media)
+  "Profile subviews shown for all profiles.")
 (defvar-local chirp-profile--user nil
   "Buffer-local cached profile plist for the active profile view.")
 (defvar-local chirp-profile--tweets nil
   "Buffer-local cached tweet list for the active profile view.")
-(defvar-local chirp-profile--available-modes '(posts)
+(defvar-local chirp-profile--available-modes chirp-profile--base-modes
   "Buffer-local list of available profile subview modes.")
 
 (defun chirp-profile--list-title (kind handle)
@@ -32,8 +36,15 @@
   "Return a human-readable label for profile MODE."
   (pcase mode
     ('posts "Posts")
+    ('replies "Replies")
+    ('highlights "Highlights")
+    ('media "Media")
     ('likes "Likes")
     (_ (capitalize (symbol-name mode)))))
+
+(defun chirp-profile--paginated-mode-p (mode)
+  "Return non-nil when profile MODE supports cursor-based pagination."
+  (memq mode '(posts replies highlights media)))
 
 (defun chirp-profile--title (handle mode)
   "Return a title for HANDLE profile subview MODE."
@@ -101,7 +112,7 @@
 
 (defun chirp-profile--render
     (buffer title refresh user tweets current-mode modes
-            &optional anchor-id display-p posts-ready next-cursor status-message)
+            &optional anchor-id display-p timeline-ready next-cursor status-message)
   "Render USER and TWEETS into BUFFER."
   (chirp-render-into-buffer
    buffer title refresh
@@ -116,7 +127,7 @@
       (status-message
        (insert (propertize status-message 'face 'shadow))
        (insert "\n"))
-      (posts-ready
+      (timeline-ready
        (chirp-render-insert-empty
         (format "No %s returned."
                 (downcase (chirp-profile--mode-label current-mode)))))
@@ -138,11 +149,11 @@
     (setq-local chirp--timeline-count (length tweets))
     (setq-local chirp--timeline-next-cursor next-cursor)
     (setq-local chirp--timeline-load-more-function
-                (and posts-ready
-                     (eq chirp--profile-view-mode 'posts)
+                (and timeline-ready
+                     (chirp-profile--paginated-mode-p chirp--profile-view-mode)
                      next-cursor
                      #'chirp-profile-load-more))
-    (setq-local chirp--timeline-exhausted-p (and posts-ready (not next-cursor)))
+    (setq-local chirp--timeline-exhausted-p (and timeline-ready (not next-cursor)))
     (setq-local chirp--timeline-loading-more nil)
     (setq-local chirp--rerender-function
                 (let ((saved-user user)
@@ -152,7 +163,7 @@
                       (saved-mode current-mode)
                       (saved-modes modes)
                       (saved-next-cursor next-cursor)
-                      (saved-posts-ready posts-ready)
+                      (saved-timeline-ready timeline-ready)
                       (saved-status-message status-message))
                   (lambda ()
                     (chirp-profile--render
@@ -165,7 +176,7 @@
                      saved-modes
                      (chirp-capture-point-anchor)
                      nil
-                     saved-posts-ready
+                     saved-timeline-ready
                      saved-next-cursor
                      saved-status-message))))
     (or (and anchor-id
@@ -175,10 +186,10 @@
     (chirp-display-buffer buffer)))
 
 (defun chirp-profile-load-more (&optional anchor-id)
-  "Load older posts for the current profile timeline."
+  "Load older items for the current profile timeline."
   (interactive)
   (unless chirp--profile-handle
-    (user-error "Current view does not support loading more posts"))
+    (user-error "Current view does not support loading more items"))
   (cond
    (chirp--timeline-loading-more
     (message "Already loading older posts..."))
@@ -194,13 +205,15 @@
            (current chirp-profile--tweets)
            (saved-mode chirp--profile-view-mode)
            (saved-modes chirp-profile--available-modes)
+           (mode-label (downcase (chirp-profile--mode-label saved-mode)))
            (cursor chirp--timeline-next-cursor)
            (token (chirp-begin-request buffer))
            (anchor (or anchor-id (chirp-capture-point-anchor))))
       (setq-local chirp--timeline-loading-more t)
-      (chirp-set-status buffer "Loading older posts...")
-      (message "Loading older posts...")
-      (chirp-backend-user-posts
+      (chirp-set-status buffer (format "Loading older %s..." mode-label))
+      (message "Loading older %s..." mode-label)
+      (chirp-profile--fetch-content
+       saved-mode
        chirp--profile-handle
        (lambda (tweets envelope)
          (when (chirp-request-current-p buffer token)
@@ -217,7 +230,7 @@
              (chirp-media-prefetch-tweets tweets buffer)
              (chirp-enrich-quoted-tweets tweets buffer)
              (unless added-p
-               (message "No older posts.")))))
+               (message "No older %s." mode-label)))))
        (lambda (message)
          (when (chirp-request-current-p buffer token)
            (with-current-buffer buffer
@@ -235,6 +248,12 @@ MODE selects the timeline source.  CURSOR is only used for paginated modes."
   (pcase mode
     ('posts
      (chirp-backend-user-posts handle callback errback max-results cursor))
+    ('replies
+     (chirp-backend-user-replies handle callback errback max-results cursor))
+    ('highlights
+     (chirp-backend-user-highlights handle callback errback max-results cursor))
+    ('media
+     (chirp-backend-user-media handle callback errback max-results cursor))
     ('likes
      (chirp-backend-likes handle callback errback))
     (_
@@ -273,11 +292,11 @@ MODE selects the active profile subview and defaults to `posts'."
          (token nil)
          (saved-user nil)
          (saved-tweets nil)
-         (available-modes '(posts))
-         (posts-next-cursor nil)
+         (available-modes chirp-profile--base-modes)
+         (timeline-next-cursor nil)
          (user-ready nil)
-         (posts-ready nil)
-         (posts-error-message nil)
+         (timeline-ready nil)
+         (timeline-error-message nil)
          (displayed nil))
     (cl-labels
         ((render-current (&optional anchor-id)
@@ -292,9 +311,9 @@ MODE selects the active profile subview and defaults to `posts'."
               available-modes
               anchor-id
               displayed
-              posts-ready
-              posts-next-cursor
-              (and posts-ready posts-error-message))))
+              timeline-ready
+              timeline-next-cursor
+              (and timeline-ready timeline-error-message))))
          (show-current ()
            (unless displayed
              (setq displayed t)
@@ -317,22 +336,25 @@ MODE selects the active profile subview and defaults to `posts'."
                  user-ready t)
            (plist-put saved-user :self-p (memq 'likes available-modes))
            (cond
-            (posts-error-message
+            (timeline-error-message
              (chirp-set-status
               buffer
               (format "%s failed"
                       (chirp-profile--mode-label mode))
               'error))
-            (posts-ready
+            (timeline-ready
              (chirp-clear-status buffer))
             (t
-             (chirp-set-status buffer "Profile ready · loading posts...")))
+             (chirp-set-status
+              buffer
+              (format "Profile ready · loading %s..."
+                      (downcase (chirp-profile--mode-label mode))))))
            (render-current (and displayed
                                 (with-current-buffer buffer
                                   (chirp-capture-point-anchor))))
            (show-current)
            (chirp-media-prefetch-user saved-user buffer)
-           (when posts-ready
+           (when timeline-ready
              (with-current-buffer buffer
                (setq-local chirp--request-token nil))
              (prefetch-current-posts))))
@@ -349,8 +371,8 @@ MODE selects the active profile subview and defaults to `posts'."
                                   (string-equal
                                    (downcase (string-remove-prefix "@" self-handle))
                                    (downcase clean-handle)))
-                             '(posts likes)
-                           '(posts))))
+                             (append chirp-profile--base-modes '(likes))
+                           chirp-profile--base-modes)))
              (setq available-modes modes)
              (when saved-user
                (plist-put saved-user :self-p (memq 'likes modes)))
@@ -366,16 +388,20 @@ MODE selects the active profile subview and defaults to `posts'."
       (chirp-profile--fetch-content
        mode
        clean-handle
-       (lambda (tweets posts-envelope)
+       (lambda (tweets timeline-envelope)
          (when (chirp-request-current-p buffer token)
            (setq saved-tweets tweets
-                 posts-ready t
-                 posts-error-message nil
-                 posts-next-cursor (and (eq mode 'posts)
-                                        (chirp-backend-envelope-next-cursor posts-envelope)))
+                 timeline-ready t
+                 timeline-error-message nil
+                 timeline-next-cursor
+                 (and (chirp-profile--paginated-mode-p mode)
+                      (chirp-backend-envelope-next-cursor timeline-envelope)))
            (if user-ready
                (chirp-clear-status buffer)
-             (chirp-set-status buffer "Posts ready · loading profile..."))
+             (chirp-set-status
+              buffer
+              (format "%s ready · loading profile..."
+                      (chirp-profile--mode-label mode))))
            (when user-ready
              (render-current (and displayed
                                   (with-current-buffer buffer
@@ -387,9 +413,9 @@ MODE selects the active profile subview and defaults to `posts'."
        (lambda (message)
          (when (chirp-request-current-p buffer token)
            (setq saved-tweets nil
-                 posts-ready t
-                 posts-next-cursor nil
-                 posts-error-message
+                 timeline-ready t
+                 timeline-next-cursor nil
+                 timeline-error-message
                  (format "Unable to load %s.\n\n%s"
                          (downcase (chirp-profile--mode-label mode))
                          message))

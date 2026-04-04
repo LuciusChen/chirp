@@ -105,7 +105,7 @@
                    (list '(:kind tweet :id "1" :text "hello" :author-handle "alice"))
                    '(("pagination" . (("nextCursor" . "cursor-next")))))
           (with-current-buffer buffer
-            (should (equal chirp-profile--available-modes '(posts likes)))
+            (should (equal chirp-profile--available-modes '(posts replies highlights media likes)))
             (should (eq chirp--timeline-load-more-function #'chirp-profile-load-more))
             (should (equal chirp--timeline-next-cursor "cursor-next"))))
       (when (buffer-live-p buffer)
@@ -193,6 +193,42 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest chirp-profile-load-more-uses-current-subview-fetcher ()
+  "Loading more should use the active profile subview command."
+  (let ((buffer (generate-new-buffer " *chirp-profile-load-more-replies*"))
+        (user '(:kind user :handle "alice" :name "Alice" :bio "" :posts 12 :following 3 :followers 4))
+        (first-page (list '(:kind tweet :id "1" :text "first reply" :author-handle "alice")))
+        callback)
+    (unwind-protect
+        (cl-letf (((symbol-function 'chirp-backend-user-replies)
+                   (lambda (handle success &optional _errback max-results cursor)
+                     (should (equal handle "alice"))
+                     (should (= max-results chirp-profile-post-limit))
+                     (should (equal cursor "cursor-prev"))
+                     (setq callback success)))
+                  ((symbol-function 'chirp-begin-request)
+                   (lambda (_buffer)
+                     'profile-token))
+                  ((symbol-function 'chirp-request-current-p)
+                   (lambda (_buffer token)
+                     (eq token 'profile-token)))
+                  ((symbol-function 'chirp-display-buffer) #'ignore)
+                  ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+          (chirp-profile--render
+           buffer "@alice · Replies" #'ignore user first-page 'replies '(posts replies highlights media)
+           nil nil t "cursor-prev" nil)
+          (with-current-buffer buffer
+            (chirp-profile-load-more)
+            (funcall callback
+                     (list '(:kind tweet :id "2" :text "second reply" :author-handle "alice"))
+                     '(("pagination" . (("nextCursor" . "cursor-next")))))
+            (should (string-match-p "first reply" (buffer-string)))
+            (should (string-match-p "second reply" (buffer-string)))
+            (should (equal chirp--timeline-next-cursor "cursor-next"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest chirp-profile-open-adds-likes-mode-for-own-profile ()
   "Own profiles should expose a Likes mode in the profile strip."
   (let ((buffer (generate-new-buffer " *chirp-profile-likes-mode*"))
@@ -230,6 +266,9 @@
           (with-current-buffer buffer
             (goto-char (point-min))
             (should (search-forward "Posts" nil t))
+            (should (search-forward "Replies" nil t))
+            (should (search-forward "Highlights" nil t))
+            (should (search-forward "Media" nil t))
             (should (search-forward "Likes" nil t))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -269,7 +308,7 @@
                    nil)
           (funcall whoami-callback '(:kind user :handle "Lucius_Chen") nil)
           (with-current-buffer buffer
-            (should (equal chirp-profile--available-modes '(posts likes)))))
+            (should (equal chirp-profile--available-modes '(posts replies highlights media likes)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -282,7 +321,7 @@
                   (lambda (mode)
                     (setq captured mode)))
       (let ((inhibit-read-only t))
-        (chirp-render-insert-profile-view-strip 'posts '(posts likes)))
+        (chirp-render-insert-profile-view-strip 'posts '(posts replies highlights media likes)))
       (goto-char (point-min))
       (search-forward "Likes")
       (backward-char 2)

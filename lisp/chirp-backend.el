@@ -127,6 +127,12 @@ When zero or negative, the in-memory read cache is disabled."
   "Return the cache key for HANDLE recent posts."
   (list :user-posts (chirp-backend--normalize-handle handle)))
 
+(defun chirp-backend--profile-timeline-cache-key (handle mode)
+  "Return the cache key for HANDLE profile timeline MODE."
+  (list :profile-timeline
+        (chirp-backend--normalize-handle handle)
+        mode))
+
 (defun chirp-backend--followers-cache-key (handle)
   "Return the cache key for HANDLE followers."
   (list :followers (chirp-backend--normalize-handle handle)))
@@ -159,6 +165,9 @@ When zero or negative, the in-memory read cache is disabled."
   "Drop cached profile metadata and posts for HANDLE."
   (dolist (key (list (chirp-backend--user-cache-key handle)
                      (chirp-backend--user-posts-cache-key handle)
+                     (chirp-backend--profile-timeline-cache-key handle 'replies)
+                     (chirp-backend--profile-timeline-cache-key handle 'highlights)
+                     (chirp-backend--profile-timeline-cache-key handle 'media)
                      (chirp-backend--followers-cache-key handle)
                      (chirp-backend--following-users-cache-key handle)))
     (remhash key chirp-backend--read-cache)))
@@ -593,9 +602,20 @@ When FOLLOWING is non-nil, fetch the Following timeline."
 
 When CURSOR is non-nil, continue from that pagination cursor without using the
 short-lived read cache."
+  (chirp-backend--profile-timeline
+   "user-posts"
+   (chirp-backend--user-posts-cache-key handle)
+   handle callback errback max-results cursor))
+
+(defun chirp-backend--profile-timeline
+    (command cache-key handle callback &optional errback max-results cursor)
+  "Fetch profile timeline COMMAND for HANDLE and call CALLBACK.
+
+When CURSOR is non-nil, continue from that pagination cursor without using the
+short-lived read cache."
   (let* ((clean-handle (string-remove-prefix "@" handle))
          (limit (or max-results chirp-profile-post-limit))
-         (args (append (list "user-posts" clean-handle)
+         (args (append (list command clean-handle)
                        (when cursor
                          (list "--cursor" cursor))
                        (list "--max" (number-to-string limit))))
@@ -611,10 +631,31 @@ short-lived read cache."
                                          (lambda (message)
                                            (message "%s" message))))
       (chirp-backend--cached-read
-       (chirp-backend--user-posts-cache-key clean-handle)
+       cache-key
        fetch-page
        callback
        errback))))
+
+(defun chirp-backend-user-replies (handle callback &optional errback max-results cursor)
+  "Fetch posts and replies for HANDLE and call CALLBACK."
+  (chirp-backend--profile-timeline
+   "user-replies"
+   (chirp-backend--profile-timeline-cache-key handle 'replies)
+   handle callback errback max-results cursor))
+
+(defun chirp-backend-user-highlights (handle callback &optional errback max-results cursor)
+  "Fetch highlights for HANDLE and call CALLBACK."
+  (chirp-backend--profile-timeline
+   "user-highlights"
+   (chirp-backend--profile-timeline-cache-key handle 'highlights)
+   handle callback errback max-results cursor))
+
+(defun chirp-backend-user-media (handle callback &optional errback max-results cursor)
+  "Fetch media posts for HANDLE and call CALLBACK."
+  (chirp-backend--profile-timeline
+   "user-media"
+   (chirp-backend--profile-timeline-cache-key handle 'media)
+   handle callback errback max-results cursor))
 
 (defun chirp-backend--collect-users (data)
   "Normalize DATA into a list of user plists."

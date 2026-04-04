@@ -262,8 +262,11 @@ CURRENT-MODE marks the active entry."
       (let ((start (point)))
         (insert
          (propertize
-          (pcase mode
+         (pcase mode
             ('posts "Posts")
+            ('replies "Replies")
+            ('highlights "Highlights")
+            ('media "Media")
             ('likes "Likes")
             (_ (capitalize (symbol-name mode))))
           'face (if (eq mode current-mode)
