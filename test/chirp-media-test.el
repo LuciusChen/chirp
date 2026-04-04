@@ -374,6 +374,89 @@
         (chirp-media-play)))
     (should (equal browsed-url "https://example.com/anim.mp4"))))
 
+(ert-deftest chirp-media-download-url-prefers-original-photo-and-highest-video-variant ()
+  "Downloads should prefer original photos and the highest bitrate video URL."
+  (should
+   (equal
+    (chirp-media-download-url
+     '(:type "photo"
+       :url "https://pbs.twimg.com/media/abc123.jpg?name=small"))
+    "https://pbs.twimg.com/media/abc123.jpg?name=orig"))
+  (should
+   (equal
+    (chirp-media-download-url
+     '(:type "video"
+       :url "https://example.com/mid.mp4"
+       :variants ((:url "https://example.com/low.mp4" :bitrate 832000)
+                  (:url "https://example.com/high.mp4" :bitrate 4096000)
+                  (:url "https://example.com/mid.mp4" :bitrate 2176000))))
+    "https://example.com/high.mp4")))
+
+(ert-deftest chirp-media-download-at-point-starts-async-download ()
+  "Downloading media should prompt for a target path and spawn curl asynchronously."
+  (let ((chirp-media-prefetch-command "/usr/bin/curl")
+        (chirp-media-download-directory "~/Downloads/")
+        captured-command
+        start-message)
+    (with-temp-buffer
+      (chirp-media-view-mode)
+      (setq-local chirp--media-list '((:type "video"
+                                       :url "https://example.com/mid.mp4"
+                                       :variants ((:url "https://example.com/high.mp4" :bitrate 4096000)))))
+      (setq-local chirp--media-index 0)
+      (cl-letf (((symbol-function 'read-file-name)
+                 (lambda (&rest _args)
+                   "/tmp/chirp-download.mp4"))
+                ((symbol-function 'file-exists-p)
+                 (lambda (_path)
+                   nil))
+                ((symbol-function 'make-directory) #'ignore)
+                ((symbol-function 'make-process)
+                 (lambda (&rest args)
+                   (setq captured-command (plist-get args :command))
+                   'fake-process))
+                ((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (setq start-message (apply #'format format-string args)))))
+        (chirp-media-download-at-point)))
+    (should (equal captured-command
+                   '("/usr/bin/curl"
+                     "-L" "-f" "-sS"
+                     "-o" "/tmp/chirp-download.mp4"
+                     "https://example.com/high.mp4")))
+    (should (equal start-message "Downloading chirp-download.mp4..."))))
+
+(ert-deftest chirp-media-download-at-point-falls-back-to-browserless-copy-when-no-curl ()
+  "Downloading media without curl should use `url-copy-file'."
+  (let ((chirp-media-prefetch-command nil)
+        copied-url
+        copied-target
+        final-message)
+    (with-temp-buffer
+      (chirp-media-view-mode)
+      (setq-local chirp--media-list '((:type "photo"
+                                       :url "https://pbs.twimg.com/media/abc123.jpg")))
+      (setq-local chirp--media-index 0)
+      (cl-letf (((symbol-function 'read-file-name)
+                 (lambda (&rest _args)
+                   "/tmp/chirp-photo.jpg"))
+                ((symbol-function 'file-exists-p)
+                 (lambda (_path)
+                   nil))
+                ((symbol-function 'make-directory) #'ignore)
+                ((symbol-function 'url-copy-file)
+                 (lambda (url target &optional _ok-if-exists)
+                   (setq copied-url url
+                         copied-target target)))
+                ((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (setq final-message (apply #'format format-string args)))))
+        (chirp-media-download-at-point)))
+    (should (equal copied-url
+                   "https://pbs.twimg.com/media/abc123.jpg?name=orig"))
+    (should (equal copied-target "/tmp/chirp-photo.jpg"))
+    (should (equal final-message "Downloaded /tmp/chirp-photo.jpg"))))
+
 (provide 'chirp-media-test)
 
 ;;; chirp-media-test.el ends here

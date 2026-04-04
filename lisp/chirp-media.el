@@ -18,6 +18,12 @@
   :type 'directory
   :group 'chirp)
 
+(defcustom chirp-media-download-directory
+  "~/Downloads/"
+  "Directory used as the default target for downloaded media."
+  :type 'directory
+  :group 'chirp)
+
 (defcustom chirp-avatar-size 28
   "Maximum pixel size for avatars."
   :type 'integer
@@ -214,6 +220,7 @@ When nil, Chirp falls back to a text placeholder for video-like media."
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "n") #'chirp-media-next)
     (define-key map (kbd "p") #'chirp-media-previous)
+    (define-key map (kbd "D") #'chirp-media-download-at-point)
     (define-key map (kbd "v") #'chirp-media-play)
     (define-key map (kbd "o") #'chirp-media-browse)
     (define-key map (kbd "q") #'chirp-media-quit)
@@ -228,6 +235,7 @@ When nil, Chirp falls back to a text placeholder for video-like media."
     (set-keymap-parent map image-mode-map)
     (define-key map (kbd "n") #'chirp-media-next)
     (define-key map (kbd "p") #'chirp-media-previous)
+    (define-key map (kbd "D") #'chirp-media-download-at-point)
     (define-key map (kbd "v") #'chirp-media-play)
     (define-key map (kbd "o") #'chirp-media-browse)
     (define-key map (kbd "q") #'chirp-media-quit)
@@ -274,6 +282,20 @@ When nil, Chirp falls back to a text placeholder for video-like media."
                     (car (split-string (file-name-nondirectory path) "\\?"))))
          (ext (and base (file-name-extension base))))
     (downcase (or ext fallback))))
+
+(defun chirp-media--photo-original-url (url)
+  "Return the original-resolution photo URL for URL when possible."
+  (if (and (stringp url)
+           (string-match-p "\\`https://pbs\\.twimg\\.com/" url))
+      (if (string-match-p "[?&]name=" url)
+          (replace-regexp-in-string
+           "\\([?&]name=\\)[^&#]*"
+           "\\1orig"
+           url
+           t
+           nil)
+        (concat url (if (string-match-p "\\?" url) "&" "?") "name=orig"))
+    url))
 
 (defun chirp-media--cache-file (url kind fallback-ext)
   "Return a cache file path for URL of KIND."
@@ -1046,6 +1068,176 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
       (browse-url url)
     (user-error "No media URL available")))
 
+(defun chirp-media--highest-bitrate-variant-url (media)
+  "Return the highest bitrate variant URL for MEDIA, or nil."
+  (when-let* ((variants
+               (cl-remove-if-not
+                (lambda (variant)
+                  (let ((url (plist-get variant :url)))
+                    (and (stringp url)
+                         (not (string-empty-p url)))))
+                (copy-sequence (plist-get media :variants)))))
+    (let ((sorted
+           (sort variants
+                 (lambda (left right)
+                   (> (chirp-media--variant-bitrate left)
+                      (chirp-media--variant-bitrate right))))))
+      (plist-get (car sorted) :url))))
+
+(defun chirp-media-download-url (media)
+  "Return the best download URL for MEDIA."
+  (pcase (plist-get media :type)
+    ("photo"
+     (chirp-media--photo-original-url (plist-get media :url)))
+    ((or "video" "animated_gif")
+     (or (chirp-media--highest-bitrate-variant-url media)
+         (plist-get media :url)))
+    (_
+     (plist-get media :url))))
+
+(defun chirp-media--download-filename (media)
+  "Return a default download file name for MEDIA."
+  (let* ((url (chirp-media-download-url media))
+         (parsed (and (stringp url) (ignore-errors (url-generic-parse-url url))))
+         (path (and parsed (url-filename parsed)))
+         (base (and path
+                    (car (split-string (file-name-nondirectory path) "\\?"))))
+         (fallback-ext
+          (pcase (plist-get media :type)
+            ("photo" "jpg")
+            ((or "video" "animated_gif") "mp4")
+            (_ "bin")))
+         (ext (chirp-media--url-extension url fallback-ext))
+         (name (cond
+                ((and base (not (string-empty-p base)) (file-name-extension base))
+                 base)
+                ((and base (not (string-empty-p base)))
+                 (concat base "." ext))
+                (t
+                 (format "chirp-media-%s.%s"
+                         (secure-hash 'sha1 (or url ""))
+                         ext)))))
+    name))
+
+(defun chirp-media--candidate-label (media index)
+  "Return a minibuffer label for MEDIA at INDEX."
+  (let ((dims (if-let* ((width (plist-get media :width))
+                        (height (plist-get media :height)))
+                  (format " %sx%s" width height)
+                "")))
+    (format "%d. %s %s%s"
+            (1+ index)
+            (or (plist-get media :type) "media")
+            (chirp-media--download-filename media)
+            dims)))
+
+(defun chirp-media--select-download-media ()
+  "Return the media item that should be downloaded from the current context."
+  (or (chirp-media-at-point)
+      (and chirp--media-list
+           (nth chirp--media-index chirp--media-list))
+      (let* ((entry (chirp-entry-at-point))
+             (media-list (or (plist-get entry :media)
+                             (chirp-tweet-article-images entry))))
+        (pcase media-list
+          (`nil (user-error "No media available at point"))
+          (`(,single) single)
+          (_
+           (let* ((choices
+                   (cl-loop for media in media-list
+                            for index from 0
+                            collect (cons (chirp-media--candidate-label media index)
+                                          media)))
+                  (selection
+                   (completing-read "Download media: "
+                                    choices
+                                    nil
+                                    t)))
+             (cdr (assoc selection choices))))))))
+
+(defun chirp-media--read-download-target (media)
+  "Prompt for a target path for MEDIA."
+  (let* ((directory (file-name-as-directory
+                     (expand-file-name chirp-media-download-directory)))
+         (default-name (chirp-media--download-filename media))
+         (default-path (expand-file-name default-name directory))
+         (target (read-file-name "Save media as: "
+                                 directory
+                                 default-path
+                                 nil
+                                 default-name)))
+    (expand-file-name target)))
+
+(defun chirp-media--cached-download-file (media)
+  "Return a cached local file that matches MEDIA's download URL, or nil."
+  (let* ((url (chirp-media-download-url media))
+         (kind "media")
+         (fallback-ext
+          (pcase (plist-get media :type)
+            ("photo" "jpg")
+            ((or "video" "animated_gif") "mp4")
+            (_ "bin"))))
+    (chirp-media-cached-file url kind fallback-ext)))
+
+(defun chirp-media--download-sentinel (target)
+  "Return a process sentinel that finalizes download into TARGET."
+  (lambda (process _event)
+    (when (memq (process-status process) '(exit signal))
+      (let ((ok (and (zerop (process-exit-status process))
+                     (file-exists-p target))))
+        (unless ok
+          (ignore-errors
+            (when (file-exists-p target)
+              (delete-file target))))
+        (when (buffer-live-p (process-buffer process))
+          (kill-buffer (process-buffer process)))
+        (message "%s"
+                 (if ok
+                     (format "Downloaded %s" (abbreviate-file-name target))
+                   (format "Failed to download %s" (abbreviate-file-name target))))))))
+
+(defun chirp-media-download-at-point ()
+  "Download the current media item at its original or highest-quality URL."
+  (interactive)
+  (let* ((media (chirp-media--select-download-media))
+         (url (chirp-media-download-url media))
+         (target (chirp-media--read-download-target media))
+         (cached-file (chirp-media--cached-download-file media)))
+    (unless (and (stringp url)
+                 (not (string-empty-p url)))
+      (user-error "No downloadable media URL available"))
+    (make-directory (file-name-directory target) t)
+    (when (and (file-exists-p target)
+               (not (y-or-n-p (format "Overwrite %s? "
+                                      (abbreviate-file-name target)))))
+      (user-error "Download cancelled"))
+    (cond
+     (cached-file
+      (copy-file cached-file target t)
+      (message "Downloaded %s" (abbreviate-file-name target)))
+     (chirp-media-prefetch-command
+      (let ((buffer (generate-new-buffer " *chirp-download*")))
+        (make-process
+         :name "chirp-download"
+         :buffer buffer
+         :command (list chirp-media-prefetch-command
+                        "-L" "-f" "-sS"
+                        "-o" target
+                        url)
+         :noquery t
+         :sentinel (chirp-media--download-sentinel target))
+        (message "Downloading %s..." (file-name-nondirectory target))))
+     (t
+      (condition-case err
+          (progn
+            (url-copy-file url target t)
+            (message "Downloaded %s" (abbreviate-file-name target)))
+        (error
+         (ignore-errors
+           (when (file-exists-p target)
+             (delete-file target)))
+         (user-error "Download failed: %s" (error-message-string err))))))))
+
 (defun chirp-media--variant-bitrate (variant)
   "Return numeric bitrate from media VARIANT, or 0."
   (let ((value (plist-get variant :bitrate)))
@@ -1253,7 +1445,7 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
           (insert (if (string= (plist-get media :type) "animated_gif")
                       "Animated GIF media.\n\n"
                     "Video media.\n\n"))
-          (insert "Press `v` to play externally, or `o` to open the source URL.\n\n"))
+          (insert "Press `v` to play externally, `D` to download the original media, or `o` to open the source URL.\n\n"))
          (t
           (insert "Unsupported media type.\n\n")))
         (insert (format "Type: %s\n" (or (plist-get media :type) "unknown")))

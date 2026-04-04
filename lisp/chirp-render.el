@@ -588,7 +588,7 @@ When DETAILP is non-nil, use a longer preview."
                         chirp-media-index ,index
                         chirp-media-list ,media-list
                         pointer hand
-                        help-echo "RET: open media  o: browser"))))
+                        help-echo "RET: open media  D: download  o: browser"))))
 
 (defun chirp-render-insert-media-strip (media-list &optional prefix prefix-face)
   "Insert a grid of thumbnails for MEDIA-LIST."

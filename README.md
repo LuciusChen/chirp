@@ -92,6 +92,7 @@ M-x chirp-profile-following-users
 - `RET`: open the current tweet or profile, or open large media when point is on a thumbnail
 - In profile summaries, `RET` on `Followers` or `Following` opens that user list
 - `m`: open the first media item for the current tweet
+- `D`: download the current media, or choose one media item from the current tweet; photos try the original-resolution URL and videos use the highest-quality variant
 - `A`: open the author profile
 - `x`: open the actions menu for timeline switching, your own profile, bookmarks, liked tweets, lists, post/reply/quote, follow/unfollow, and tweet actions
 - `o`: open the current item in a browser
@@ -116,7 +117,7 @@ Clipboard image paste uses `wl-paste` on Wayland and `pngpaste` on macOS when av
 - Timeline, thread, and profile views now render cached avatars/thumbnails first; missing media are prefetched in the background so text appears faster.
 - Video and animated GIF thumbnails are filled in asynchronously when Chirp can use an upstream preview image or extract one with `ffmpeg`.
 - Press `RET` on a thumbnail to open the photo in a new Chirp media buffer when image display is available.
-- In image and fallback media views, `q` closes the current media buffer.
+- In image and fallback media views, `q` closes the current media buffer and `D` downloads the current media item.
 - Videos currently open externally through `mpv` when available, or the browser otherwise.
 
 If you want a larger or fixed mpv window, customize:
@@ -127,6 +128,12 @@ If you want a larger or fixed mpv window, customize:
 
 If you do not use `mpv`, either point `chirp-video-player-command` at another
 player executable, or set it to `nil` to always open video URLs in the browser.
+
+Downloaded media default to `~/Downloads/`.  To change that:
+
+```elisp
+(setq chirp-media-download-directory "~/Downloads/chirp/")
+```
 
 If you prefer the old blocking behavior, customize:
 
