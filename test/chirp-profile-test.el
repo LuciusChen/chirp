@@ -111,6 +111,50 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest chirp-profile-open-updates-persistent-status-by-phase ()
+  "Profile loading should keep a persistent status as each phase completes."
+  (let ((buffer (generate-new-buffer " *chirp-profile-status*"))
+        user-callback
+        posts-callback
+        whoami-callback)
+    (unwind-protect
+        (cl-letf (((symbol-function 'run-with-timer)
+                   (lambda (&rest _args)
+                     'chirp-test-timer))
+                  ((symbol-function 'timerp)
+                   (lambda (value)
+                     (eq value 'chirp-test-timer)))
+                  ((symbol-function 'cancel-timer) #'ignore)
+                  ((symbol-function 'chirp-backend-user)
+                   (lambda (_handle callback &optional _errback)
+                     (setq user-callback callback)))
+                  ((symbol-function 'chirp-backend-whoami)
+                   (lambda (callback &optional _errback)
+                     (setq whoami-callback callback)))
+                  ((symbol-function 'chirp-backend-user-posts)
+                   (lambda (_handle callback &optional _errback _max-results _cursor)
+                     (setq posts-callback callback)))
+                  ((symbol-function 'chirp-display-buffer) #'ignore)
+                  ((symbol-function 'chirp-media-prefetch-user) #'ignore)
+                  ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+          (chirp-profile-open "alice" buffer)
+          (with-current-buffer buffer
+            (should (equal chirp--status-text "Loading profile...")))
+          (funcall user-callback
+                   '(:kind user :handle "alice" :name "Alice" :bio "" :posts 12 :following 3 :followers 4)
+                   nil)
+          (with-current-buffer buffer
+            (should (equal chirp--status-text "Profile ready · loading posts...")))
+          (funcall whoami-callback '(:kind user :handle "alice") nil)
+          (funcall posts-callback
+                   (list '(:kind tweet :id "1" :text "hello" :author-handle "alice"))
+                   '(("pagination" . (("nextCursor" . "cursor-next")))))
+          (with-current-buffer buffer
+            (should-not chirp--status-text)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest chirp-profile-load-more-appends-older-posts ()
   "Loading more in a profile should append older tweets using the next cursor."
   (let ((buffer (generate-new-buffer " *chirp-profile-load-more*"))

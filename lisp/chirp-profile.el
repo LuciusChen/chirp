@@ -73,6 +73,7 @@
                    (with-current-buffer buffer
                      (setq-local chirp--entry-wrap-navigation nil)
                      (setq-local chirp--profile-handle nil))
+                   (chirp-clear-status buffer)
                    (chirp-display-buffer buffer)
                    (dolist (user users)
                      (chirp-media-prefetch-user user buffer))))
@@ -197,6 +198,7 @@
            (token (chirp-begin-request buffer))
            (anchor (or anchor-id (chirp-capture-point-anchor))))
       (setq-local chirp--timeline-loading-more t)
+      (chirp-set-status buffer "Loading older posts...")
       (message "Loading older posts...")
       (chirp-backend-user-posts
        chirp--profile-handle
@@ -208,9 +210,10 @@
              (with-current-buffer buffer
                (setq-local chirp--request-token nil))
              (chirp-profile--render
-              buffer title refresh saved-user merged
+             buffer title refresh saved-user merged
               saved-mode saved-modes
               anchor t t next-cursor nil)
+             (chirp-clear-status buffer)
              (chirp-media-prefetch-tweets tweets buffer)
              (chirp-enrich-quoted-tweets tweets buffer)
              (unless added-p
@@ -220,6 +223,7 @@
            (with-current-buffer buffer
              (setq-local chirp--timeline-loading-more nil)
              (setq-local chirp--request-token nil))
+           (chirp-set-status buffer "Load more failed" 'error)
            (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message))))
        chirp-profile-post-limit
        cursor)))))
@@ -300,6 +304,7 @@ MODE selects the active profile subview and defaults to `posts'."
              (chirp-media-prefetch-tweets saved-tweets buffer)
              (chirp-enrich-quoted-tweets saved-tweets buffer))))
       (setq token (chirp-begin-background-request buffer title))
+      (chirp-set-status buffer "Loading profile...")
       (with-current-buffer buffer
         (setq-local chirp--profile-switch-mode-function
                     (lambda (target)
@@ -311,6 +316,17 @@ MODE selects the active profile subview and defaults to `posts'."
            (setq saved-user user
                  user-ready t)
            (plist-put saved-user :self-p (memq 'likes available-modes))
+           (cond
+            (posts-error-message
+             (chirp-set-status
+              buffer
+              (format "%s failed"
+                      (chirp-profile--mode-label mode))
+              'error))
+            (posts-ready
+             (chirp-clear-status buffer))
+            (t
+             (chirp-set-status buffer "Profile ready · loading posts...")))
            (render-current (and displayed
                                 (with-current-buffer buffer
                                   (chirp-capture-point-anchor))))
@@ -357,6 +373,9 @@ MODE selects the active profile subview and defaults to `posts'."
                  posts-error-message nil
                  posts-next-cursor (and (eq mode 'posts)
                                         (chirp-backend-envelope-next-cursor posts-envelope)))
+           (if user-ready
+               (chirp-clear-status buffer)
+             (chirp-set-status buffer "Posts ready · loading profile..."))
            (when user-ready
              (render-current (and displayed
                                   (with-current-buffer buffer
@@ -374,6 +393,11 @@ MODE selects the active profile subview and defaults to `posts'."
                  (format "Unable to load %s.\n\n%s"
                          (downcase (chirp-profile--mode-label mode))
                          message))
+           (chirp-set-status
+            buffer
+            (format "%s failed"
+                    (chirp-profile--mode-label mode))
+            'error)
            (when user-ready
              (render-current (and displayed
                                   (with-current-buffer buffer

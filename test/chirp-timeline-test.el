@@ -112,6 +112,59 @@
       (should-not open-called)
       (should (equal last-message "No older posts.")))))
 
+(ert-deftest chirp-status-appears-in-mode-line ()
+  "Persistent Chirp status should stay visible in the mode line."
+  (with-temp-buffer
+    (chirp-view-mode)
+    (cl-letf (((symbol-function 'run-with-timer)
+               (lambda (&rest _args)
+                 'chirp-test-timer))
+              ((symbol-function 'timerp)
+               (lambda (value)
+                 (eq value 'chirp-test-timer)))
+              ((symbol-function 'cancel-timer) #'ignore)
+              ((symbol-function 'float-time)
+               (lambda (&optional _time)
+                 100.0)))
+      (chirp-set-status (current-buffer) "Loading thread...")
+      (setq-local chirp--status-start-time 97.5)
+      (let ((rendered (chirp--mode-line-status-string)))
+        (should (string-match-p "Loading thread\\.\\.\\." rendered))
+        (should (string-match-p "2\\.5s" rendered)))
+      (chirp-clear-status (current-buffer))
+      (should-not (chirp--mode-line-status-string)))))
+
+(ert-deftest chirp-timeline-render-clears-persistent-status ()
+  "Rendering a timeline should clear any previous loading status."
+  (let ((buffer (generate-new-buffer " *chirp-status-render*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'run-with-timer)
+                   (lambda (&rest _args)
+                     'chirp-test-timer))
+                  ((symbol-function 'timerp)
+                   (lambda (value)
+                     (eq value 'chirp-test-timer)))
+                  ((symbol-function 'cancel-timer) #'ignore)
+                  ((symbol-function 'chirp-render-insert-tweet-list) #'ignore)
+                  ((symbol-function 'chirp-render-insert-empty) #'ignore)
+                  ((symbol-function 'chirp-display-buffer) #'ignore)
+                  ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+          (with-current-buffer buffer
+            (chirp-view-mode)
+            (chirp-set-status buffer "Refreshing timeline..."))
+          (chirp-timeline--render
+           buffer
+           "For You"
+           #'ignore
+           (list (list :id "1"))
+           'home
+           20)
+          (with-current-buffer buffer
+            (should-not chirp--status-text)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest chirp-timeline-handle-feed-success-keeps-view-when-no-growth ()
   "Loading more should keep the current view when the response adds nothing."
   (let ((buffer (generate-new-buffer " *chirp-timeline-test*")))

@@ -242,6 +242,7 @@ newly inserted posts at the top.  Otherwise preserve ANCHOR-ID."
       (or (and anchor-id
                (chirp-restore-point-anchor anchor-id))
           (chirp-move-point-to-first-entry)))
+    (chirp-clear-status buffer)
     (when display-p
       (chirp-display-buffer buffer))
     (chirp-media-prefetch-tweets tweets buffer)
@@ -281,7 +282,8 @@ newly inserted posts at the top.  Otherwise preserve ANCHOR-ID."
              t
              next-cursor)
           (when exhausted-p
-            (message "No older posts.")))))
+            (message "No older posts.")))
+        (chirp-clear-status buffer)))
      (refreshing
       (let* ((merged (chirp-timeline--merge-refreshed-tweets previous-tweets tweets))
              (merged-tweets (plist-get merged :tweets))
@@ -310,6 +312,7 @@ newly inserted posts at the top.  Otherwise preserve ANCHOR-ID."
             (setq-local chirp--timeline-exhausted-p previous-exhausted-p)
             (setq-local chirp--timeline-next-cursor effective-next-cursor)
             (setq-local chirp--timeline-count (length previous-tweets))))
+        (chirp-clear-status buffer)
         (message "%s" (chirp-timeline--refresh-message new-count))))
      (t
       (chirp-timeline--render
@@ -369,8 +372,10 @@ When REFRESHING is non-nil, merge newer tweets at the top on success."
                   (chirp-begin-background-request buffer title))))
     (cond
      (loading-more
+      (chirp-set-status buffer "Loading older posts...")
       (message "Loading older posts..."))
      (refreshing
+      (chirp-set-status buffer "Refreshing timeline...")
       (message "Refreshing timeline...")))
     (chirp-timeline--set-kind buffer kind)
     (chirp-backend-feed
@@ -388,7 +393,14 @@ When REFRESHING is non-nil, merge newer tweets at the top on success."
            (setq-local chirp--request-token nil))
          (chirp-timeline--set-kind buffer kind)
          (if (or loading-more refreshing)
-             (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message))
+             (progn
+               (chirp-set-status
+                buffer
+                (if refreshing
+                    "Refresh failed"
+                  "Load more failed")
+                'error)
+               (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message)))
            (chirp-show-error buffer title refresh message))))
      fetch-count
      cursor)))

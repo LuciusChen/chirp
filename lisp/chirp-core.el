@@ -161,6 +161,18 @@ CLI's larger default reply count."
 (defvar-local chirp--profile-switch-mode-function nil
   "Function used to switch the current profile buffer to another subview.")
 
+(defvar-local chirp--status-text nil
+  "Persistent status text shown for the current Chirp buffer.")
+
+(defvar-local chirp--status-kind nil
+  "Kind of status currently shown for the current Chirp buffer.")
+
+(defvar-local chirp--status-start-time nil
+  "Timestamp when the current Chirp status started.")
+
+(defvar-local chirp--status-timer nil
+  "Timer used to refresh Chirp's persistent status display.")
+
 (put 'chirp--request-token 'permanent-local t)
 (put 'chirp--timeline-kind 'permanent-local t)
 (put 'chirp--timeline-limit 'permanent-local t)
@@ -174,6 +186,10 @@ CLI's larger default reply count."
 (put 'chirp--profile-view-mode 'permanent-local t)
 (put 'chirp--profile-view-modes 'permanent-local t)
 (put 'chirp--profile-switch-mode-function 'permanent-local t)
+(put 'chirp--status-text 'permanent-local t)
+(put 'chirp--status-kind 'permanent-local t)
+(put 'chirp--status-start-time 'permanent-local t)
+(put 'chirp--status-timer 'permanent-local t)
 (defvar chirp-tweet-state-overrides (make-hash-table :test #'equal)
   "Map tweet ids to local state overrides such as likes and bookmarks.")
 
@@ -208,7 +224,67 @@ CLI's larger default reply count."
   (setq-local truncate-lines nil)
   (setq-local word-wrap t)
   (setq-local line-spacing 0.1)
+  (setq-local mode-line-process
+              '((:eval (chirp--mode-line-status-string))))
   (visual-line-mode 1))
+
+(defun chirp--status-face (kind)
+  "Return a mode-line face for status KIND."
+  (pcase kind
+    ('error 'error)
+    (_ 'mode-line-emphasis)))
+
+(defun chirp--mode-line-status-string ()
+  "Return the mode-line string for the current Chirp status."
+  (when (and chirp--status-text
+             (not (string-empty-p chirp--status-text)))
+    (let* ((elapsed (if chirp--status-start-time
+                        (max 0.0 (- (float-time) chirp--status-start-time))
+                      0.0))
+           (text (format " · %s %.1fs" chirp--status-text elapsed)))
+      (propertize text 'face (chirp--status-face chirp--status-kind)))))
+
+(defun chirp--ensure-status-timer (buffer)
+  "Ensure BUFFER has a status refresh timer."
+  (with-current-buffer buffer
+    (unless (timerp chirp--status-timer)
+      (let (timer)
+        (setq timer
+              (run-with-timer
+               0.0 0.5
+               (lambda ()
+                 (if (not (buffer-live-p buffer))
+                     (cancel-timer timer)
+                   (with-current-buffer buffer
+                     (if chirp--status-text
+                         (force-mode-line-update t)
+                       (cancel-timer timer)
+                       (setq-local chirp--status-timer nil)))))))
+        (setq-local chirp--status-timer timer)))))
+
+(defun chirp-set-status (buffer text &optional kind)
+  "Set BUFFER's persistent status TEXT and KIND."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq-local chirp--status-text text)
+      (setq-local chirp--status-kind (or kind 'loading))
+      (setq-local chirp--status-start-time (float-time)))
+    (chirp--ensure-status-timer buffer)
+    (with-current-buffer buffer
+      (force-mode-line-update t))))
+
+(defun chirp-clear-status (&optional buffer)
+  "Clear persistent status in BUFFER."
+  (let ((target (or buffer (current-buffer))))
+    (when (buffer-live-p target)
+      (with-current-buffer target
+        (when (timerp chirp--status-timer)
+          (cancel-timer chirp--status-timer))
+        (setq-local chirp--status-text nil)
+        (setq-local chirp--status-kind nil)
+        (setq-local chirp--status-start-time nil)
+        (setq-local chirp--status-timer nil)
+        (force-mode-line-update t)))))
 
 (defun chirp--base-buffer-stem ()
   "Return the display stem used for Chirp buffer names."
@@ -266,6 +342,7 @@ revisited later."
 
 Return a token that identifies the current request."
   (let ((token (chirp-begin-request buffer)))
+    (chirp-set-status buffer (format "Loading %s..." title))
     (chirp-render-into-buffer
      buffer title refresh
      (lambda ()
@@ -275,7 +352,7 @@ Return a token that identifies the current request."
 
 (defun chirp-begin-background-request (buffer title)
   "Start an async request for BUFFER titled TITLE without displaying it yet."
-  (message "Loading %s..." title)
+  (chirp-set-status buffer (format "Loading %s..." title))
   (chirp-begin-request buffer))
 
 (defun chirp-begin-request (buffer)
@@ -398,6 +475,7 @@ Return a token that identifies the current request."
 
 (defun chirp-show-error (buffer title refresh message)
   "Display MESSAGE in BUFFER for TITLE."
+  (chirp-set-status buffer "Load failed" 'error)
   (chirp-render-into-buffer
    buffer title refresh
    (lambda ()
