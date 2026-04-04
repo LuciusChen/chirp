@@ -338,6 +338,42 @@
                    '("/usr/bin/mpv" "https://example.com/anim-low.mp4")))
     (should (eq captured-query-flag nil))))
 
+(ert-deftest chirp-media-play-launches-mpv-with-configured-window-size ()
+  "mpv playback should honor `chirp-video-player-window-size'."
+  (let ((chirp-video-player-command "/usr/bin/mpv")
+        (chirp-video-player-window-size '(1280 . 720))
+        captured-command)
+    (with-temp-buffer
+      (chirp-media-view-mode)
+      (setq-local chirp--media-list '((:type "video"
+                                       :url "https://example.com/video.mp4")))
+      (setq-local chirp--media-index 0)
+      (cl-letf (((symbol-function 'make-process)
+                 (lambda (&rest args)
+                   (setq captured-command (plist-get args :command))
+                   'fake-process))
+                ((symbol-function 'set-process-query-on-exit-flag)
+                 (lambda (&rest _args)
+                   nil)))
+        (chirp-media-play)))
+    (should (equal captured-command
+                   '("/usr/bin/mpv" "--geometry=1280x720" "https://example.com/video.mp4")))))
+
+(ert-deftest chirp-media-play-falls-back-to-browser-when-player-is-disabled ()
+  "When no external player is configured, Chirp should browse the media URL."
+  (let ((chirp-video-player-command nil)
+        browsed-url)
+    (with-temp-buffer
+      (chirp-media-view-mode)
+      (setq-local chirp--media-list '((:type "animated_gif"
+                                       :url "https://example.com/anim.mp4")))
+      (setq-local chirp--media-index 0)
+      (cl-letf (((symbol-function 'browse-url)
+                 (lambda (url &rest _args)
+                   (setq browsed-url url))))
+        (chirp-media-play)))
+    (should (equal browsed-url "https://example.com/anim.mp4"))))
+
 (provide 'chirp-media-test)
 
 ;;; chirp-media-test.el ends here

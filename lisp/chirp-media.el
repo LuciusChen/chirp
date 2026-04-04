@@ -113,6 +113,16 @@ When nil, Chirp opens video URLs in a browser."
   :type '(choice (const :tag "Browser" nil) string)
   :group 'chirp)
 
+(defcustom chirp-video-player-window-size nil
+  "Preferred initial mpv window size for tweet videos.
+
+When non-nil and `chirp-video-player-command' points to `mpv', Chirp adds
+`--geometry=WIDTHxHEIGHT' when launching external playback.  Other players
+ignore this setting."
+  :type '(choice (const :tag "Player default" nil)
+                 (cons :tag "Width x Height" integer integer))
+  :group 'chirp)
+
 (defcustom chirp-video-playback-max-bitrate 2176000
   "Maximum preferred MP4 bitrate for direct external playback.
 
@@ -1082,17 +1092,33 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
   (if-let* (((chirp-media-video-like-p media))
             (url (chirp-media-playback-url media)))
       (if chirp-video-player-command
-          (let ((process-connection-type nil)
+          (let* ((program chirp-video-player-command)
+                 (mpv-p (string-match-p
+                         "\\`mpv\\(?:\\.exe\\)?\\'"
+                         (file-name-nondirectory program)))
+                 (geometry
+                  (when (and mpv-p
+                             (consp chirp-video-player-window-size)
+                             (integerp (car chirp-video-player-window-size))
+                             (integerp (cdr chirp-video-player-window-size))
+                             (> (car chirp-video-player-window-size) 0)
+                             (> (cdr chirp-video-player-window-size) 0))
+                    (format "--geometry=%dx%d"
+                            (car chirp-video-player-window-size)
+                            (cdr chirp-video-player-window-size))))
+                 (process-connection-type nil)
                 process)
             (setq process
                   (make-process
                    :name "chirp-video"
                    :buffer nil
-                   :command (list chirp-video-player-command url)
+                   :command (append (list program)
+                                    (and geometry (list geometry))
+                                    (list url))
                    :connection-type 'pipe
                    :noquery t))
             (set-process-query-on-exit-flag process nil)
-            (message "Opening video with %s" chirp-video-player-command))
+            (message "Opening video with %s" program))
         (browse-url url))
     (user-error "Current media is not a video or GIF")))
 

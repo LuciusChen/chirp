@@ -119,6 +119,15 @@ Clipboard image paste uses `wl-paste` on Wayland and `pngpaste` on macOS when av
 - In image and fallback media views, `q` closes the current media buffer.
 - Videos currently open externally through `mpv` when available, or the browser otherwise.
 
+If you want a larger or fixed mpv window, customize:
+
+```elisp
+(setq chirp-video-player-window-size '(1280 . 720))
+```
+
+If you do not use `mpv`, either point `chirp-video-player-command` at another
+player executable, or set it to `nil` to always open video URLs in the browser.
+
 If you prefer the old blocking behavior, customize:
 
 ```elisp
