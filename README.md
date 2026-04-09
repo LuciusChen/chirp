@@ -105,7 +105,7 @@ Inside the compose buffer:
 - `C-c C-v`: paste one image from the clipboard
 - `C-c C-d`: remove an attached image
 - `C-c C-c`: close the draft immediately and send it in the background
-- `C-c C-k` or `q`: cancel the draft
+- `C-c C-k`: cancel the draft
 
 Tweet metrics also reflect the current local state: liked tweets show `Liked`,
 bookmarked tweets show `Saved`, and retweeted tweets show `RTed`.

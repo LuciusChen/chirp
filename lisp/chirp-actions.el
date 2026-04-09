@@ -65,7 +65,6 @@ cancelled, the attachment is removed, or the send completes."
     (define-key map (kbd "C-c C-a") #'chirp-compose-attach-image)
     (define-key map (kbd "C-c C-v") #'chirp-compose-paste-image)
     (define-key map (kbd "C-c C-d") #'chirp-compose-remove-image)
-    (define-key map (kbd "q") #'chirp-compose-cancel)
     map)
   "Keymap for `chirp-compose-mode'.")
 

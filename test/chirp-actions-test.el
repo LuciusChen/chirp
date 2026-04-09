@@ -158,6 +158,16 @@ Return a list of (compose source foreign)."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest chirp-compose-q-self-inserts ()
+  "Compose buffers should leave `q' available for normal text insertion."
+  (let ((buffer (generate-new-buffer " *chirp-compose-q*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (chirp-compose-mode)
+          (should (eq (key-binding (kbd "q")) #'self-insert-command)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest chirp-compose-refresh-keeps-body-editable-at-footer-boundary ()
   "Refreshing compose chrome should not make the body read-only at the end."
   (pcase-let ((`(,compose . ,source)
