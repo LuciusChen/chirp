@@ -605,8 +605,9 @@ When nil, Chirp falls back to a text placeholder for video-like media."
         nil)
        ((listp cached)
         (when-let* ((image-url (plist-get cached :image-url)))
-          (chirp-media-prefetch-file image-url "media" "jpg"
-                                     (chirp-media--prefetch-callback buffer)))
+          (when chirp-show-tweet-media
+            (chirp-media-prefetch-file image-url "media" "jpg"
+                                       (chirp-media--prefetch-callback buffer))))
         cached)
        ((gethash url chirp-media--link-card-pending)
         (puthash url
@@ -741,11 +742,13 @@ When FALLBACK is non-nil, call it if remote extraction fails."
 
 (defun chirp-media-prefetch-tweet (tweet buffer)
   "Prefetch list-view assets for TWEET in BUFFER."
-  (chirp-media-prefetch-avatar (plist-get tweet :author-avatar-url) buffer)
-  (dolist (media (plist-get tweet :media))
-    (chirp-media-prefetch-media media buffer))
-  (dolist (media (chirp-tweet-article-images tweet))
-    (chirp-media-prefetch-media media buffer))
+  (when chirp-show-avatars
+    (chirp-media-prefetch-avatar (plist-get tweet :author-avatar-url) buffer))
+  (when chirp-show-tweet-media
+    (dolist (media (plist-get tweet :media))
+      (chirp-media-prefetch-media media buffer))
+    (dolist (media (chirp-tweet-article-images tweet))
+      (chirp-media-prefetch-media media buffer)))
   (dolist (url (chirp-media-link-card-urls tweet))
     (chirp-media-prefetch-link-card url buffer))
   (when-let* ((quoted (plist-get tweet :quoted-tweet)))
@@ -760,7 +763,8 @@ When FALLBACK is non-nil, call it if remote extraction fails."
 (defun chirp-media-prefetch-user (user buffer)
   "Prefetch list-view assets for USER in BUFFER."
   (when (chirp-media--prefetch-enabled-p)
-    (chirp-media-prefetch-avatar (plist-get user :avatar-url) buffer)))
+    (when chirp-show-avatars
+      (chirp-media-prefetch-avatar (plist-get user :avatar-url) buffer))))
 
 (defun chirp-media--scaled-image (file max-width max-height)
   "Create a scaled image descriptor for FILE."

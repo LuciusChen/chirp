@@ -111,6 +111,19 @@ CLI's larger default reply count."
   :type 'boolean
   :group 'chirp)
 
+(defcustom chirp-show-avatars t
+  "When non-nil, show avatar images in Chirp views."
+  :type 'boolean
+  :group 'chirp)
+
+(defcustom chirp-show-tweet-media t
+  "When non-nil, show tweet media thumbnails in list and thread views.
+
+When nil, Chirp keeps compact text entries for media so RET and download
+commands still work, and displays alt text when twitter-cli provides it."
+  :type 'boolean
+  :group 'chirp)
+
 (defvar-local chirp--refresh-function nil
   "Function used to refresh the current Chirp buffer.")
 
@@ -1359,14 +1372,17 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
         (variants (chirp-normalize-media-variants
                    (chirp-get object "variants")))
         (width (chirp-get object "width"))
-        (height (chirp-get object "height")))
+        (height (chirp-get object "height"))
+        (alt (chirp-first-nonblank
+              (chirp-get object "altText" "alt_text" "ext_alt_text" "description"))))
     (when (and type url)
       (list :type type
             :url url
             :preview-url preview-url
             :variants variants
             :width width
-            :height height))))
+            :height height
+            :alt alt))))
 
 (defun chirp-normalize-media-list (value)
   "Normalize media VALUE into a list of plists."

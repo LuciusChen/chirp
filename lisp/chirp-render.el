@@ -93,6 +93,24 @@
   "Face used for separators inside thread views."
   :group 'chirp)
 
+(defface chirp-tweet-separator-face
+  '((t :inherit chirp-thread-divider-face))
+  "Face used for separators between tweet list entries."
+  :group 'chirp)
+
+(defcustom chirp-tweet-separator "- - - - - - - - - - - -"
+  "Separator text inserted between tweets in list views.
+
+Set this to nil or an empty string to disable tweet separators."
+  :type '(choice (const :tag "No separator" nil)
+                 (string :tag "Separator text"))
+  :group 'chirp)
+
+(defcustom chirp-tweet-separator-indent 6
+  "Number of leading spaces before tweet list separators."
+  :type 'integer
+  :group 'chirp)
+
 (defface chirp-profile-view-active-face
   '((t :inherit (mode-line-emphasis link)))
   "Face used for the active profile subview label."
@@ -432,7 +450,8 @@ When DETAILP is non-nil, use a longer preview."
          (title (plist-get card :title))
          (description (plist-get card :description))
          (image-url (plist-get card :image-url))
-         (thumb (and image-url
+         (thumb (and chirp-show-tweet-media
+                     image-url
                      (chirp-media-thumbnail-image
                       (list :type "photo"
                             :url image-url)))))
@@ -551,13 +570,42 @@ When DETAILP is non-nil, use a longer preview."
 
 (defun chirp-render--insert-avatar (url &optional handle)
   "Insert an avatar for URL when possible."
-  (let ((start (point)))
-    (if-let* ((image (chirp-media-avatar-image url)))
-        (progn
-          (insert-image image " ")
-          (insert " "))
-      (insert "  "))
-    (chirp-render--mark-author-region start (point) handle)))
+  (when chirp-show-avatars
+    (let ((start (point)))
+      (if-let* ((image (chirp-media-avatar-image url)))
+          (progn
+            (insert-image image " ")
+            (insert " "))
+        (insert "  "))
+      (chirp-render--mark-author-region start (point) handle))))
+
+(defun chirp-render--media-placeholder-text (media)
+  "Return a compact text placeholder for MEDIA."
+  (let* ((alt (chirp-first-nonblank (plist-get media :alt)))
+         (kind (pcase (plist-get media :type)
+                 ("video"
+                  (format "video%s"
+                          (if-let* ((width (plist-get media :width))
+                                    (height (plist-get media :height)))
+                              (format " %sx%s" width height)
+                            "")))
+                 ("animated_gif" "gif")
+                 (_ "image"))))
+    (if (and alt
+             (stringp alt)
+             (not (string-empty-p alt)))
+        (format "[%s: %s]" kind (chirp-render--truncate-link-card-text alt 220))
+      (format "[%s]" kind))))
+
+(defun chirp-render--mark-media-region (start end media media-list index)
+  "Mark START..END as MEDIA at INDEX in MEDIA-LIST."
+  (add-text-properties
+   start end
+   `(chirp-media-item ,media
+                      chirp-media-index ,index
+                      chirp-media-list ,media-list
+                      pointer hand
+                      help-echo "RET: open media  D: download  o: browser")))
 
 (defun chirp-render--insert-media-cell (media media-list index &optional prefix prefix-face)
   "Insert one media cell for MEDIA."
@@ -585,26 +633,34 @@ When DETAILP is non-nil, use a longer preview."
                 (insert-image fallback placeholder))
             (insert-image fallback placeholder))
         (insert (propertize placeholder 'face 'chirp-media-placeholder-face))))
-    (add-text-properties
-     start (point)
-     `(chirp-media-item ,media
-                        chirp-media-index ,index
-                        chirp-media-list ,media-list
-                        pointer hand
-                        help-echo "RET: open media  D: download  o: browser"))))
+    (chirp-render--mark-media-region start (point) media media-list index)))
+
+(defun chirp-render--insert-media-text-cell (media media-list index &optional prefix prefix-face)
+  "Insert one compact text entry for hidden MEDIA."
+  (chirp-render--insert-prefix prefix prefix-face)
+  (let ((start (point)))
+    (insert (propertize (chirp-render--media-placeholder-text media)
+                        'face 'chirp-media-placeholder-face))
+    (chirp-render--mark-media-region start (point) media media-list index)))
 
 (defun chirp-render-insert-media-strip (media-list &optional prefix prefix-face)
   "Insert a grid of thumbnails for MEDIA-LIST."
   (when media-list
-    (if prefix
+    (if (not chirp-show-tweet-media)
+        (cl-loop for media in media-list
+                 for index from 0
+                 do (unless (zerop index)
+                      (insert "\n"))
+                 do (chirp-render--insert-media-text-cell media media-list index prefix prefix-face))
+      (if prefix
         (cl-loop for media in media-list
                  for index from 0
                  do (chirp-render--insert-media-cell media media-list index prefix prefix-face)
                  (insert "\n"))
-      (chirp-render--insert-prefix prefix prefix-face)
-      (cl-loop for media in media-list
-               for index from 0
-               do (chirp-render--insert-media-cell media media-list index)))
+        (chirp-render--insert-prefix prefix prefix-face)
+        (cl-loop for media in media-list
+                 for index from 0
+                 do (chirp-render--insert-media-cell media media-list index))))
     (insert "\n\n")))
 
 (defun chirp-render--insert-tweet
@@ -688,10 +744,25 @@ When DETAILP is non-nil, use a longer preview."
   "Insert TWEET at point."
   (chirp-render--insert-tweet tweet))
 
+(defun chirp-render--tweet-separator-line ()
+  "Return the tweet separator line, or nil when disabled."
+  (when (and (stringp chirp-tweet-separator)
+             (not (string-empty-p chirp-tweet-separator)))
+    (concat (make-string (max 0 chirp-tweet-separator-indent) ?\s)
+            chirp-tweet-separator)))
+
+(defun chirp-render-insert-tweet-separator ()
+  "Insert the configured separator between tweet list entries."
+  (when-let* ((line (chirp-render--tweet-separator-line)))
+    (insert (propertize line 'face 'chirp-tweet-separator-face))
+    (insert "\n\n")))
+
 (defun chirp-render-insert-tweet-list (tweets)
   "Insert TWEETS, highlighting direct replies to the previous visible tweet."
   (let (previous)
     (dolist (tweet tweets)
+      (when previous
+        (chirp-render-insert-tweet-separator))
       (if-let* ((reply-parent (chirp-render--list-reply-parent tweet previous)))
           (chirp-render--insert-tweet
            tweet

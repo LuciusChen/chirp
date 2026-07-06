@@ -269,6 +269,60 @@
                'chirp-social-context-face
                (get-text-property (match-beginning 0) 'face))))))
 
+(ert-deftest chirp-render-insert-tweet-can-hide-avatar-and-keep-author-text ()
+  "Hiding avatars should leave the display name and handle visible."
+  (let ((chirp-show-avatars nil)
+        (tweet (chirp-test--sample-quoted-tweet)))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args)
+                   (ert-fail "avatar image should not be requested")))
+                ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet)))
+      (goto-char (point-min))
+      (should (search-forward "Alice @alice" nil t)))))
+
+(ert-deftest chirp-render-insert-tweet-can-hide-media-and-show-alt-text ()
+  "Hidden media should render as a compact alt-aware text entry."
+  (let ((chirp-show-tweet-media nil)
+        (tweet '(:kind tweet
+                 :id "media-1"
+                 :text "Photo post"
+                 :author-name "Alice"
+                 :author-handle "alice"
+                 :media ((:type "photo"
+                          :url "https://example.com/cat.jpg"
+                          :alt "A black cat looking out the window")
+                         (:type "video"
+                          :url "https://example.com/cat.mp4"
+                          :width 640
+                          :height 360))
+                 :reply-count 0
+                 :retweet-count 0
+                 :like-count 0
+                 :quote-count 0
+                 :bookmark-count 0
+                 :view-count 0)))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-thumbnail-image)
+                 (lambda (&rest _args)
+                   (ert-fail "thumbnail image should not be requested")))
+                ((symbol-function 'chirp-media-thumbnail-placeholder-image)
+                 (lambda (&rest _args)
+                   (ert-fail "thumbnail placeholder should not be requested"))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet)))
+      (goto-char (point-min))
+      (should (search-forward "[image: A black cat looking out the window]" nil t))
+      (let ((image-start (match-beginning 0)))
+        (should (looking-at "\n\\[video 640x360\\]\n\n"))
+        (should-not (looking-at "\n\\[video 640x360\\]\n\n\n"))
+        (should (get-text-property image-start 'chirp-media-item))))))
+
 (ert-deftest chirp-render-insert-tweet-list-links-adjacent-replies ()
   "List rendering should indent replies to the previous visible tweet."
   (pcase-let ((`(,parent ,reply) (chirp-test--sample-adjacent-reply-tweets)))
@@ -323,6 +377,66 @@
       (should (search-forward "↳ replying to @dingyi above" nil t))
       (should (equal (get-text-property (match-beginning 0) 'chirp-reply-parent-id)
                      "200")))))
+
+(ert-deftest chirp-render-insert-tweet-list-inserts-customizable-separator ()
+  "List rendering should place a non-entry separator between tweets."
+  (let ((tweets (list
+                 '(:kind tweet :id "100" :text "First" :author-name "Alice" :author-handle "alice"
+                   :reply-count 0 :retweet-count 0 :like-count 0 :quote-count 0 :bookmark-count 0 :view-count 0)
+                 '(:kind tweet :id "101" :text "Second" :author-name "Bob" :author-handle "bob"
+                   :reply-count 0 :retweet-count 0 :like-count 0 :quote-count 0 :bookmark-count 0 :view-count 0))))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet-list tweets)))
+      (goto-char (point-min))
+      (should (search-forward chirp-tweet-separator nil t))
+      (let ((pos (match-beginning 0)))
+        (should (chirp-test--face-member-p
+                 'chirp-tweet-separator-face
+                 (get-text-property pos 'face)))
+        (should-not (get-text-property pos 'chirp-entry-item))))))
+
+(ert-deftest chirp-render-insert-tweet-list-indents-separator-from-left ()
+  "List separators should use a stable left indent."
+  (let ((chirp-tweet-separator "|")
+        (chirp-tweet-separator-indent 6)
+        (tweets (list
+                 '(:kind tweet :id "100" :text "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                   :author-name "Alice" :author-handle "alice"
+                   :reply-count 0 :retweet-count 0 :like-count 0 :quote-count 0
+                   :bookmark-count 0 :view-count 0)
+                 '(:kind tweet :id "101" :text "Second" :author-name "Bob" :author-handle "bob"
+                   :reply-count 0 :retweet-count 0 :like-count 0 :quote-count 0
+                   :bookmark-count 0 :view-count 0))))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-render--metric-string) (lambda (&rest _args) "")))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet-list tweets)))
+      (goto-char (point-min))
+      (should (search-forward "|" nil t))
+      (should (= (save-excursion
+                   (goto-char (match-beginning 0))
+                   (current-column))
+                 6)))))
+
+(ert-deftest chirp-render-insert-tweet-list-can-disable-separator ()
+  "Setting `chirp-tweet-separator' to nil should disable list separators."
+  (let ((chirp-tweet-separator nil)
+        (tweets (list
+                 '(:kind tweet :id "100" :text "First" :author-name "Alice" :author-handle "alice"
+                   :reply-count 0 :retweet-count 0 :like-count 0 :quote-count 0 :bookmark-count 0 :view-count 0)
+                 '(:kind tweet :id "101" :text "Second" :author-name "Bob" :author-handle "bob"
+                   :reply-count 0 :retweet-count 0 :like-count 0 :quote-count 0 :bookmark-count 0 :view-count 0))))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet-list tweets)))
+      (should-not (string-match-p "- - - -" (buffer-string))))))
 
 (ert-deftest chirp-render-insert-thread-focus-tweet-renders-full-article-body ()
   "Thread focus rendering should include the full article text."

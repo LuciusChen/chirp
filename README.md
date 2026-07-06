@@ -111,6 +111,27 @@ Tweet metrics also reflect the current local state: liked tweets show `Liked`,
 bookmarked tweets show `Saved`, and retweeted tweets show `RTed`.
 Clipboard image paste uses `wl-paste` on Wayland and `pngpaste` on macOS when available.
 
+## Appearance
+
+Tweet lists use a lightweight separator between posts by default. To customize it:
+
+```elisp
+(setq chirp-tweet-separator "- - - - - - - - - - - -")
+(setq chirp-tweet-separator-indent 6)
+```
+
+Set it to `nil` or an empty string to disable tweet separators.
+
+Avatars and tweet media thumbnails can be hidden independently:
+
+```elisp
+(setq chirp-show-avatars nil)
+(setq chirp-show-tweet-media nil)
+```
+
+When tweet media thumbnails are hidden, Chirp keeps compact text media entries
+so media commands still work, and shows alt text when twitter-cli provides it.
+
 ## Media
 
 - Images render as small thumbnails in timeline, thread, and profile post lists.

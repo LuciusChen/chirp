@@ -90,6 +90,28 @@
                    '("https://example.com/quoted.jpg"
                      "https://example.com/main.jpg")))))
 
+(ert-deftest chirp-media-prefetch-tweet-skips-hidden-avatars-and-media ()
+  "Hidden avatars/media should not be prefetched in the background."
+  (let ((chirp-show-avatars nil)
+        (chirp-show-tweet-media nil)
+        avatars
+        media-urls)
+    (cl-letf (((symbol-function 'chirp-media-prefetch-avatar)
+               (lambda (url _buffer)
+                 (push url avatars)))
+              ((symbol-function 'chirp-media-prefetch-media)
+               (lambda (media _buffer)
+                 (push (plist-get media :url) media-urls))))
+      (chirp-media-prefetch-tweet
+       '(:author-avatar-url "https://example.com/avatar.jpg"
+         :media ((:type "photo" :url "https://example.com/main.jpg"))
+         :article-text "Intro.\n\n![Cover](https://example.com/cover.jpg)"
+         :quoted-tweet (:author-avatar-url "https://example.com/quoted-avatar.jpg"
+                        :media ((:type "photo" :url "https://example.com/quoted.jpg"))))
+       (current-buffer)))
+    (should-not avatars)
+    (should-not media-urls)))
+
 (ert-deftest chirp-media-prefetch-tweet-prefetches-article-images-and-link-cards ()
   "Article images and external link cards should join normal media prefetch."
   (let (media-urls card-urls)
@@ -215,12 +237,14 @@
            '(("type" . "video")
              ("url" . "https://high.mp4")
              ("previewUrl" . "https://preview.jpg")
+             ("altText" . "A demo video")
              ("variants"
               . ((("url" . "https://high.mp4")
                   ("bitrate" . 2176000))
                  (("url" . "https://low.mp4")
                   ("bitrate" . 832000))))))))
     (should (equal (plist-get media :preview-url) "https://preview.jpg"))
+    (should (equal (plist-get media :alt) "A demo video"))
     (should (equal (mapcar (lambda (variant) (plist-get variant :url))
                            (plist-get media :variants))
                    '("https://high.mp4" "https://low.mp4")))))
