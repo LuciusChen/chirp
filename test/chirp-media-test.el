@@ -68,6 +68,26 @@
     (should (equal captured
                    '("https://example.com/preview.jpg" "video-thumbnails" "jpg" t)))))
 
+(ert-deftest chirp-media-queue-thumbnail-extraction-skips-callback-when-cached ()
+  "Existing thumbnails should not retrigger render callbacks.
+
+Timeline rendering calls prefetch after every draw.  If cached video thumbnails
+invoke callbacks synchronously, each draw schedules another timer-driven full
+rerender and creates a CPU loop."
+  (let ((thumbnail-file (make-temp-file "chirp-thumb-" nil ".jpg"))
+        callback-called)
+    (unwind-protect
+        (progn
+          (should (equal (chirp-media--queue-thumbnail-extraction
+                          thumbnail-file
+                          '("ffmpeg")
+                          (lambda (&rest _args)
+                            (setq callback-called t)))
+                         thumbnail-file))
+          (should-not callback-called))
+      (when (file-exists-p thumbnail-file)
+        (delete-file thumbnail-file)))))
+
 (ert-deftest chirp-media-prefetch-tweet-recurses-into-quoted-tweet ()
   "Quoted tweet media should also be prefetched."
   (let (avatars media-urls)

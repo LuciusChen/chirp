@@ -429,8 +429,6 @@ When nil, Chirp falls back to a text placeholder for video-like media."
   "Queue COMMAND to build THUMBNAIL-FILE and run CALLBACK on completion."
   (cond
    ((file-exists-p thumbnail-file)
-    (when callback
-      (funcall callback t thumbnail-file))
     thumbnail-file)
    ((or (not (listp command))
         (<= chirp-media-thumbnail-concurrency 0))
