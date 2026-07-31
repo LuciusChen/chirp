@@ -15,10 +15,10 @@ This first cut is intentionally narrow:
 - Tweet thread/detail
 - Profile header with a direct posts stream
 - Profile follower/following lists
-- Basic write actions via a `transient` menu: post, reply, quote, retweet,
-  like, bookmark, follow, and unfollow
+- Basic write actions via a `transient` menu: post (including Premium long-form
+  posts), reply, quote, retweet, like, bookmark, follow, and unfollow
 
-It does not implement DMs, notifications, or paid features.
+It does not implement DMs or notifications.
 
 ## Requirements
 
@@ -106,6 +106,11 @@ Inside the compose buffer:
 - `C-c C-d`: remove an attached image
 - `C-c C-c`: close the draft immediately and send it in the background
 - `C-c C-k`: cancel the draft
+
+With the `twitter-cli` `stable` branch above, Premium accounts can send drafts
+over the standard 280 weighted-character limit. Chirp passes the complete text
+through unchanged, and `twitter-cli` automatically selects its long-form
+posting operation for posts, replies, and quotes.
 
 Tweet metrics also reflect the current local state: liked tweets show `Liked`,
 bookmarked tweets show `Saved`, and retweeted tweets show `RTed`.

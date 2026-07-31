@@ -61,6 +61,20 @@ Return a list of (compose source foreign)."
         (when (buffer-live-p source)
           (kill-buffer source))))))
 
+(ert-deftest chirp-compose-command-args-preserves-long-form-text ()
+  "Long-form drafts should reach twitter-cli without truncation."
+  (let ((body (make-string 281 ?x)))
+    (pcase-let ((`(,compose . ,source)
+                 (chirp-test--make-compose-buffer body)))
+      (unwind-protect
+          (with-current-buffer compose
+            (should (equal (chirp-compose--command-args)
+                           (list "post" body))))
+        (when (buffer-live-p compose)
+          (kill-buffer compose))
+        (when (buffer-live-p source)
+          (kill-buffer source))))))
+
 (ert-deftest chirp-compose-send-cleans-temp-files-after-success ()
   "Temporary attachments should stay alive until the async send finishes."
   (pcase-let ((`(,compose . ,source)
