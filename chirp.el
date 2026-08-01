@@ -25,6 +25,7 @@
 
 (require 'chirp-core)
 (require 'chirp-backend)
+(require 'chirp-notifications)
 (require 'chirp-media)
 (require 'chirp-render)
 (require 'chirp-actions)

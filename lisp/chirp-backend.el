@@ -465,6 +465,15 @@ When FOLLOWING is non-nil, fetch the Following timeline."
      (funcall callback (chirp-collect-top-level-tweets data) envelope))
    errback))
 
+(defun chirp-backend-notifications (callback &optional errback max-results)
+  "Fetch account activity notifications and call CALLBACK."
+  (chirp-backend-request
+   (list "notifications"
+         "--max" (number-to-string (or max-results
+                                       chirp-default-max-results)))
+   callback
+   errback))
+
 (defun chirp-backend-bookmarks (callback &optional errback)
   "Fetch bookmarks and call CALLBACK."
   (chirp-backend-request
@@ -480,6 +489,13 @@ When FOLLOWING is non-nil, fetch the Following timeline."
    (lambda (data envelope)
      (funcall callback (chirp-collect-top-level-tweets data) envelope))
    errback))
+
+(defun chirp-backend-search-users-sync (query &optional max-results)
+  "Return up to MAX-RESULTS user typeahead matches for QUERY."
+  (car (chirp-backend--request-sync
+        (list "users"
+              query
+              "--max" (number-to-string (or max-results 10))))))
 
 (defun chirp-backend-whoami (callback &optional errback)
   "Fetch the authenticated user profile and call CALLBACK."

@@ -42,6 +42,47 @@ Return a list of (compose source foreign)."
       (setq compose (current-buffer)))
     (list compose source foreign)))
 
+(ert-deftest chirp-compose-completes-mention-handles-and-caches-query ()
+  "Mention completion should replace only the handle and reuse its lookup."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "hello @em")))
+    (let ((request-count 0))
+      (unwind-protect
+          (cl-letf (((symbol-function 'chirp-backend-search-users-sync)
+                     (lambda (query max-results)
+                       (setq request-count (1+ request-count))
+                       (should (equal query "em"))
+                       (should (= max-results 10))
+                       '((("screenName" . "emacs"))
+                         (("screenName" . "emacslife"))))))
+            (with-current-buffer compose
+              (goto-char (marker-position chirp-compose-body-end-marker))
+              (let ((completion (chirp-compose-mention-completion-at-point)))
+                (should (equal (buffer-substring-no-properties
+                                (nth 0 completion) (nth 1 completion))
+                               "em"))
+                (should (equal (nth 2 completion)
+                               '("emacs" "emacslife"))))
+              (chirp-compose-mention-completion-at-point)
+              (should (= request-count 1))))
+        (when (buffer-live-p compose)
+          (kill-buffer compose))
+        (when (buffer-live-p source)
+          (kill-buffer source))))))
+
+(ert-deftest chirp-compose-does-not-complete-email-addresses ()
+  "An @ inside an email address should not start user completion."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "mail emacs@example")))
+    (unwind-protect
+        (with-current-buffer compose
+          (goto-char (marker-position chirp-compose-body-end-marker))
+          (should-not (chirp-compose-mention-completion-at-point)))
+      (when (buffer-live-p compose)
+        (kill-buffer compose))
+      (when (buffer-live-p source)
+        (kill-buffer source)))))
+
 (ert-deftest chirp-compose-send-closes-buffer-immediately ()
   "Sending should close the compose buffer before the backend replies."
   (pcase-let ((`(,compose . ,source)

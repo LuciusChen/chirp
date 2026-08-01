@@ -15,10 +15,12 @@ This first cut is intentionally narrow:
 - Tweet thread/detail
 - Profile header with a direct posts stream
 - Profile follower/following lists
+- Native desktop notifications for mentions, replies, quotes, likes, follows,
+  and reposts
 - Basic write actions via a `transient` menu: post (including Premium long-form
   posts), reply, quote, retweet, like, bookmark, follow, and unfollow
 
-It does not implement DMs or notifications.
+It does not implement DMs.
 
 ## Requirements
 
@@ -65,6 +67,24 @@ user bin directories such as `~/.local/bin`. You can extend that list with:
 (require 'chirp)
 ```
 
+To receive account activity notifications, enable the global mode:
+
+```elisp
+(chirp-notifications-mode 1)
+```
+
+The first check establishes a baseline without showing old activity. Later
+checks run every five minutes by default and notify only unseen activity. Linux
+uses freedesktop notifications over D-Bus; macOS uses AppleScript. Titles and
+bodies have Emacs text properties removed before reaching either backend.
+
+To change the interval or the size of each recent-activity check:
+
+```elisp
+(setq chirp-notifications-interval 300
+      chirp-notifications-max-results 20)
+```
+
 ## Entry Points
 
 ```elisp
@@ -104,6 +124,8 @@ Inside the compose buffer:
 - `C-c C-a`: attach an image file (up to 4)
 - `C-c C-v`: paste one image from the clipboard
 - `C-c C-d`: remove an attached image
+- `M-TAB`: complete a user handle after typing an `@` prefix (also available
+  to completion-at-point frontends such as Corfu)
 - `C-c C-c`: close the draft immediately and send it in the background
 - `C-c C-k`: cancel the draft
 

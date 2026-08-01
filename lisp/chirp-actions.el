@@ -57,6 +57,9 @@ cancelled, the attachment is removed, or the send completes."
 (defvar-local chirp-compose-sending nil
   "Non-nil while the current compose buffer is sending a draft.")
 
+(defvar-local chirp-compose--mention-cache nil
+  "User completion results keyed by query in the current draft.")
+
 (defvar chirp-compose-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map text-mode-map)
@@ -65,6 +68,7 @@ cancelled, the attachment is removed, or the send completes."
     (define-key map (kbd "C-c C-a") #'chirp-compose-attach-image)
     (define-key map (kbd "C-c C-v") #'chirp-compose-paste-image)
     (define-key map (kbd "C-c C-d") #'chirp-compose-remove-image)
+    (define-key map (kbd "M-TAB") #'completion-at-point)
     map)
   "Keymap for `chirp-compose-mode'.")
 
@@ -72,7 +76,60 @@ cancelled, the attachment is removed, or the send completes."
   "Major mode for composing Chirp posts."
   (setq-local header-line-format nil)
   (setq-local require-final-newline nil)
+  (setq-local completion-ignore-case t)
+  (setq-local chirp-compose--mention-cache nil)
+  (add-hook 'completion-at-point-functions
+            #'chirp-compose-mention-completion-at-point nil t)
   (visual-line-mode 1))
+
+(defun chirp-compose--mention-bounds ()
+  "Return handle bounds at point when composing an @mention."
+  (when (and (markerp chirp-compose-body-start-marker)
+             (markerp chirp-compose-body-end-marker)
+             (<= (marker-position chirp-compose-body-start-marker) (point))
+             (<= (point) (marker-position chirp-compose-body-end-marker)))
+    (save-restriction
+      (narrow-to-region chirp-compose-body-start-marker
+                        chirp-compose-body-end-marker)
+      (let ((end (point)))
+        (skip-chars-backward "A-Za-z0-9_")
+        (let ((start (point)))
+          (when (and (> start (point-min))
+                     (eq (char-before start) ?@)
+                     (let ((at-position (1- start)))
+                       (or (= at-position (point-min))
+                           (let ((before (char-before at-position)))
+                             (not (or (eq before ?@)
+                                      (eq before ?_)
+                                      (eq (char-syntax before) ?w)))))))
+            (cons start end)))))))
+
+(defun chirp-compose--mention-candidates (query)
+  "Return cached user handles matching QUERY."
+  (let* ((key (downcase query))
+         (cached (assoc-string key chirp-compose--mention-cache t)))
+    (if cached
+        (cdr cached)
+      (let ((candidates
+             (delq nil
+                   (mapcar
+                    (lambda (user)
+                      (when-let* ((handle (chirp-get user "screenName")))
+                        (string-remove-prefix "@" handle)))
+                    (chirp-backend-search-users-sync query 10)))))
+        (setq candidates (delete-dups candidates))
+        (push (cons key candidates) chirp-compose--mention-cache)
+        candidates))))
+
+(defun chirp-compose-mention-completion-at-point ()
+  "Complete the user handle following @ at point."
+  (when-let* ((bounds (chirp-compose--mention-bounds))
+              (start (car bounds))
+              (end (cdr bounds))
+              (query (buffer-substring-no-properties start end))
+              ((not (string-empty-p query))))
+    (list start end (chirp-compose--mention-candidates query)
+          :exclusive 'no)))
 
 (defun chirp-compose--temp-directory ()
   "Return the directory used for temporary compose attachments."
