@@ -57,12 +57,14 @@ Return a list of (compose source foreign)."
                          (("screenName" . "emacslife"))))))
             (with-current-buffer compose
               (goto-char (marker-position chirp-compose-body-end-marker))
-              (let ((completion (chirp-compose-mention-completion-at-point)))
+              (let ((point-before (point))
+                    (completion (chirp-compose-mention-completion-at-point)))
                 (should (equal (buffer-substring-no-properties
                                 (nth 0 completion) (nth 1 completion))
                                "em"))
                 (should (equal (nth 2 completion)
-                               '("emacs" "emacslife"))))
+                               '("emacs" "emacslife")))
+                (should (= (point) point-before)))
               (chirp-compose-mention-completion-at-point)
               (should (= request-count 1))))
         (when (buffer-live-p compose)

@@ -91,18 +91,19 @@ cancelled, the attachment is removed, or the send completes."
     (save-restriction
       (narrow-to-region chirp-compose-body-start-marker
                         chirp-compose-body-end-marker)
-      (let ((end (point)))
-        (skip-chars-backward "A-Za-z0-9_")
-        (let ((start (point)))
-          (when (and (> start (point-min))
-                     (eq (char-before start) ?@)
-                     (let ((at-position (1- start)))
-                       (or (= at-position (point-min))
-                           (let ((before (char-before at-position)))
-                             (not (or (eq before ?@)
-                                      (eq before ?_)
-                                      (eq (char-syntax before) ?w)))))))
-            (cons start end)))))))
+      (save-excursion
+        (let ((end (point)))
+          (skip-chars-backward "A-Za-z0-9_")
+          (let ((start (point)))
+            (when (and (> start (point-min))
+                       (eq (char-before start) ?@)
+                       (let ((at-position (1- start)))
+                         (or (= at-position (point-min))
+                             (let ((before (char-before at-position)))
+                               (not (or (eq before ?@)
+                                        (eq before ?_)
+                                        (eq (char-syntax before) ?w)))))))
+              (cons start end))))))))
 
 (defun chirp-compose--mention-candidates (query)
   "Return cached user handles matching QUERY."
