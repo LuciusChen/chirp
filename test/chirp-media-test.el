@@ -193,34 +193,6 @@ rerender and creates a CPU loop."
       (should (equal rendered-file
                      '("/tmp/chirp-photo-thumb.jpg" 128 128))))))
 
-(ert-deftest chirp-media-sliced-thumbnail-image-aligns-height-to-char-grid ()
-  "Quote slicing should create a file-backed image sized to full text rows."
-  (let ((chirp-media-render-from-cache-only t)
-        created-args)
-    (cl-letf (((symbol-function 'chirp-media-cached-file)
-               (lambda (&rest _args)
-                 "/tmp/chirp-photo-thumb.jpg"))
-              ((symbol-function 'chirp-media--chars-xheight)
-               (lambda (n &optional _frame)
-                 (* n 24)))
-              ((symbol-function 'create-image)
-               (lambda (file &optional _type _data-p &rest props)
-                 (setq created-args (cons file props))
-                 (cons 'image props))))
-      (let ((image (chirp-media-sliced-thumbnail-image
-                    '(:type "photo"
-                      :url "https://example.com/photo.jpg"
-                      :width 921
-                      :height 1008))))
-        (should image)
-        (should (= (plist-get (cdr image) :chirp-nslices) 6))
-        (should (equal created-args
-                       '("/tmp/chirp-photo-thumb.jpg"
-                         :height (6 . ch)
-                         :scale 1.0
-                         :ascent center
-                         :chirp-nslices 6)))))))
-
 (ert-deftest chirp-media-thumbnail-image-badges-video-like-media ()
   "Video-like thumbnails should use the play-badge renderer."
   (let ((chirp-media-render-from-cache-only t)

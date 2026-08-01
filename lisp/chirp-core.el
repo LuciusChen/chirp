@@ -238,7 +238,8 @@ commands still work, and displays alt text when twitter-cli provides it."
   "Major mode for Chirp buffers."
   (setq-local truncate-lines nil)
   (setq-local word-wrap t)
-  (setq-local line-spacing 0.1)
+  ;; Positive line spacing opens visible seams between thumbnail slices.
+  (setq-local line-spacing 0)
   (setq-local mode-line-process
               '((:eval (chirp--mode-line-status-string))))
   (visual-line-mode 1))

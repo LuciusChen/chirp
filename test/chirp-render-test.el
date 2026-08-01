@@ -21,6 +21,16 @@
                  value)))
    (t nil)))
 
+(defun chirp-test--slice-displays ()
+  "Return (POSITION . DISPLAY) pairs for image slices in the current buffer."
+  (let (result)
+    (dotimes (offset (buffer-size))
+      (let* ((position (1+ offset))
+             (display (get-text-property position 'display)))
+        (when (eq (car-safe (car-safe display)) 'slice)
+          (push (cons position display) result))))
+    (nreverse result)))
+
 (defun chirp-test--sample-article-tweet ()
   "Return a normalized tweet payload with article metadata."
   (chirp-normalize-tweet
@@ -580,8 +590,31 @@
           (should (stringp wrap-prefix))
         (should (string-match-p "^   " wrap-prefix))))))
 
-(ert-deftest chirp-render-quoted-tweet-media-uses-indented-single-line-image ()
-  "Quoted tweet media should render as one indented image line."
+(ert-deftest chirp-render-thumbnail-slices-cover-an-integer-pixel-canvas ()
+  "Thumbnail slices should cover a copied one-to-one pixel canvas exactly."
+  (let ((source '(image :type png :file "/tmp/fake.png")))
+    (cl-letf (((symbol-function 'image-size)
+               (lambda (&rest _args) '(64 . 45))))
+      (pcase-let* ((`(,slices . ,width)
+                    (chirp-render--thumbnail-slices source '(20 . 80))))
+        (should (= width 85))
+        (should (= (length slices) 3))
+        (cl-loop for slice in slices
+                 for offset in '(0 20 40)
+                 for display = (get-text-property 0 'display slice)
+                 for image = (cadr display)
+                 do (should (equal (car display)
+                                   `(slice 0 ,offset 1.0 20)))
+                 do (should (= (plist-get (cdr image) :width) 85))
+                 do (should (= (plist-get (cdr image) :height) 60))
+                 do (should (= (plist-get (cdr image) :scale) 1.0))
+                 do (should (= (plist-get (cdr image) :ascent) 80))
+                 do (should (eq (get-text-property 0 'line-height slice) t)))
+        (should (equal source
+                       '(image :type png :file "/tmp/fake.png")))))))
+
+(ert-deftest chirp-render-quoted-tweet-media-uses-gapless-image-slices ()
+  "Quoted tweet media should repeat its indent across gapless image slices."
   (let ((tweet (chirp-test--sample-quoted-tweet-with-media))
         (fake-image '(image :type png :file "/tmp/fake.png")))
     (with-temp-buffer
@@ -589,34 +622,89 @@
       (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
                 ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) fake-image))
                 ((symbol-function 'chirp-media-thumbnail-placeholder-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-render--thumbnail-row-metrics)
+                 (lambda (&rest _args) '(24 . 75)))
                 ((symbol-function 'image-size)
-                 (lambda (image &optional _pixels _frame)
-                   (cons 64
-                         (or (plist-get (cdr image) :height)
-                             96)))))
+                 (lambda (&rest _args) '(64 . 96))))
         (let ((inhibit-read-only t))
           (chirp-render-insert-tweet tweet)))
       (let ((quoted-prefix-lines 0)
-            display-pos
-            slice-pos)
+            (slices (chirp-test--slice-displays)))
         (dolist (line (split-string (buffer-string) "\n"))
           (when (string-prefix-p "   " line)
             (setq quoted-prefix-lines (1+ quoted-prefix-lines))))
-        (setq display-pos
-              (next-single-property-change (point-min) 'display nil (point-max)))
-        (setq slice-pos (point-min))
-        (while (and (< slice-pos (point-max))
-                    (not (eq (car-safe (car-safe (get-text-property slice-pos 'display)))
-                             'slice)))
-          (setq slice-pos
-                (or (next-single-property-change
-                     (1+ slice-pos) 'display nil (point-max))
-                    (point-max))))
-        (should (>= quoted-prefix-lines 2))
-        (should display-pos)
-        (should (eq (car-safe (get-text-property display-pos 'display))
-                    'image))
-        (should-not (< slice-pos (point-max)))))))
+        (should (eq line-spacing 0))
+        (should (>= quoted-prefix-lines 5))
+        (should (= (length slices) 4))
+        (should (equal
+                 (mapcar (lambda (item) (nth 2 (car (cdr item)))) slices)
+                 '(0 24 48 72)))
+        (cl-loop for (position . display) in slices
+                 for finalp = (= position (caar (last slices)))
+                 do (should (= (plist-get (cdr (cadr display)) :height) 96))
+                 do (should (= (plist-get (cdr (cadr display)) :ascent) 75))
+                 do (should (plist-get
+                             (get-text-property position 'chirp-media-item)
+                             :url))
+                 do (unless finalp
+                      (save-excursion
+                        (goto-char position)
+                        (should (eq (char-after (line-end-position)) ?\n))
+                        (should (eq (get-text-property
+                                     (line-end-position) 'line-height)
+                                    t)))))))))
+
+(ert-deftest chirp-render-video-placeholder-cover-is-sliced ()
+  "Video placeholders should use the same sliced cover path as photos."
+  (let ((media '(:type "video" :url "https://example.com/video.mp4"))
+        (placeholder '(image :type svg :data "video-cover")))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-thumbnail-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-thumbnail-placeholder-image)
+                 (lambda (&rest _args) placeholder))
+                ((symbol-function 'chirp-render--thumbnail-row-metrics)
+                 (lambda (&rest _args) '(20 . 75)))
+                ((symbol-function 'image-size)
+                 (lambda (&rest _args) '(80 . 45))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-media-strip (list media))))
+      (let ((slices (chirp-test--slice-displays)))
+        (should (= (length slices) 3))
+        (dolist (item slices)
+          (should (equal (get-text-property (car item) 'chirp-media-item)
+                         media)))))))
+
+(ert-deftest chirp-render-sliced-media-grid-reserves-shorter-image-column ()
+  "Later slice rows should keep shorter images from shifting the media grid."
+  (let ((media-list '((:type "photo" :url "short")
+                      (:type "photo" :url "tall"))))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-thumbnail-image)
+                 (lambda (media)
+                   `(image :type png :file ,(plist-get media :url))))
+                ((symbol-function 'chirp-media-thumbnail-placeholder-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-render--thumbnail-row-metrics)
+                 (lambda (&rest _args) '(20 . 75)))
+                ((symbol-function 'image-size)
+                 (lambda (image &rest _args)
+                   (if (equal (plist-get (cdr image) :file) "short")
+                       '(40 . 40)
+                     '(40 . 60)))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-media-strip media-list)))
+      (goto-char (point-min))
+      (forward-line 2)
+      (should (equal (get-text-property (point) 'display)
+                     '(space :width (40))))
+      (should (= (get-text-property (point) 'chirp-media-index) 0))
+      (forward-char 1)
+      (should (eq (car-safe (car-safe (get-text-property (point) 'display)))
+                  'slice))
+      (should (= (get-text-property (point) 'chirp-media-index) 1)))))
 
 (ert-deftest chirp-open-at-point-opens-profile-when-point-is-on-avatar ()
   "RET on an avatar should open the author profile, not the tweet thread."

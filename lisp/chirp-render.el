@@ -603,8 +603,100 @@ When DETAILP is non-nil, use a longer preview."
         (insert "  "))
       (chirp-render--mark-author-region start (point) handle))))
 
-(defun chirp-render--media-placeholder-text (media)
-  "Return a compact text placeholder for MEDIA."
+(defun chirp-render--rendered-thumbnail-row-metrics
+    (text minimum-height window)
+  "Return rendered metrics for TEXT using MINIMUM-HEIGHT in WINDOW, or nil."
+  (when (and window
+             (display-graphic-p (window-frame window))
+             (fboundp 'buffer-text-pixel-size))
+    (let ((remapping (and (boundp 'face-remapping-alist)
+                          (symbol-value 'face-remapping-alist))))
+      (with-temp-buffer
+        (setq-local face-remapping-alist remapping
+                    line-spacing 0
+                    truncate-lines t)
+        (insert text (propertize "x" 'face 'default))
+        (when-let* ((rendered-height
+                     (ignore-errors
+                       (cdr (buffer-text-pixel-size
+                             (current-buffer) window t))))
+                    ((numberp rendered-height))
+                    ((> rendered-height 0)))
+          (insert (propertize
+                   " " 'display
+                   `(space :height (,rendered-height) :ascent 100)))
+          (when-let* ((probe-height
+                       (ignore-errors
+                         (cdr (buffer-text-pixel-size
+                               (current-buffer) window t))))
+                      ((numberp probe-height))
+                      ((> probe-height 0)))
+            (let* ((content-ascent (- (* 2 rendered-height) probe-height))
+                   (height (max minimum-height rendered-height))
+                   (ascent (+ content-ascent
+                              (/ (- height rendered-height) 2)))
+                   (ascent-percent
+                    (max 0 (min 100 (ceiling
+                                     (* 100 (/ (float ascent) height)))))))
+              (cons height ascent-percent))))))))
+
+(defun chirp-render--thumbnail-row-metrics (&optional prefix prefix-face)
+  "Return metrics for one thumbnail row using PREFIX and PREFIX-FACE.
+
+The result is (HEIGHT . ASCENT).  HEIGHT is in pixels and ASCENT is an image
+ascent percentage, or nil when final-layout measurement is unavailable."
+  (let* ((window (get-buffer-window (current-buffer) t))
+         (frame (if window (window-frame window) (selected-frame)))
+         (minimum-height
+          (max 1 (ceiling
+                  (or (and window
+                           (fboundp 'window-font-height)
+                           (ignore-errors
+                             (window-font-height window 'default)))
+                      (frame-char-height frame)))))
+         (text (or (chirp-render--prefix-string prefix prefix-face) "")))
+    (or (chirp-render--rendered-thumbnail-row-metrics
+         text minimum-height window)
+        (cons minimum-height nil))))
+
+(defun chirp-render--thumbnail-slices (image row-metrics)
+  "Return (SLICES . WIDTH) for IMAGE using ROW-METRICS.
+
+SLICES use one-to-one integer pixel coordinates.  WIDTH is the resulting image
+width in pixels.  IMAGE is copied and never mutated.  Geometry errors are not
+caught or converted to fallback values."
+  (pcase-let* ((`(,display-width . ,display-height) (image-size image t))
+               (display-width (max 1 (ceiling display-width)))
+               (display-height (max 1 (ceiling display-height)))
+               (row-height (car row-metrics))
+               (row-count
+                (max 1 (ceiling (/ display-height (float row-height)))))
+               (source-height (* row-count row-height))
+               (target-width
+                (max 1 (round (* display-width
+                                 (/ (float source-height) display-height)))))
+               (properties (copy-sequence (cdr image))))
+    (setq properties (plist-put properties :width target-width)
+          properties (plist-put properties :height source-height)
+          properties (plist-put properties :scale 1.0))
+    (when (cdr row-metrics)
+      (setq properties (plist-put properties :ascent (cdr row-metrics))))
+    (let ((prepared (cons 'image properties)))
+      (cons
+       (cl-loop for row below row-count
+                collect
+                (propertize
+                 " "
+                 'display `((slice 0 ,(* row row-height) 1.0 ,row-height)
+                            ,prepared)
+                 'line-height t
+                 'rear-nonsticky '(display)))
+       target-width))))
+
+(defun chirp-render--media-placeholder-text (media &optional compactp)
+  "Return a text placeholder for MEDIA.
+
+When COMPACTP is non-nil, omit alt text and make a missing video actionable."
   (let* ((alt (chirp-first-nonblank (plist-get media :alt)))
          (kind (pcase (plist-get media :type)
                  ("video"
@@ -612,10 +704,11 @@ When DETAILP is non-nil, use a longer preview."
                           (if-let* ((width (plist-get media :width))
                                     (height (plist-get media :height)))
                               (format " %sx%s" width height)
-                            "")))
+                            (if compactp " open" ""))))
                  ("animated_gif" "gif")
                  (_ "image"))))
-    (if (and alt
+    (if (and (not compactp)
+             alt
              (stringp alt)
              (not (string-empty-p alt)))
         (format "[%s: %s]" kind (chirp-render--truncate-link-card-text alt 220))
@@ -631,33 +724,49 @@ When DETAILP is non-nil, use a longer preview."
                       pointer hand
                       help-echo "RET: open media  D: download  o: browser")))
 
-(defun chirp-render--insert-media-cell (media media-list index &optional prefix prefix-face)
-  "Insert one media cell for MEDIA."
-  (let ((start (point))
-        (placeholder
-         (pcase (plist-get media :type)
-           ("video"
-            (format "[video %s]"
-                    (if-let* ((width (plist-get media :width))
-                              (height (plist-get media :height)))
-                        (format "%sx%s" width height)
-                      "open")))
-           ("animated_gif" "[gif]")
-           (_ "[image]"))))
-    (if-let* ((thumb (chirp-media-thumbnail-image media)))
-        (if prefix
-            (progn
-              (chirp-render--insert-prefix prefix prefix-face)
-              (insert-image thumb placeholder))
-          (insert-image thumb placeholder))
-      (if-let* ((fallback (chirp-media-thumbnail-placeholder-image media)))
-          (if prefix
-              (progn
-                (chirp-render--insert-prefix prefix prefix-face)
-                (insert-image fallback placeholder))
-            (insert-image fallback placeholder))
-        (insert (propertize placeholder 'face 'chirp-media-placeholder-face))))
-    (chirp-render--mark-media-region start (point) media media-list index)))
+(defun chirp-render--media-grid-cell (media index row-metrics)
+  "Return sliced grid data for MEDIA at INDEX using ROW-METRICS."
+  (if-let* ((image (or (chirp-media-thumbnail-image media)
+                       (chirp-media-thumbnail-placeholder-image media))))
+      (pcase-let ((`(,rows . ,width)
+                   (chirp-render--thumbnail-slices image row-metrics)))
+        (list :media media
+              :index index
+              :rows rows
+              :padding (propertize
+                        " " 'display `(space :width (,width)))))
+    (let ((placeholder (chirp-render--media-placeholder-text media t)))
+      (list :media media
+            :index index
+            :rows (list (propertize placeholder
+                                    'face 'chirp-media-placeholder-face))
+            :padding (make-string (max 1 (string-width placeholder)) ?\s)))))
+
+(defun chirp-render--insert-media-grid
+    (media-list &optional prefix prefix-face)
+  "Insert sliced rows for MEDIA-LIST using PREFIX and PREFIX-FACE."
+  (let* ((row-metrics
+          (chirp-render--thumbnail-row-metrics prefix prefix-face))
+         (cells
+          (cl-loop for media in media-list
+                   for index from 0
+                   collect (chirp-render--media-grid-cell
+                            media index row-metrics)))
+         (row-count
+          (apply #'max (mapcar (lambda (cell)
+                                 (length (plist-get cell :rows)))
+                               cells))))
+    (dotimes (row row-count)
+      (chirp-render--insert-prefix prefix prefix-face)
+      (dolist (cell cells)
+        (let ((start (point)))
+          (insert (or (nth row (plist-get cell :rows))
+                      (plist-get cell :padding)))
+          (chirp-render--mark-media-region
+           start (point)
+           (plist-get cell :media) media-list (plist-get cell :index))))
+      (when (< (1+ row) row-count)
+        (insert (propertize "\n" 'line-height t))))))
 
 (defun chirp-render--insert-media-text-cell (media media-list index &optional prefix prefix-face)
   "Insert one compact text entry for hidden MEDIA."
@@ -676,15 +785,7 @@ When DETAILP is non-nil, use a longer preview."
                  do (unless (zerop index)
                       (insert "\n"))
                  do (chirp-render--insert-media-text-cell media media-list index prefix prefix-face))
-      (if prefix
-        (cl-loop for media in media-list
-                 for index from 0
-                 do (chirp-render--insert-media-cell media media-list index prefix prefix-face)
-                 (insert "\n"))
-        (chirp-render--insert-prefix prefix prefix-face)
-        (cl-loop for media in media-list
-                 for index from 0
-                 do (chirp-render--insert-media-cell media media-list index))))
+      (chirp-render--insert-media-grid media-list prefix prefix-face))
     (insert "\n\n")))
 
 (defun chirp-render--insert-tweet

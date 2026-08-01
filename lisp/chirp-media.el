@@ -788,20 +788,6 @@ When FALLBACK is non-nil, call it if remote extraction fails."
     (cons (max 1 (round (* width scale)))
           (max 1 (round (* height scale))))))
 
-(defun chirp-media--char-height-spec (n)
-  "Return an image `:height' spec for N lines."
-  (if (string-version-lessp emacs-version "30.1")
-      (* n (frame-char-height))
-    (cons n 'ch)))
-
-(defun chirp-media--chars-xheight (n &optional frame)
-  "Return the pixel height for N text rows on FRAME."
-  (* n (max 1 (frame-char-height (or frame (selected-frame))))))
-
-(defun chirp-media--chars-in-height (pixels &optional frame)
-  "Return how many text rows are needed to cover PIXELS on FRAME."
-  (ceiling (/ pixels (float (chirp-media--chars-xheight 1 frame)))))
-
 (defun chirp-media--mime-type (file)
   "Return a MIME type for FILE."
   (pcase (downcase (or (file-name-extension file) ""))
@@ -979,37 +965,6 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
     (chirp-media--video-placeholder-image
      chirp-media-thumbnail-size
      (string= (plist-get media :type) "animated_gif"))))
-
-(defun chirp-media--thumbnail-source-file (media)
-  "Return the best local thumbnail source file for MEDIA, or nil."
-  (cond
-   ((string= (plist-get media :type) "photo")
-    (if chirp-media-render-from-cache-only
-        (chirp-media-cached-file (plist-get media :url) "media" "jpg")
-      (chirp-media-local-file (plist-get media :url) "media" "jpg")))
-   ((chirp-media-video-like-p media)
-    (if chirp-media-render-from-cache-only
-        (chirp-media--cached-video-preview-file media)
-      (chirp-media-video-thumbnail-file media)))))
-
-(defun chirp-media-sliced-thumbnail-image (media)
-  "Return a quote-slicing-ready thumbnail image for MEDIA, or nil."
-  (when-let* ((file (chirp-media--thumbnail-source-file media))
-              (width (or (plist-get media :width) chirp-media-thumbnail-size))
-              (height (or (plist-get media :height) chirp-media-thumbnail-size)))
-    (let* ((dims (chirp-media--scaled-dimensions
-                  width height
-                  chirp-media-thumbnail-size
-                  chirp-media-thumbnail-size))
-           (display-height (cdr dims))
-           (nslices (max 1 (chirp-media--chars-in-height display-height)))
-           (image (create-image file nil nil
-                                :height (chirp-media--char-height-spec nslices)
-                                :scale 1.0
-                                :ascent 'center)))
-      (when image
-        (plist-put (cdr image) :chirp-nslices nslices)
-        image))))
 
 (defun chirp-media-avatar-image (url)
   "Return a small avatar image descriptor for URL."

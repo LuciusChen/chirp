@@ -170,7 +170,7 @@ so media commands still work, and shows alt text when twitter-cli provides it.
 ## Media
 
 - Images render as small thumbnails in timeline, thread, and profile post lists.
-- Thumbnails are rendered without inserted gaps, so point can move between adjacent images directly.
+- Images and video/GIF cover thumbnails are split into gapless text-row slices, so point can move through a tall cover one row at a time. Multiple media items remain aligned in the same thumbnail grid.
 - Timeline, thread, and profile views now render cached avatars/thumbnails first; missing media are prefetched in the background so text appears faster.
 - Video and animated GIF thumbnails are filled in asynchronously when Chirp can use an upstream preview image or extract one with `ffmpeg`.
 - Press `RET` on a thumbnail to open the photo in a new Chirp media buffer when image display is available.

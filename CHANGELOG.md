@@ -10,6 +10,7 @@ history remains available in Git.
 - Inline tweet translation from the actions menu with `T`.
 - Native desktop notifications for account activity.
 - User-handle completion while composing posts.
+- Gapless row-sliced image and video/GIF cover thumbnails.
 
 ### Fixed
 
