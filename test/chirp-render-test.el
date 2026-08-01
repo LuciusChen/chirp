@@ -142,6 +142,24 @@
     (should (equal (chirp-tweet-article-preview tweet 80)
                    "First paragraph with details."))))
 
+(ert-deftest chirp-render-insert-tweet-shows-cached-translation ()
+  "A cached translation should render directly below the original text."
+  (clrhash chirp-tweet-state-overrides)
+  (unwind-protect
+      (progn
+        (chirp-set-tweet-state-override "123" :translation "你好")
+        (chirp-set-tweet-state-override "123" :translation-language "zh")
+        (let ((tweet (chirp-normalize-tweet
+                      '(("id" . "123")
+                        ("text" . "Hello")
+                        ("author" . (("screenName" . "alice")
+                                     ("name" . "Alice")))))))
+          (with-temp-buffer
+            (chirp-render-insert-tweet tweet)
+            (should (string-match-p "Hello\nTranslation · zh\n你好"
+                                    (buffer-string))))))
+    (clrhash chirp-tweet-state-overrides)))
+
 (ert-deftest chirp-article-segments-split-inline-images-out-of-body-text ()
   "Article helpers should split Markdown image paragraphs into media items."
   (let* ((tweet (chirp-test--sample-article-tweet-with-image))

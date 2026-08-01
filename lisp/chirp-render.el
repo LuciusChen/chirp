@@ -33,6 +33,11 @@
   "Face used for metadata."
   :group 'chirp)
 
+(defface chirp-translation-face
+  '((t :inherit font-lock-doc-face))
+  "Face used for translated tweet text."
+  :group 'chirp)
+
 (defface chirp-link-face
   '((t :inherit link))
   "Face used for expanded links."
@@ -383,6 +388,23 @@ When ACTIVE is non-nil, emphasize the metric."
       (insert "\n")
       (chirp-render--apply-wrap-prefix start (point) prefix prefix-face))))
 
+(defun chirp-render--insert-translation (tweet &optional prefix prefix-face)
+  "Insert the cached translation for TWEET when present."
+  (when-let* ((translation (plist-get tweet :translation))
+              ((not (string-empty-p translation))))
+    (chirp-render--insert-prefix prefix prefix-face)
+    (let ((start (point))
+          (language (plist-get tweet :translation-language)))
+      (insert (propertize
+               (if language
+                   (format "Translation · %s" language)
+                 "Translation")
+               'face 'chirp-meta-face))
+      (insert "\n")
+      (chirp-render--apply-wrap-prefix start (point) prefix prefix-face))
+    (chirp-render--insert-face-text
+     translation 'chirp-translation-face prefix prefix-face)))
+
 (defun chirp-render--insert-expanded-urls (urls &optional prefix prefix-face)
   "Insert URLS as separate readable lines."
   (when urls
@@ -519,6 +541,8 @@ When DETAILP is non-nil, use a longer preview."
       (when-let* ((text (chirp-tweet-preview-text quoted 140)))
         (unless (string-empty-p text)
           (chirp-render--insert-filled-text text quoted-prefix quoted-prefix-face)))
+      (chirp-render--insert-translation
+       quoted quoted-prefix quoted-prefix-face)
       (chirp-render--insert-article-preview quoted nil quoted-prefix quoted-prefix-face)
       (chirp-render--insert-article-media-preview quoted nil quoted-prefix quoted-prefix-face)
       (chirp-render-insert-media-strip (plist-get quoted :media)
@@ -701,6 +725,7 @@ When DETAILP is non-nil, use a longer preview."
     (when-let* ((text (plist-get tweet :text)))
       (unless (string-empty-p text)
         (chirp-render--insert-filled-text text prefix prefix-face)))
+    (chirp-render--insert-translation tweet prefix prefix-face)
     (chirp-render--insert-quoted-tweet tweet prefix prefix-face)
     (pcase article-mode
       ('full

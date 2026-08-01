@@ -187,6 +187,16 @@
                      '((("screenName" . "emacs")))))
       (should (equal captured-args '("users" "em" "--max" "5"))))))
 
+(ert-deftest chirp-backend-translate-passes-language-and-tweet-id ()
+  "Tweet translation should use the dedicated CLI command."
+  (let (captured-args)
+    (cl-letf (((symbol-function 'chirp-backend-request)
+               (lambda (args _callback &optional _errback)
+                 (setq captured-args args))))
+      (chirp-backend-translate "123" "zh" #'ignore)
+      (should (equal captured-args
+                     '("translate" "123" "--to" "zh"))))))
+
 (ert-deftest chirp-backend-whoami-cache-reuses-fresh-results ()
   "Fresh cached whoami results should avoid a second backend request."
   (let ((chirp-backend-read-cache-ttl 15)

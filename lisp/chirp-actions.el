@@ -27,6 +27,11 @@ cancelled, the attachment is removed, or the send completes."
   :type 'directory
   :group 'chirp)
 
+(defcustom chirp-translation-language "zh"
+  "Language code used by `chirp-translate-at-point'."
+  :type 'string
+  :group 'chirp)
+
 (defvar-local chirp-compose-kind nil
   "Compose action kind for the current Chirp compose buffer.")
 
@@ -84,31 +89,23 @@ cancelled, the attachment is removed, or the send completes."
 
 (defun chirp-compose--mention-bounds ()
   "Return handle bounds at point when composing an @mention."
-  (when (and (markerp chirp-compose-body-start-marker)
-             (markerp chirp-compose-body-end-marker)
-             (<= (marker-position chirp-compose-body-start-marker) (point))
-             (<= (point) (marker-position chirp-compose-body-end-marker)))
-    (save-restriction
-      (narrow-to-region chirp-compose-body-start-marker
-                        chirp-compose-body-end-marker)
-      (save-excursion
-        (let ((end (point)))
-          (skip-chars-backward "A-Za-z0-9_")
-          (let ((start (point)))
-            (when (and (> start (point-min))
-                       (eq (char-before start) ?@)
-                       (let ((at-position (1- start)))
-                         (or (= at-position (point-min))
-                             (let ((before (char-before at-position)))
-                               (not (or (eq before ?@)
-                                        (eq before ?_)
-                                        (eq (char-syntax before) ?w)))))))
-              (cons start end))))))))
+  (let ((body-start (and (markerp chirp-compose-body-start-marker)
+                         (marker-position chirp-compose-body-start-marker)))
+        (body-end (and (markerp chirp-compose-body-end-marker)
+                       (marker-position chirp-compose-body-end-marker))))
+    (when (and body-start body-end
+               (<= body-start (point) body-end))
+      (save-restriction
+        (narrow-to-region body-start body-end)
+        (save-match-data
+          (when (looking-back
+                 "\\(?:\\`\\|[^[:word:]_@]\\)@\\([A-Za-z0-9_]+\\)"
+                 (point-min))
+            (cons (match-beginning 1) (point))))))))
 
 (defun chirp-compose--mention-candidates (query)
   "Return cached user handles matching QUERY."
-  (let* ((key (downcase query))
-         (cached (assoc-string key chirp-compose--mention-cache t)))
+  (let ((cached (assoc-string query chirp-compose--mention-cache t)))
     (if cached
         (cdr cached)
       (let ((candidates
@@ -117,9 +114,8 @@ cancelled, the attachment is removed, or the send completes."
                     (lambda (user)
                       (when-let* ((handle (chirp-get user "screenName")))
                         (string-remove-prefix "@" handle)))
-                    (chirp-backend-search-users-sync query 10)))))
-        (setq candidates (delete-dups candidates))
-        (push (cons key candidates) chirp-compose--mention-cache)
+                    (chirp-backend-search-users-sync query)))))
+        (push (cons query candidates) chirp-compose--mention-cache)
         candidates))))
 
 (defun chirp-compose-mention-completion-at-point ()
@@ -822,6 +818,41 @@ When TWEET is non-nil, use it as the reply or quote target."
         (message "Copied %s" url))
     (user-error "Current tweet has no canonical URL")))
 
+(defun chirp-translate-at-point ()
+  "Translate the tweet at point and show the result below its text."
+  (interactive)
+  (let* ((tweet-id (chirp-actions--tweet-id-at-point))
+         (buffer (current-buffer))
+         (language (string-trim chirp-translation-language)))
+    (when (string-empty-p language)
+      (user-error "chirp-translation-language must not be empty"))
+    (message "Translating to %s..." language)
+    (chirp-backend-translate
+     tweet-id
+     language
+     (lambda (data _envelope)
+       (if-let* ((translation (chirp-first-nonblank
+                               (chirp-get data "translation"))))
+           (let ((destination
+                  (or (chirp-first-nonblank
+                       (chirp-get data "destinationLanguage"))
+                      language)))
+             (chirp-set-tweet-state-override
+              tweet-id :translation translation)
+             (chirp-set-tweet-state-override
+              tweet-id :translation-language destination)
+             (chirp-update-tweet-by-id
+              buffer
+              tweet-id
+              (lambda (tweet)
+                (plist-put tweet :translation translation)
+                (plist-put tweet :translation-language destination))
+              t)
+             (message "Translated to %s." destination))
+         (chirp-actions--show-error
+          "twitter-cli returned no translated text.")))
+     #'chirp-actions--show-error)))
+
 (transient-define-prefix chirp-dispatch ()
   "Show Chirp write actions."
   [["Timeline"
@@ -845,6 +876,7 @@ When TWEET is non-nil, use it as the reply or quote target."
     ("B" "Bookmark" chirp-toggle-bookmark-at-point)]
    ["Other"
     ("d" "Delete" chirp-delete-at-point)
+    ("T" "Translate" chirp-translate-at-point)
     ("y" "Copy fixupx" chirp-copy-fixupx-url-at-point)
     ("o" "Browser" chirp-browse-at-point)]])
 

@@ -49,10 +49,10 @@ Return a list of (compose source foreign)."
     (let ((request-count 0))
       (unwind-protect
           (cl-letf (((symbol-function 'chirp-backend-search-users-sync)
-                     (lambda (query max-results)
+                     (lambda (query &optional max-results)
                        (setq request-count (1+ request-count))
                        (should (equal query "em"))
-                       (should (= max-results 10))
+                       (should-not max-results)
                        '((("screenName" . "emacs"))
                          (("screenName" . "emacslife"))))))
             (with-current-buffer compose
@@ -455,6 +455,36 @@ Return a list of (compose source foreign)."
          (should (equal captured-args '("unfollow" "alice")))
          (should refreshed))))))
 
+(ert-deftest chirp-translate-at-point-caches-and-renders-result ()
+  "Translation should be stored on the current tweet and trigger a rerender."
+  (clrhash chirp-tweet-state-overrides)
+  (let ((chirp-translation-language "zh")
+        rerendered)
+    (unwind-protect
+        (chirp-test--with-tweet-buffer
+         '(:kind tweet :id "123" :translation nil :translation-language nil)
+         (lambda (_buffer)
+           (cl-letf (((symbol-function 'chirp-backend-translate)
+                      (lambda (tweet-id language callback &optional _errback)
+                        (should (equal tweet-id "123"))
+                        (should (equal language "zh"))
+                        (funcall callback
+                                 '(("translation" . "你好")
+                                   ("destinationLanguage" . "zh"))
+                                 nil)))
+                     ((symbol-function 'chirp-request-rerender)
+                      (lambda (&optional _buffer _delay)
+                        (setq rerendered t))))
+             (chirp-translate-at-point)
+             (should rerendered)
+             (should (equal (plist-get (chirp-entry-at-point) :translation)
+                            "你好"))
+             (should (equal
+                      (plist-get (gethash "123" chirp-tweet-state-overrides)
+                                 :translation-language)
+                      "zh")))))
+      (clrhash chirp-tweet-state-overrides))))
+
 (ert-deftest chirp-dispatch-uses-toggle-actions-for-stateful-tweet-actions ()
   "The Chirp transient should expose only toggle entries for like/RT/bookmark."
   (let ((home-suffix (transient-get-suffix 'chirp-dispatch "h"))
@@ -468,6 +498,7 @@ Return a list of (compose source foreign)."
         (retweet-suffix (transient-get-suffix 'chirp-dispatch "R"))
         (like-suffix (transient-get-suffix 'chirp-dispatch "l"))
         (bookmark-suffix (transient-get-suffix 'chirp-dispatch "B"))
+        (translate-suffix (transient-get-suffix 'chirp-dispatch "T"))
         (copy-suffix (transient-get-suffix 'chirp-dispatch "y")))
     (should (eq (plist-get (cdr home-suffix) :command) 'chirp-timeline-open-home))
     (should (eq (plist-get (cdr following-suffix) :command) 'chirp-timeline-open-following))
@@ -480,8 +511,8 @@ Return a list of (compose source foreign)."
     (should (eq (plist-get (cdr retweet-suffix) :command) 'chirp-toggle-retweet-at-point))
     (should (eq (plist-get (cdr like-suffix) :command) 'chirp-toggle-like-at-point))
     (should (eq (plist-get (cdr bookmark-suffix) :command) 'chirp-toggle-bookmark-at-point))
+    (should (eq (plist-get (cdr translate-suffix) :command) 'chirp-translate-at-point))
     (should (eq (plist-get (cdr copy-suffix) :command) 'chirp-copy-fixupx-url-at-point))
-    (should-error (transient-get-suffix 'chirp-dispatch "T"))
     (should-error (transient-get-suffix 'chirp-dispatch "U"))))
 
 (ert-deftest chirp-copy-fixupx-url-at-point-copies-rewritten-url ()

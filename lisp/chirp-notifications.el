@@ -5,7 +5,6 @@
 ;;; Code:
 
 (require 'seq)
-(require 'subr-x)
 (require 'chirp-core)
 (require 'chirp-backend)
 

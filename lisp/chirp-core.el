@@ -1491,6 +1491,9 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
             :retweeted-p (chirp-plist-override state-overrides :retweeted-p retweeted-p)
             :liked-p (chirp-plist-override state-overrides :liked-p liked-p)
             :bookmarked-p (chirp-plist-override state-overrides :bookmarked-p bookmarked-p)
+            :translation (chirp-plist-override state-overrides :translation nil)
+            :translation-language
+            (chirp-plist-override state-overrides :translation-language nil)
             :reply-count (chirp-coalesce
                           (chirp-get object "reply_count")
                           (chirp-get metrics "replies")

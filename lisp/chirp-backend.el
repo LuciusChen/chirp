@@ -497,6 +497,13 @@ When FOLLOWING is non-nil, fetch the Following timeline."
               query
               "--max" (number-to-string (or max-results 10))))))
 
+(defun chirp-backend-translate (tweet-id language callback &optional errback)
+  "Translate TWEET-ID into LANGUAGE and call CALLBACK."
+  (chirp-backend-request
+   (list "translate" tweet-id "--to" language)
+   callback
+   errback))
+
 (defun chirp-backend-whoami (callback &optional errback)
   "Fetch the authenticated user profile and call CALLBACK."
   (chirp-backend--cached-read

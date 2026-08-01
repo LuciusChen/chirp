@@ -15,6 +15,7 @@ This first cut is intentionally narrow:
 - Tweet thread/detail
 - Profile header with a direct posts stream
 - Profile follower/following lists
+- On-demand inline tweet translation
 - Native desktop notifications for mentions, replies, quotes, likes, follows,
   and reposts
 - Basic write actions via a `transient` menu: post (including Premium long-form
@@ -85,6 +86,12 @@ To change the interval or the size of each recent-activity check:
       chirp-notifications-max-results 20)
 ```
 
+Tweet translation defaults to Chinese. Customize the target language with:
+
+```elisp
+(setq chirp-translation-language "zh")
+```
+
 ## Entry Points
 
 ```elisp
@@ -115,7 +122,8 @@ M-x chirp-profile-following-users
 - `m`: open the first media item for the current tweet
 - `D`: download the current media, or choose one media item from the current tweet; photos try the original-resolution URL and videos use the highest-quality variant
 - `A`: open the author profile
-- `x`: open the actions menu for timeline switching, your own profile, bookmarks, liked tweets, lists, post/reply/quote, follow/unfollow, and tweet actions
+- `x`: open the actions menu for timeline switching, your own profile, bookmarks, liked tweets, lists, post/reply/quote, follow/unfollow, translation, and tweet actions
+- `x T`: translate the tweet at point and show the result below its original text
 - `o`: open the current item in a browser
 - `q`: close the current Chirp buffer
 
