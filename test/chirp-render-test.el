@@ -324,6 +324,51 @@
         (should (string-match-p "https://example.com/article" rendered))
         (should-not (string-match-p "https://t\\.co/demo" rendered))))))
 
+(ert-deftest chirp-open-at-point-expands-only-from-show-more ()
+  "RET should expand Show more while tweet-body RET opens the thread."
+  (let ((tweet (chirp-test--sample-article-tweet))
+        opened-thread
+        (rerender-count 0))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-thumbnail-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-thread-open)
+                 (lambda (tweet-or-url &optional focus-id _buffer)
+                   (setq opened-thread
+                         (list (plist-get tweet-or-url :id) focus-id)))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet))
+        (setq-local
+         chirp--rerender-function
+         (let ((buffer (current-buffer)))
+           (lambda ()
+             (cl-incf rerender-count)
+             (chirp-render-into-buffer
+              buffer "Test" nil
+              (lambda ()
+                (chirp-render-insert-tweet tweet))))))
+        (goto-char (point-min))
+        (search-forward "Read this")
+        (goto-char (match-beginning 0))
+        (chirp-open-at-point)
+        (should (equal opened-thread '("123" "123")))
+        (should (zerop rerender-count))
+        (setq opened-thread nil)
+        (goto-char (point-min))
+        (should (search-forward "Show more" nil t))
+        (goto-char (match-beginning 0))
+        (should (equal (get-text-property (point) 'chirp-expand-tweet-id)
+                       "123"))
+        (chirp-open-at-point)
+        (should (= rerender-count 1))
+        (should-not opened-thread)
+        (should (gethash "123" chirp--expanded-tweet-ids))
+        (should (string-match-p "Second paragraph" (buffer-string)))
+        (should-not (string-match-p "Show more" (buffer-string)))))))
+
 (ert-deftest chirp-render-insert-tweet-highlights-genuine-external-links ()
   "Genuine external links should highlight on hover and open themselves."
   (let ((tweet (chirp-normalize-tweet

@@ -108,7 +108,7 @@
 (ert-deftest chirp-thread-open-filters-keyword-spam-replies ()
   "Thread loading should hide matching replies without hiding the focus tweet."
   (let ((buffer (generate-new-buffer " *chirp-thread-spam-test*"))
-        (chirp-thread-spam-keywords '("dm me" "t.me/" "  "))
+        (chirp-thread-spam-keywords '("dm me" "t.me/" "推广昵称" "  "))
         thread-callback
         rendered)
     (unwind-protect
@@ -140,6 +140,8 @@
                     '(:kind tweet :id "spam-text" :text "Please DM ME for support")
                     '(:kind tweet :id "spam-url" :text "More details"
                       :urls ("https://t.me/example"))
+                    '(:kind tweet :id "spam-author" :text "Ordinary reply"
+                      :author-name "这是推广昵称")
                     '(:kind tweet :id "related" :text "DM me for context"
                       :timeline-context related)
                     '(:kind tweet :id "legit" :text "Useful reply"))
@@ -232,6 +234,23 @@
      (chirp-thread--spam-reply-p '(:text "体制内幼师的日常")))
     (should-not
      (chirp-thread--spam-reply-p '(:text "这个说法 sao的很")))))
+
+(ert-deftest chirp-thread-spam-keywords-match-author-nickname-and-handle ()
+  "Spam rules should inspect reply author display names and handles."
+  (let ((chirp-thread-spam-keywords '("推广昵称" "spam_handle")))
+    (should
+     (chirp-thread--spam-reply-p
+      '(:text "普通回复" :author-name "这是推广昵称" :author-handle "alice")))
+    (should
+     (chirp-thread--spam-reply-p
+      '(:text "普通回复" :author-name "Alice" :author-handle "Spam_Handle_01")))
+    (should-not
+     (chirp-thread--spam-reply-p
+      '(:text "普通回复" :author-name "Alice" :author-handle "alice")))
+    (should-not
+     (chirp-thread--spam-reply-p
+      '(:text "推广昵称" :author-name "推广昵称" :author-handle "spam_handle"
+        :timeline-context related)))))
 
 (provide 'chirp-thread-test)
 

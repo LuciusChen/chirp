@@ -5,7 +5,7 @@
 
 ;;; Commentary:
 
-;; Data used by Chirp's thread reply spam filter.
+;; Data matched against thread replies and their author identities.
 
 ;;; Code:
 

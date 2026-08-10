@@ -102,7 +102,7 @@ M-x chirp-profile-following-users
 - `N`: load more older posts on Home and Following
 - `q`: close the current Chirp window; on For You and Following, keep the timeline buffer alive so you can switch back later
 - When Home or Following has no more older posts, Chirp says so instead of leaving the last loading message in place
-- `RET`: open the current tweet or profile, or open large media when point is on a thumbnail
+- `RET`: expand an article when point is on `Show more`; otherwise open the current tweet or profile, or open large media when point is on a thumbnail
 - In profile summaries, `RET` on `Followers` or `Following` opens that user list
 - In profile buffers, `RET` on the subview strip switches between available profile timelines
 - `m`: open the first media item for the current tweet
@@ -134,7 +134,7 @@ Clipboard image paste uses `wl-paste` on Wayland and `pngpaste` on macOS when av
 
 ## Thread Reply Filtering
 
-Chirp hides likely spam replies using a conservative default list collected from repeated public reply spam, prioritizing Chinese templates before English ones. Matching configured literal phrases against reply text and expanded links ignores case and never filters the thread's focus tweet. A nested list requires every fragment to occur, which catches split templates without filtering on either broad fragment alone; set the option to nil to disable filtering.
+Chirp hides likely spam replies using a conservative default list collected from repeated public reply spam, prioritizing Chinese templates before English ones. Matching configured literal phrases against reply text, expanded links, the author's display name, and the author's `@handle` ignores case and never filters the thread's focus tweet. A nested list requires every fragment to occur, which catches split templates without filtering on either broad fragment alone; set the option to nil to disable filtering.
 
 ```elisp
 (setq chirp-thread-spam-keywords nil) ; Disable filtering entirely.

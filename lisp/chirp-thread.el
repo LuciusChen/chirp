@@ -22,12 +22,13 @@
   "Keywords used to hide replies in thread views.
 
 Each nonempty string is matched literally and case-insensitively against reply
-text and expanded URLs.  A nested list matches only when all of its strings are
-nonempty and occur, which lets specific split templates avoid broad
-single-keyword matches.  The conservative defaults come from repeated spam in
-real public replies, with Chinese patterns prioritized over English ones.  The
-thread's focus tweet is never filtered.  Set this option to nil to disable
-keyword filtering, or replace and extend the list with local patterns."
+text, expanded URLs, the author's display name, and the author's handle.  A
+nested list matches only when all of its strings are nonempty and occur, which
+lets specific split templates avoid broad single-keyword matches.  The
+conservative defaults come from repeated spam in real public replies, with
+Chinese patterns prioritized over English ones.  The thread's focus tweet is
+never filtered.  Set this option to nil to disable keyword filtering, or
+replace and extend the list with local patterns."
   :type '(repeat (choice string (repeat string)))
   :group 'chirp)
 
@@ -51,15 +52,17 @@ keyword filtering, or replace and extend the list with local patterns."
         tweets))))
 
 (defun chirp-thread--spam-reply-p (tweet)
-  "Return non-nil when reply TWEET matches a configured spam keyword."
+  "Return non-nil when reply TWEET or its author matches a spam keyword."
   (and (not (eq (plist-get tweet :timeline-context) 'related))
        (let ((case-fold-search t)
              (content
               (string-join
                (cl-remove-if-not
                 #'stringp
-                (cons (plist-get tweet :text)
-                      (plist-get tweet :urls)))
+                (append (list (plist-get tweet :text)
+                              (plist-get tweet :author-name)
+                              (plist-get tweet :author-handle))
+                        (plist-get tweet :urls)))
                "\n")))
          (cl-labels
              ((matches

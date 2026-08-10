@@ -474,6 +474,46 @@ using PREFIX-FACE when provided."
     (when images
       (chirp-render-insert-media-strip images prefix prefix-face))))
 
+(defun chirp-render--article-expandable-p (tweet detailp)
+  "Return non-nil when TWEET has article content beyond its preview.
+
+DETAILP selects the same preview length used by the article renderer."
+  (let* ((limit (if detailp 420 220))
+         (segments (chirp-article-segments (plist-get tweet :article-text)))
+         (text-count
+          (cl-count-if (lambda (segment)
+                         (eq (plist-get segment :type) 'text))
+                       segments))
+         (image-count
+          (cl-count-if (lambda (segment)
+                         (eq (plist-get segment :type) 'image))
+                       segments))
+         (preview (chirp-tweet-article-preview tweet limit))
+         (full-summary
+          (chirp-tweet-article-preview tweet most-positive-fixnum)))
+    (and segments
+         (or (> text-count 1)
+             (> image-count 1)
+             (and full-summary
+                  (not (equal preview full-summary)))))))
+
+(defun chirp-render--insert-show-more (tweet &optional prefix prefix-face)
+  "Insert an inline expansion action for TWEET.
+
+Precede the action with PREFIX using PREFIX-FACE when provided."
+  (when-let* ((tweet-id (plist-get tweet :id)))
+    (chirp-render--insert-prefix prefix prefix-face)
+    (let ((start (point)))
+      (insert (propertize "Show more" 'face 'link))
+      (add-text-properties
+       start (point)
+       `(chirp-expand-tweet-id ,tweet-id
+                               mouse-face highlight
+                               pointer hand
+                               help-echo "RET: show full content"))
+      (insert "\n")
+      (chirp-render--apply-wrap-prefix start (point) prefix prefix-face))))
+
 (defun chirp-render--truncate-link-card-text (text max-length)
   "Return TEXT truncated to MAX-LENGTH characters when needed."
   (let ((cleaned (chirp-clean-text text)))
@@ -838,6 +878,11 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
          (handle (plist-get tweet :author-handle))
          (retweeted-by (plist-get tweet :retweeted-by))
          (created-at (plist-get tweet :created-at))
+         (article-mode
+          (if (or (eq article-mode 'full)
+                  (chirp--tweet-expanded-p tweet))
+              'full
+            article-mode))
          (meta-start nil))
     (when reply-parent
       (chirp-render--insert-list-reply-context tweet reply-parent prefix prefix-face))
@@ -883,7 +928,9 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
        (chirp-render--insert-article-body tweet prefix prefix-face))
       (_
        (chirp-render--insert-article-preview tweet article-mode prefix prefix-face)
-       (chirp-render--insert-article-media-preview tweet article-mode prefix prefix-face)))
+       (chirp-render--insert-article-media-preview tweet article-mode prefix prefix-face)
+       (when (chirp-render--article-expandable-p tweet article-mode)
+         (chirp-render--insert-show-more tweet prefix prefix-face))))
     (chirp-render--insert-link-cards tweet prefix prefix-face)
     (chirp-render--insert-expanded-urls (plist-get tweet :urls) prefix prefix-face)
     (chirp-render-insert-media-strip (plist-get tweet :media)

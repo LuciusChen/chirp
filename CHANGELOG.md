@@ -11,8 +11,9 @@ history remains available in Git.
 - Native desktop notifications for account activity.
 - User-handle completion while composing posts.
 - Gapless row-sliced image and video/GIF cover thumbnails.
-- Configurable case-insensitive filtering with conservative Chinese-first literal and all-fragment defaults collected from real public reply spam.
+- Configurable case-insensitive filtering of reply content and author nicknames/handles, with conservative Chinese-first literal and all-fragment defaults collected from real public reply spam.
 - Highlighted context labels for related tweets and reply-target handles in thread views.
+- Inline `Show more` expansion for article previews while `RET` elsewhere on a tweet continues to open its detail thread.
 
 ### Fixed
 

@@ -166,6 +166,9 @@ commands still work, and displays alt text when twitter-cli provides it."
 (defvar-local chirp--rerender-function nil
   "Function used to redraw the current Chirp view without refetching data.")
 
+(defvar-local chirp--expanded-tweet-ids nil
+  "Hash table of tweet ids expanded inline in the current Chirp buffer.")
+
 (defvar-local chirp--rerender-timer nil
   "Pending timer used to coalesce lightweight Chirp rerenders.")
 
@@ -204,6 +207,7 @@ commands still work, and displays alt text when twitter-cli provides it."
 (put 'chirp--timeline-load-more-function 'permanent-local t)
 (put 'chirp--timeline-exhausted-p 'permanent-local t)
 (put 'chirp--rerender-function 'permanent-local t)
+(put 'chirp--expanded-tweet-ids 'permanent-local t)
 (put 'chirp--entry-wrap-navigation 'permanent-local t)
 (put 'chirp--profile-handle 'permanent-local t)
 (put 'chirp--profile-view-mode 'permanent-local t)
@@ -644,10 +648,26 @@ revisited later."
       (and (> (point) (point-min))
            (get-text-property (1- (point)) 'chirp-entry-url))))
 
+(defun chirp--tweet-expanded-p (tweet)
+  "Return non-nil when TWEET is expanded in the current buffer."
+  (and (hash-table-p chirp--expanded-tweet-ids)
+       (gethash (plist-get tweet :id) chirp--expanded-tweet-ids)))
+
+(defun chirp--expand-tweet (tweet-id)
+  "Expand TWEET-ID inline and rerender the current view."
+  (unless (functionp chirp--rerender-function)
+    (user-error "This Chirp view cannot expand tweet content"))
+  (unless (hash-table-p chirp--expanded-tweet-ids)
+    (setq-local chirp--expanded-tweet-ids (make-hash-table :test #'equal)))
+  (puthash tweet-id t chirp--expanded-tweet-ids)
+  (funcall chirp--rerender-function))
+
 (defun chirp-open-at-point ()
   "Open the entry at point."
   (interactive)
   (let* ((entry (chirp-entry-at-point))
+         (expand-tweet-id
+          (chirp--text-property-at-point 'chirp-expand-tweet-id))
          (profile-view-mode
           (chirp--text-property-at-point 'chirp-profile-view-mode))
          (profile-action
@@ -658,6 +678,8 @@ revisited later."
          (profile-list-handle
           (chirp--text-property-at-point 'chirp-profile-list-handle)))
     (cond
+     (expand-tweet-id
+      (chirp--expand-tweet expand-tweet-id))
      ((and profile-view-mode
            (functionp chirp--profile-switch-mode-function))
       (funcall chirp--profile-switch-mode-function profile-view-mode))
