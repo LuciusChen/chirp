@@ -1,6 +1,11 @@
 ;;; chirp-actions.el --- Transient write actions for chirp -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; Provide Chirp's compose buffer and interactive read/write actions.
 
 ;;; Code:
 
@@ -223,7 +228,8 @@ STATE-KEY is set to STATE-VALUE and COUNT-KEY is adjusted when needed."
 (defun chirp-actions--set-state (state-key command count-key state-value success-message)
   "Set STATE-KEY for the current tweet using COMMAND.
 
-COUNT-KEY is adjusted locally to reflect STATE-VALUE."
+COUNT-KEY is adjusted locally to reflect STATE-VALUE.  Display SUCCESS-MESSAGE
+when the request succeeds."
   (let* ((tweet-id (chirp-actions--tweet-id-at-point))
          (buffer (current-buffer)))
     (chirp-actions--perform
@@ -238,7 +244,9 @@ COUNT-KEY is adjusted locally to reflect STATE-VALUE."
 
 (defun chirp-actions--toggle-state (state-key command-on command-off count-key
                                               success-on success-off)
-  "Toggle the current tweet STATE-KEY using COMMAND-ON and COMMAND-OFF."
+  "Toggle the current tweet STATE-KEY using COMMAND-ON and COMMAND-OFF.
+
+Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
   (let* ((tweet (chirp-actions--tweet-at-point))
          (current-state (chirp-boolean-value (plist-get tweet state-key)))
          (next-state (not current-state))
@@ -452,7 +460,7 @@ COUNT-KEY is adjusted locally to reflect STATE-VALUE."
 (defun chirp-compose--ensure-attachment-room ()
   "Signal a user error when the current draft already has four images."
   (when (>= (length chirp-compose-attachments) 4)
-    (user-error "twitter-cli supports up to 4 attached images")))
+    (user-error "Up to 4 attached images are supported")))
 
 (defun chirp-compose--mime-extension (mime-type)
   "Return a file extension for MIME-TYPE."
@@ -825,7 +833,7 @@ When TWEET is non-nil, use it as the reply or quote target."
          (buffer (current-buffer))
          (language (string-trim chirp-translation-language)))
     (when (string-empty-p language)
-      (user-error "chirp-translation-language must not be empty"))
+      (user-error "Translation language must not be empty"))
     (message "Translating to %s..." language)
     (chirp-backend-translate
      tweet-id
@@ -850,7 +858,7 @@ When TWEET is non-nil, use it as the reply or quote target."
               t)
              (message "Translated to %s." destination))
          (chirp-actions--show-error
-          "twitter-cli returned no translated text.")))
+          "No translated text returned by twitter-cli")))
      #'chirp-actions--show-error)))
 
 (transient-define-prefix chirp-dispatch ()

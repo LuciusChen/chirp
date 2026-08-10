@@ -1,9 +1,15 @@
 ;;; chirp-timeline.el --- Timeline views for chirp -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; Fetch, merge, paginate, refresh, and render Chirp timeline views.
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'chirp-core)
 (require 'chirp-backend)
 (require 'chirp-media)
@@ -82,20 +88,15 @@
                  t)
                 choices))))
 
-(defun chirp-timeline--following-p (kind)
-  "Return non-nil when KIND is the Following timeline."
-  (eq kind 'following))
-
 (defun chirp-timeline--refresh-function (kind buffer)
-  "Return a refresh function for timeline KIND."
+  "Return a refresh function for timeline KIND in BUFFER."
   (lambda ()
-    (chirp-timeline--open kind
-                          (or chirp--timeline-limit
-                              chirp-default-max-results)
-                          (chirp-capture-point-anchor)
-                          buffer
-                          nil
-                          t)))
+    (chirp-timeline--open
+     kind
+     :limit (or chirp--timeline-limit chirp-default-max-results)
+     :anchor-id (chirp-capture-point-anchor)
+     :buffer buffer
+     :refreshing t)))
 
 (defun chirp-timeline--current-count (buffer)
   "Return the current timeline post count for BUFFER."
@@ -118,12 +119,6 @@
        (push tweet tweets)))
     (nreverse tweets)))
 
-(defun chirp-timeline--tweet-key (tweet)
-  "Return a stable merge key for TWEET."
-  (or (plist-get tweet :id)
-      (plist-get tweet :url)
-      (plist-get tweet :text)))
-
 (defun chirp-timeline--prepended-new-count (current fetched)
   "Return how many unique FETCHED tweets are not already present in CURRENT.
 
@@ -137,17 +132,13 @@ see after the merge."
           (seen-keys (make-hash-table :test #'equal))
           (count 0))
       (dolist (tweet current)
-        (puthash (chirp-timeline--tweet-key tweet) t current-keys))
+        (puthash (chirp-tweet-key tweet) t current-keys))
       (dolist (tweet fetched count)
-        (let ((key (chirp-timeline--tweet-key tweet)))
+        (let ((key (chirp-tweet-key tweet)))
           (unless (gethash key seen-keys)
             (puthash key t seen-keys)
             (unless (gethash key current-keys)
               (setq count (1+ count)))))))))
-
-(defun chirp-timeline--same-tweets-p (left right)
-  "Return non-nil when LEFT and RIGHT render the same timeline content."
-  (equal left right))
 
 (defun chirp-timeline--merge-refreshed-tweets (current fetched)
   "Return a plist describing how FETCHED should merge over CURRENT."
@@ -156,31 +147,19 @@ see after the merge."
         (merged-keys (make-hash-table :test #'equal))
         (new-count (chirp-timeline--prepended-new-count current fetched)))
     (dolist (tweet current)
-      (puthash (chirp-timeline--tweet-key tweet) t current-keys))
+      (puthash (chirp-tweet-key tweet) t current-keys))
     (dolist (tweet fetched)
-      (let ((key (chirp-timeline--tweet-key tweet)))
+      (let ((key (chirp-tweet-key tweet)))
         (unless (gethash key merged-keys)
           (puthash key t merged-keys)
           (push tweet merged))))
     (dolist (tweet current)
-      (let ((key (chirp-timeline--tweet-key tweet)))
+      (let ((key (chirp-tweet-key tweet)))
         (unless (gethash key merged-keys)
           (puthash key t merged-keys)
           (push tweet merged))))
     (list :tweets (nreverse merged)
           :new-count new-count)))
-
-(defun chirp-timeline--append-older-tweets (current fetched)
-  "Return CURRENT with older FETCHED tweets appended without duplicates."
-  (let ((seen (make-hash-table :test #'equal))
-        (merged (copy-sequence current)))
-    (dolist (tweet current)
-      (puthash (chirp-timeline--tweet-key tweet) t seen))
-    (dolist (tweet fetched merged)
-      (let ((key (chirp-timeline--tweet-key tweet)))
-        (unless (gethash key seen)
-          (puthash key t seen)
-          (setq merged (append merged (list tweet))))))))
 
 (defun chirp-timeline--refresh-message (new-count)
   "Return a status message for NEW-COUNT refreshed tweets."
@@ -197,9 +176,13 @@ When NEW-COUNT is positive, return nil so the refreshed view shows the
 newly inserted posts at the top.  Otherwise preserve ANCHOR-ID."
   (and (zerop new-count) anchor-id))
 
-(defun chirp-timeline--render
-    (buffer title refresh tweets &optional kind limit anchor-id exhausted-p display-p next-cursor)
-  "Render TWEETS into BUFFER."
+(cl-defun chirp-timeline--render
+    (buffer title refresh tweets
+            &key kind limit anchor-id exhausted-p display-p next-cursor)
+  "Render TWEETS into BUFFER with TITLE and REFRESH metadata.
+
+KIND and LIMIT describe the timeline.  ANCHOR-ID restores point.  EXHAUSTED-P,
+DISPLAY-P, and NEXT-CURSOR control pagination and presentation."
   (let ((tweet-count (length tweets)))
     (chirp-render-into-buffer
      buffer title refresh
@@ -232,12 +215,11 @@ newly inserted posts at the top.  Otherwise preserve ANCHOR-ID."
                        saved-title
                        saved-refresh
                        saved-tweets
-                       saved-kind
-                       saved-limit
-                       (chirp-capture-point-anchor)
-                       saved-exhausted
-                       nil
-                       saved-next-cursor))))
+                       :kind saved-kind
+                       :limit saved-limit
+                       :anchor-id (chirp-capture-point-anchor)
+                       :exhausted-p saved-exhausted
+                       :next-cursor saved-next-cursor))))
       (setq-local chirp--timeline-loading-more nil)
       (or (and anchor-id
                (chirp-restore-point-anchor anchor-id))
@@ -248,11 +230,16 @@ newly inserted posts at the top.  Otherwise preserve ANCHOR-ID."
     (chirp-media-prefetch-tweets tweets buffer)
     (chirp-enrich-quoted-tweets tweets buffer)))
 
-(defun chirp-timeline--handle-feed-success
-    (buffer title refresh tweets kind limit anchor-id
-            loading-more refreshing previous-count previous-tweets previous-exhausted-p
-            previous-next-cursor envelope)
-  "Handle a successful feed response for BUFFER."
+(cl-defun chirp-timeline--handle-feed-success
+    (buffer title refresh tweets
+            &key kind limit anchor-id loading-more refreshing previous-count
+            previous-tweets previous-exhausted-p previous-next-cursor envelope)
+  "Handle a successful feed response for BUFFER with TITLE and REFRESH.
+
+TWEETS, KIND, LIMIT, and ANCHOR-ID describe the new view.  LOADING-MORE and
+REFRESHING select merge behavior.  PREVIOUS-COUNT, PREVIOUS-TWEETS,
+PREVIOUS-EXHAUSTED-P, and PREVIOUS-NEXT-CURSOR describe the old view.  ENVELOPE
+contains response pagination metadata."
   (ignore previous-count)
   (with-current-buffer buffer
     (setq-local chirp--request-token nil))
@@ -261,7 +248,7 @@ newly inserted posts at the top.  Otherwise preserve ANCHOR-ID."
      (loading-more
       (let* ((current (or previous-tweets
                           (chirp-timeline--buffer-tweets buffer)))
-             (merged-tweets (chirp-timeline--append-older-tweets current tweets))
+             (merged-tweets (chirp-append-unique-tweets current tweets))
              (new-items-added (> (length merged-tweets) (length current)))
              (exhausted-p (not next-cursor)))
         (with-current-buffer buffer
@@ -275,12 +262,12 @@ newly inserted posts at the top.  Otherwise preserve ANCHOR-ID."
              title
              refresh
              merged-tweets
-             kind
-             limit
-             anchor-id
-             exhausted-p
-             t
-             next-cursor)
+             :kind kind
+             :limit limit
+             :anchor-id anchor-id
+             :exhausted-p exhausted-p
+             :display-p t
+             :next-cursor next-cursor)
           (when exhausted-p
             (message "No older posts.")))
         (chirp-clear-status buffer)))
@@ -292,21 +279,19 @@ newly inserted posts at the top.  Otherwise preserve ANCHOR-ID."
               (if (> (length previous-tweets) limit)
                   previous-next-cursor
                 (or next-cursor previous-next-cursor)))
-             (render-needed (not (chirp-timeline--same-tweets-p
-                                  previous-tweets
-                                  merged-tweets))))
+             (render-needed (not (equal previous-tweets merged-tweets))))
         (if render-needed
             (chirp-timeline--render
              buffer
              title
              refresh
              merged-tweets
-             kind
-             limit
-             (chirp-timeline--refresh-anchor-id new-count anchor-id)
-             previous-exhausted-p
-             t
-             effective-next-cursor)
+             :kind kind
+             :limit limit
+             :anchor-id (chirp-timeline--refresh-anchor-id new-count anchor-id)
+             :exhausted-p previous-exhausted-p
+             :display-p t
+             :next-cursor effective-next-cursor)
           (with-current-buffer buffer
             (setq-local chirp--timeline-loading-more nil)
             (setq-local chirp--timeline-exhausted-p previous-exhausted-p)
@@ -320,25 +305,26 @@ newly inserted posts at the top.  Otherwise preserve ANCHOR-ID."
        title
        refresh
        tweets
-       kind
-       limit
-       anchor-id
-       (and (memq kind '(home following))
-            (not next-cursor))
-       t
-       next-cursor)
+       :kind kind
+       :limit limit
+       :anchor-id anchor-id
+       :exhausted-p (and (memq kind '(home following))
+                         (not next-cursor))
+       :display-p t
+       :next-cursor next-cursor)
       (when (and loading-more
                  (not next-cursor))
         (message "No older posts."))))))
 
-(defun chirp-timeline--open
-    (kind &optional limit anchor-id buffer loading-more refreshing cursor)
+(cl-defun chirp-timeline--open
+    (kind &key limit anchor-id buffer loading-more refreshing cursor)
   "Open timeline KIND with LIMIT posts.
 
 When ANCHOR-ID is non-nil, restore point to that entry after rendering.
 When BUFFER is non-nil, render into that existing buffer.
 When LOADING-MORE is non-nil, keep the current buffer visible while fetching.
-When REFRESHING is non-nil, merge newer tweets at the top on success."
+When REFRESHING is non-nil, merge newer tweets at the top on success.  CURSOR
+requests a specific pagination page."
   (let* ((buffer (or buffer (chirp-buffer)))
          (title (chirp-timeline--title kind))
          (limit (or limit chirp-default-max-results))
@@ -382,10 +368,18 @@ When REFRESHING is non-nil, merge newer tweets at the top on success."
      (lambda (tweets envelope)
        (when (chirp-request-current-p buffer token)
          (chirp-timeline--handle-feed-success
-          buffer title refresh tweets kind limit anchor-id
-          loading-more refreshing previous-count previous-tweets previous-exhausted-p
-          previous-next-cursor envelope)))
-     (chirp-timeline--following-p kind)
+          buffer title refresh tweets
+          :kind kind
+          :limit limit
+          :anchor-id anchor-id
+          :loading-more loading-more
+          :refreshing refreshing
+          :previous-count previous-count
+          :previous-tweets previous-tweets
+          :previous-exhausted-p previous-exhausted-p
+          :previous-next-cursor previous-next-cursor
+          :envelope envelope)))
+     (eq kind 'following)
      (lambda (message)
        (when (chirp-request-current-p buffer token)
          (with-current-buffer buffer
@@ -408,15 +402,15 @@ When REFRESHING is non-nil, merge newer tweets at the top on success."
 (defun chirp-timeline-open-home ()
   "Open the home timeline."
   (interactive)
-  (chirp-timeline--open 'home chirp-default-max-results))
+  (chirp-timeline--open 'home :limit chirp-default-max-results))
 
 (defun chirp-timeline-open-following ()
   "Open the following timeline."
   (interactive)
-  (chirp-timeline--open 'following chirp-default-max-results))
+  (chirp-timeline--open 'following :limit chirp-default-max-results))
 
 (defun chirp-load-more (&optional anchor-id)
-  "Load older posts for the current Home or Following timeline."
+  "Load older posts and restore point to ANCHOR-ID when supplied."
   (interactive)
   (unless (memq chirp--timeline-kind '(home following))
     (user-error "Current view does not support loading more posts"))
@@ -430,15 +424,14 @@ When REFRESHING is non-nil, merge newer tweets at the top on success."
   (t
     (chirp-timeline--open
      chirp--timeline-kind
-     (or chirp--timeline-limit chirp-default-max-results)
-     (or anchor-id (chirp-capture-point-anchor))
-     (current-buffer)
-     t
-     nil
-     chirp--timeline-next-cursor))))
+     :limit (or chirp--timeline-limit chirp-default-max-results)
+     :anchor-id (or anchor-id (chirp-capture-point-anchor))
+     :buffer (current-buffer)
+     :loading-more t
+     :cursor chirp--timeline-next-cursor))))
 
 (defun chirp-timeline-open-bookmarks (&optional buffer)
-  "Open bookmarks."
+  "Open bookmarks in BUFFER."
   (interactive)
   (let* ((buffer (or buffer (chirp-buffer)))
          (refresh (lambda () (chirp-timeline-open-bookmarks buffer))))
@@ -447,14 +440,15 @@ When REFRESHING is non-nil, merge newer tweets at the top on success."
       (chirp-backend-bookmarks
        (lambda (tweets _envelope)
          (when (chirp-request-current-p buffer token)
-           (chirp-timeline--render buffer "Bookmarks" refresh tweets nil nil nil nil t)))
+           (chirp-timeline--render
+            buffer "Bookmarks" refresh tweets :display-p t)))
        (lambda (message)
          (when (chirp-request-current-p buffer token)
            (chirp-timeline--set-kind buffer nil)
            (chirp-show-error buffer "Bookmarks" refresh message)))))))
 
 (defun chirp-timeline-open-likes (&optional handle buffer)
-  "Open liked tweets for HANDLE.
+  "Open liked tweets for HANDLE in BUFFER.
 
 When HANDLE is nil, resolve the currently authenticated account first."
   (interactive)
@@ -471,7 +465,8 @@ When HANDLE is nil, resolve the currently authenticated account first."
              clean-handle
              (lambda (tweets _envelope)
                (when (chirp-request-current-p buffer token)
-                 (chirp-timeline--render buffer title refresh tweets nil nil nil nil t)))
+                 (chirp-timeline--render
+                  buffer title refresh tweets :display-p t)))
              (lambda (message)
                (when (chirp-request-current-p buffer token)
                  (chirp-timeline--set-kind buffer nil)
@@ -488,7 +483,7 @@ When HANDLE is nil, resolve the currently authenticated account first."
                     (lambda (tweets _likes-envelope)
                       (when (chirp-request-current-p buffer token)
                         (chirp-timeline--render
-                         buffer resolved-title refresh tweets nil nil nil nil t)))
+                         buffer resolved-title refresh tweets :display-p t)))
                     (lambda (message)
                       (when (chirp-request-current-p buffer token)
                         (chirp-timeline--set-kind buffer nil)
@@ -508,7 +503,7 @@ When HANDLE is nil, resolve the currently authenticated account first."
               message))))))))
 
 (defun chirp-timeline-open-list (&optional list-target buffer)
-  "Open the timeline for LIST-TARGET.
+  "Open the timeline for LIST-TARGET in BUFFER.
 
 LIST-TARGET may be a numeric list id or a full list URL."
   (interactive)
@@ -526,14 +521,15 @@ LIST-TARGET may be a numeric list id or a full list URL."
        clean-target
        (lambda (tweets _envelope)
          (when (chirp-request-current-p buffer token)
-           (chirp-timeline--render buffer title refresh tweets nil nil nil nil t)))
+           (chirp-timeline--render
+            buffer title refresh tweets :display-p t)))
        (lambda (message)
          (when (chirp-request-current-p buffer token)
            (chirp-timeline--set-kind buffer nil)
            (chirp-show-error buffer title refresh message)))))))
 
 (defun chirp-timeline-open-search (query &optional buffer)
-  "Open search results for QUERY."
+  "Open search results for QUERY in BUFFER."
   (interactive "sSearch X: ")
   (let* ((title (format "Search: %s" query))
          (buffer (or buffer (chirp-buffer)))
@@ -544,7 +540,8 @@ LIST-TARGET may be a numeric list id or a full list URL."
        query
        (lambda (tweets _envelope)
          (when (chirp-request-current-p buffer token)
-           (chirp-timeline--render buffer title refresh tweets nil nil nil nil t)))
+           (chirp-timeline--render
+            buffer title refresh tweets :display-p t)))
        (lambda (message)
          (when (chirp-request-current-p buffer token)
            (chirp-timeline--set-kind buffer nil)
@@ -562,15 +559,15 @@ expose subviews, cycle the current profile mode."
    (t
     (pcase chirp--timeline-kind
       ('home
-       (chirp-timeline--open 'following
-                             chirp-default-max-results
-                             nil
-                             (current-buffer)))
+       (chirp-timeline--open
+        'following
+        :limit chirp-default-max-results
+        :buffer (current-buffer)))
       ('following
-       (chirp-timeline--open 'home
-                             chirp-default-max-results
-                             nil
-                             (current-buffer)))
+       (chirp-timeline--open
+        'home
+        :limit chirp-default-max-results
+        :buffer (current-buffer)))
       (_
        (user-error "Current view does not support TAB switching"))))))
 

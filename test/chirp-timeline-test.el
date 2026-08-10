@@ -158,8 +158,8 @@
            "For You"
            #'ignore
            (list (list :id "1"))
-           'home
-           20)
+           :kind 'home
+           :limit 20)
           (with-current-buffer buffer
             (should-not chirp--status-text)))
       (when (buffer-live-p buffer)
@@ -186,16 +186,16 @@
                "For You"
                #'ignore
                (list (list :id "1") (list :id "2"))
-               'home
-               40
-               "2"
-               t
-               (list (list :id "1") (list :id "2"))
-               2
-               (list (list :id "1") (list :id "2"))
-               nil
-               nil
-               nil))
+               :kind 'home
+               :limit 40
+               :anchor-id "2"
+               :loading-more t
+               :refreshing nil
+               :previous-count 2
+               :previous-tweets (list (list :id "1") (list :id "2"))
+               :previous-exhausted-p nil
+               :previous-next-cursor nil
+               :envelope nil))
             (should-not render-called)
             (should chirp--timeline-exhausted-p)
             (should-not chirp--timeline-loading-more)
@@ -219,22 +219,22 @@
        "For You"
        #'ignore
        (list (list :id "3") (list :id "2"))
-       'home
-       20
-       "2"
-       nil
-       t
-       nil
-       (list (list :id "2") (list :id "1"))
-       t
-       nil
-       nil))
+       :kind 'home
+       :limit 20
+       :anchor-id "2"
+       :loading-more nil
+       :refreshing t
+       :previous-count nil
+       :previous-tweets (list (list :id "2") (list :id "1"))
+       :previous-exhausted-p t
+       :previous-next-cursor nil
+       :envelope nil))
     (should render-args)
     (should (equal (mapcar (lambda (tweet) (plist-get tweet :id))
                            (nth 3 render-args))
                    '("3" "2" "1")))
-    (should-not (nth 6 render-args))
-    (should (eq (nth 7 render-args) t))
+    (should-not (plist-get (nthcdr 4 render-args) :anchor-id))
+    (should (eq (plist-get (nthcdr 4 render-args) :exhausted-p) t))
     (should (equal last-message "1 new post."))))
 
 (ert-deftest chirp-timeline-refresh-reports-no-new-posts ()
@@ -260,16 +260,16 @@
                "For You"
                #'ignore
                (list (list :id "2") (list :id "1"))
-               'home
-               20
-               "2"
-               nil
-               t
-               2
-               (list (list :id "2") (list :id "1"))
-               nil
-               nil
-               nil))
+               :kind 'home
+               :limit 20
+               :anchor-id "2"
+               :loading-more nil
+               :refreshing t
+               :previous-count 2
+               :previous-tweets (list (list :id "2") (list :id "1"))
+               :previous-exhausted-p nil
+               :previous-next-cursor nil
+               :envelope nil))
             (should-not render-called)
             (should (equal last-message "No new posts."))))
       (when (buffer-live-p buffer)
@@ -290,21 +290,21 @@
        "For You"
        #'ignore
        (list (list :id "2") (list :id "3") (list :id "1"))
-       'home
-       20
-       "2"
-       nil
-       t
-       nil
-       (list (list :id "2") (list :id "1"))
-       nil
-       nil
-       nil))
+       :kind 'home
+       :limit 20
+       :anchor-id "2"
+       :loading-more nil
+       :refreshing t
+       :previous-count nil
+       :previous-tweets (list (list :id "2") (list :id "1"))
+       :previous-exhausted-p nil
+       :previous-next-cursor nil
+       :envelope nil))
     (should render-args)
     (should (equal (mapcar (lambda (tweet) (plist-get tweet :id))
                            (nth 3 render-args))
                    '("2" "3" "1")))
-    (should-not (nth 6 render-args))
+    (should-not (plist-get (nthcdr 4 render-args) :anchor-id))
     (should (equal last-message "1 new post."))))
 
 (ert-deftest chirp-timeline-refresh-skips-rerender-when-page-is-unchanged ()
@@ -332,16 +332,16 @@
                "For You"
                #'ignore
                (list (list :id "2") (list :id "1"))
-               'home
-               20
-               "2"
-               nil
-               t
-               2
-               (list (list :id "2") (list :id "1"))
-               nil
-               "cursor-next"
-               nil))
+               :kind 'home
+               :limit 20
+               :anchor-id "2"
+               :loading-more nil
+               :refreshing t
+               :previous-count 2
+               :previous-tweets (list (list :id "2") (list :id "1"))
+               :previous-exhausted-p nil
+               :previous-next-cursor "cursor-next"
+               :envelope nil))
             (should-not render-called)
             (should-not chirp--request-token)
             (should-not chirp--timeline-loading-more)
@@ -370,7 +370,11 @@
                      (setq displayed target)))
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
-          (chirp-timeline--render buffer "For You" #'ignore (list (list :id "1")) 'home 20 nil nil t))
+          (chirp-timeline--render
+           buffer "For You" #'ignore (list (list :id "1"))
+           :kind 'home
+           :limit 20
+           :display-p t))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))
     (should (eq displayed buffer))))
@@ -487,12 +491,9 @@
            "For You"
            #'ignore
            (list (list :id "1"))
-           'home
-           20
-           nil
-           nil
-           nil
-           "cursor-next")
+           :kind 'home
+           :limit 20
+           :next-cursor "cursor-next")
           (with-current-buffer buffer
             (should (equal chirp--timeline-next-cursor "cursor-next"))))
       (when (buffer-live-p buffer)
@@ -518,7 +519,10 @@
                      (setq displayed target)))
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
-          (chirp-timeline--render buffer "For You" #'ignore (list (list :id "1")) 'home 20 nil nil nil)
+          (chirp-timeline--render
+           buffer "For You" #'ignore (list (list :id "1"))
+           :kind 'home
+           :limit 20)
           (should-not displayed))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -530,7 +534,10 @@
         (tweet-b '(:id "2" :text "Beta line one\nBeta line two")))
     (unwind-protect
         (with-current-buffer buffer
-          (chirp-timeline--render buffer "For You" #'ignore (list tweet-a tweet-b) 'home 20 nil nil nil)
+          (chirp-timeline--render
+           buffer "For You" #'ignore (list tweet-a tweet-b)
+           :kind 'home
+           :limit 20)
           (search-forward "Beta line two")
           (let ((before (point)))
             (funcall chirp--rerender-function)
@@ -554,12 +561,12 @@
                    (setq captured args))))
         (chirp-load-more))
       (should (equal (nth 0 captured) 'home))
-      (should (= (nth 1 captured) 20))
-      (should (equal (nth 2 captured) '(:position 1)))
-      (should (eq (nth 3 captured) buffer))
-      (should (eq (nth 4 captured) t))
-      (should-not (nth 5 captured))
-      (should (equal (nth 6 captured) "cursor-next")))))
+      (should (= (plist-get (cdr captured) :limit) 20))
+      (should (equal (plist-get (cdr captured) :anchor-id) '(:position 1)))
+      (should (eq (plist-get (cdr captured) :buffer) buffer))
+      (should (eq (plist-get (cdr captured) :loading-more) t))
+      (should-not (plist-get (cdr captured) :refreshing))
+      (should (equal (plist-get (cdr captured) :cursor) "cursor-next")))))
 
 (ert-deftest chirp-timeline-refresh-uses-smaller-head-window ()
   "Refreshing should fetch a smaller head page when configured."
@@ -570,7 +577,11 @@
       (cl-letf (((symbol-function 'chirp-backend-feed)
                  (lambda (_callback _following _errback max-results cursor)
                    (setq captured (list max-results cursor)))))
-        (chirp-timeline--open 'home 20 nil (current-buffer) nil t))
+        (chirp-timeline--open
+         'home
+         :limit 20
+         :buffer (current-buffer)
+         :refreshing t))
       (should (equal captured '(10 nil))))))
 
 (ert-deftest chirp-timeline-refresh-can-use-current-limit ()
@@ -582,7 +593,11 @@
       (cl-letf (((symbol-function 'chirp-backend-feed)
                  (lambda (_callback _following _errback max-results cursor)
                    (setq captured (list max-results cursor)))))
-        (chirp-timeline--open 'home 20 nil (current-buffer) nil t))
+        (chirp-timeline--open
+         'home
+         :limit 20
+         :buffer (current-buffer)
+         :refreshing t))
       (should (equal captured '(20 nil))))))
 
 (ert-deftest chirp-window-state-restore-preserves-point-and-scroll ()

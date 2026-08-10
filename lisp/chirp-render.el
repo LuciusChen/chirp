@@ -1,6 +1,11 @@
 ;;; chirp-render.el --- Rendering helpers for chirp -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; Shared text, link, tweet, and media rendering for Chirp view buffers.
 
 ;;; Code:
 
@@ -12,11 +17,6 @@
 (require 'chirp-core)
 (require 'chirp-media)
 (require 'nerd-icons nil t)
-
-(defface chirp-section-face
-  '((t :inherit bold :height 1.2))
-  "Face used for section titles."
-  :group 'chirp)
 
 (defface chirp-author-face
   '((t :inherit (bold font-lock-keyword-face)))
@@ -83,6 +83,11 @@
 (defface chirp-thread-reply-context-face
   '((t :inherit shadow :slant italic))
   "Face used for reply context lines in thread views."
+  :group 'chirp)
+
+(defface chirp-thread-related-context
+  '((t :inherit (bold font-lock-keyword-face)))
+  "Face used for related-tweet context lines in thread views."
   :group 'chirp)
 
 (defconst chirp-render-list-reply-prefix "  "
@@ -218,6 +223,7 @@ When ACTIVE is non-nil, prefer the action-specific face for LABEL."
     (add-text-properties
      start end
      `(chirp-subentry-url ,url
+                          mouse-face highlight
                           pointer hand
                           help-echo "o: browser"))))
 
@@ -300,11 +306,6 @@ CURRENT-MODE marks the active entry."
         (insert (propertize "  " 'face 'shadow))))
     (insert "\n\n")))
 
-(defun chirp-render-insert-section (title)
-  "Insert section heading TITLE."
-  (insert (propertize title 'face 'chirp-section-face))
-  (insert "\n\n"))
-
 (defun chirp-render-insert-empty (message)
   "Insert MESSAGE for an empty state."
   (insert message)
@@ -369,7 +370,9 @@ When ACTIVE is non-nil, emphasize the metric."
                 'face face)))
 
 (defun chirp-render--insert-filled-text (text &optional prefix prefix-face)
-  "Insert TEXT and let Emacs wrap it visually in the current window."
+  "Insert TEXT and let Emacs wrap it visually in the current window.
+
+Precede each line with PREFIX using PREFIX-FACE when provided."
   (dolist (line (split-string (chirp-clean-text text) "\n" nil))
     (chirp-render--insert-prefix prefix prefix-face)
     (let ((start (point)))
@@ -378,7 +381,9 @@ When ACTIVE is non-nil, emphasize the metric."
       (chirp-render--apply-wrap-prefix start (point) prefix prefix-face))))
 
 (defun chirp-render--insert-face-text (text face &optional prefix prefix-face)
-  "Insert TEXT using FACE, optionally preceded by PREFIX."
+  "Insert TEXT using FACE, optionally preceded by PREFIX.
+
+Apply PREFIX-FACE to that prefix when provided."
   (dolist (line (split-string (chirp-clean-text text) "\n" nil))
     (chirp-render--insert-prefix prefix prefix-face)
     (let ((start (point)))
@@ -389,7 +394,9 @@ When ACTIVE is non-nil, emphasize the metric."
       (chirp-render--apply-wrap-prefix start (point) prefix prefix-face))))
 
 (defun chirp-render--insert-translation (tweet &optional prefix prefix-face)
-  "Insert the cached translation for TWEET when present."
+  "Insert the cached translation for TWEET when present.
+
+Precede each line with PREFIX using PREFIX-FACE when provided."
   (when-let* ((translation (plist-get tweet :translation))
               ((not (string-empty-p translation))))
     (chirp-render--insert-prefix prefix prefix-face)
@@ -406,19 +413,24 @@ When ACTIVE is non-nil, emphasize the metric."
      translation 'chirp-translation-face prefix prefix-face)))
 
 (defun chirp-render--insert-expanded-urls (urls &optional prefix prefix-face)
-  "Insert URLS as separate readable lines."
+  "Insert URLS as separate readable lines.
+
+Precede each line with PREFIX using PREFIX-FACE when provided."
   (when urls
     (dolist (url urls)
       (chirp-render--insert-prefix prefix prefix-face)
       (let ((start (point)))
         (insert (propertize url 'face 'chirp-link-face))
-        (insert "\n")
-        (chirp-render--apply-wrap-prefix start (point) prefix prefix-face)))))
+        (let ((end (point)))
+          (insert "\n")
+          (chirp-render--apply-wrap-prefix start (point) prefix prefix-face)
+          (chirp-render--mark-url-region start end url))))))
 
 (defun chirp-render--insert-article-preview (tweet &optional detailp prefix prefix-face)
   "Insert article metadata for TWEET.
 
-When DETAILP is non-nil, use a longer preview."
+When DETAILP is non-nil, use a longer preview.  Precede each line with PREFIX
+using PREFIX-FACE when provided."
   (let* ((title (plist-get tweet :article-title))
          (preview (chirp-tweet-article-preview tweet (if detailp 420 220)))
          (text (or (plist-get tweet :text) "")))
@@ -433,7 +445,9 @@ When DETAILP is non-nil, use a longer preview."
       (chirp-render--insert-face-text preview 'chirp-article-summary-face prefix prefix-face))))
 
 (defun chirp-render--insert-article-body (tweet &optional prefix prefix-face)
-  "Insert the full article content for TWEET."
+  "Insert the full article content for TWEET.
+
+Precede each line with PREFIX using PREFIX-FACE when provided."
   (let ((title (plist-get tweet :article-title))
         (text (or (plist-get tweet :text) "")))
     (when (and title
@@ -452,7 +466,10 @@ When DETAILP is non-nil, use a longer preview."
 
 (defun chirp-render--insert-article-media-preview
     (tweet &optional detailp prefix prefix-face)
-  "Insert article images for TWEET previews."
+  "Insert article images for TWEET previews.
+
+When DETAILP is non-nil, include every image.  Precede each line with PREFIX
+using PREFIX-FACE when provided."
   (let ((images (chirp-tweet-article-images tweet (unless detailp 1))))
     (when images
       (chirp-render-insert-media-strip images prefix prefix-face))))
@@ -466,7 +483,9 @@ When DETAILP is non-nil, use a longer preview."
               "..."))))
 
 (defun chirp-render--insert-link-card (card &optional prefix prefix-face)
-  "Insert one external link CARD."
+  "Insert one external link CARD.
+
+Precede each line with PREFIX using PREFIX-FACE when provided."
   (let* ((start (point))
          (url (plist-get card :url))
          (title (plist-get card :title))
@@ -507,12 +526,17 @@ When DETAILP is non-nil, use a longer preview."
     (chirp-render--mark-url-region start (point) url)))
 
 (defun chirp-render--insert-link-cards (tweet &optional prefix prefix-face)
-  "Insert cached external link-card previews for TWEET."
+  "Insert cached external link-card previews for TWEET.
+
+Precede each line with PREFIX using PREFIX-FACE when provided."
   (dolist (card (chirp-media-link-cards-for-tweet tweet))
     (chirp-render--insert-link-card card prefix prefix-face)))
 
 (defun chirp-render--insert-quoted-tweet (tweet &optional prefix prefix-face)
-  "Insert the quoted tweet preview inside TWEET."
+  "Insert the quoted tweet preview inside TWEET.
+
+Nest it below PREFIX.  PREFIX-FACE is accepted for caller consistency; the
+quoted-tweet face is used for the nested block."
   (ignore prefix-face)
   (when-let* ((quoted (plist-get tweet :quoted-tweet)))
     (let* ((start (point))
@@ -553,18 +577,25 @@ When DETAILP is non-nil, use a longer preview."
       (chirp-render--mark-subentry start (point) quoted))))
 
 (defun chirp-render--insert-list-reply-context (tweet reply-parent &optional prefix prefix-face)
-  "Insert a lightweight reply context line for TWEET above REPLY-PARENT."
+  "Insert a lightweight reply context line for TWEET above REPLY-PARENT.
+
+Precede the line with PREFIX using PREFIX-FACE when provided."
   (let ((parent-id (plist-get reply-parent :id))
         (handle (or (plist-get tweet :reply-to-handle)
                     (plist-get reply-parent :author-handle))))
     (when parent-id
       (chirp-render--insert-prefix prefix prefix-face)
       (let ((start (point)))
-        (insert (propertize
-                 (if handle
-                     (format "↳ replying to @%s above" handle)
-                   "↳ reply to above")
-                 'face 'chirp-thread-reply-context-face))
+        (if handle
+            (progn
+              (insert (propertize "↳ replying to "
+                                  'face 'chirp-thread-reply-context-face))
+              (insert (propertize (format "@%s" handle)
+                                  'face 'chirp-handle-face))
+              (insert (propertize " above"
+                                  'face 'chirp-thread-reply-context-face)))
+          (insert (propertize "↳ reply to above"
+                              'face 'chirp-thread-reply-context-face)))
         (insert "\n")
         (chirp-render--apply-wrap-prefix start (point) prefix prefix-face)
         (add-text-properties
@@ -593,7 +624,9 @@ When DETAILP is non-nil, use a longer preview."
         previous))))
 
 (defun chirp-render--insert-avatar (url &optional handle)
-  "Insert an avatar for URL when possible."
+  "Insert an avatar for URL when possible.
+
+Associate the avatar with HANDLE when provided."
   (when chirp-show-avatars
     (let ((start (point)))
       (if-let* ((image (chirp-media-avatar-image url)))
@@ -769,7 +802,10 @@ When COMPACTP is non-nil, omit alt text and make a missing video actionable."
         (insert (propertize "\n" 'line-height t))))))
 
 (defun chirp-render--insert-media-text-cell (media media-list index &optional prefix prefix-face)
-  "Insert one compact text entry for hidden MEDIA."
+  "Insert one compact text entry for hidden MEDIA.
+
+Associate it with INDEX in MEDIA-LIST.  Precede it with PREFIX using
+PREFIX-FACE when provided."
   (chirp-render--insert-prefix prefix prefix-face)
   (let ((start (point)))
     (insert (propertize (chirp-render--media-placeholder-text media)
@@ -777,7 +813,9 @@ When COMPACTP is non-nil, omit alt text and make a missing video actionable."
     (chirp-render--mark-media-region start (point) media media-list index)))
 
 (defun chirp-render-insert-media-strip (media-list &optional prefix prefix-face)
-  "Insert a grid of thumbnails for MEDIA-LIST."
+  "Insert a grid of thumbnails for MEDIA-LIST.
+
+Precede each row with PREFIX using PREFIX-FACE when provided."
   (when media-list
     (if (not chirp-show-tweet-media)
         (cl-loop for media in media-list
@@ -790,7 +828,11 @@ When COMPACTP is non-nil, omit alt text and make a missing video actionable."
 
 (defun chirp-render--insert-tweet
     (tweet &optional prefix prefix-face show-reply-context article-mode reply-parent)
-  "Insert TWEET at point, optionally prefixed for thread rendering."
+  "Insert TWEET at point, optionally prefixed for thread rendering.
+
+Use PREFIX and PREFIX-FACE for indentation.  When SHOW-REPLY-CONTEXT is
+non-nil, show the reply target.  ARTICLE-MODE controls full article rendering,
+and REPLY-PARENT supplies the preceding parent tweet when available."
   (let* ((start (point))
          (author (or (plist-get tweet :author-name) "Unknown"))
          (handle (plist-get tweet :author-handle))
@@ -799,6 +841,12 @@ When COMPACTP is non-nil, omit alt text and make a missing video actionable."
          (meta-start nil))
     (when reply-parent
       (chirp-render--insert-list-reply-context tweet reply-parent prefix prefix-face))
+    (when (and show-reply-context
+               (eq (plist-get tweet :timeline-context) 'related))
+      (chirp-render--insert-prefix prefix prefix-face)
+      (insert (propertize "Related tweet"
+                          'face 'chirp-thread-related-context))
+      (insert "\n"))
     (when retweeted-by
       (chirp-render--insert-prefix prefix prefix-face)
       (insert (propertize (format "retweeted by @%s" retweeted-by)
@@ -819,9 +867,11 @@ When COMPACTP is non-nil, omit alt text and make a missing video actionable."
     (when (and show-reply-context
                (plist-get tweet :reply-to-handle))
       (chirp-render--insert-prefix prefix prefix-face)
-      (insert (propertize (format "replying to @%s"
-                                  (plist-get tweet :reply-to-handle))
+      (insert (propertize "replying to "
                           'face 'chirp-thread-reply-context-face))
+      (insert (propertize (format "@%s"
+                                  (plist-get tweet :reply-to-handle))
+                          'face 'chirp-handle-face))
       (insert "\n"))
     (when-let* ((text (plist-get tweet :text)))
       (unless (string-empty-p text)

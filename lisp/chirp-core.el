@@ -1,12 +1,19 @@
 ;;; chirp-core.el --- Shared state and utilities for chirp -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; Shared customization, normalized tweet data, buffer state, and navigation
+;; utilities used by Chirp's view modules.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'subr-x)
 (require 'browse-url)
+(require 'warnings)
 
 (declare-function chirp-backend-tweet "chirp-backend" (tweet-id callback &optional errback))
 (declare-function chirp-profile-open "chirp-profile" (handle &optional buffer))
@@ -32,7 +39,8 @@
 (defcustom chirp-cli-command nil
   "Command used to invoke twitter-cli.
 
-When nil, Chirp searches for `twitter' and `twitter-cli' in `exec-path'."
+When nil, Chirp searches for `twitter' and `twitter-cli' in the variable
+`exec-path'."
   :type '(choice (const :tag "Auto-detect" nil)
                  string)
   :group 'chirp)
@@ -45,7 +53,8 @@ When nil, Chirp searches for `twitter' and `twitter-cli' in `exec-path'."
     "/home/linuxbrew/.linuxbrew/bin")
   "Extra directories Chirp checks for twitter-cli executables.
 
-These paths are consulted after `exec-path' when `chirp-cli-command' is nil."
+These paths are consulted after the variable `exec-path' when
+`chirp-cli-command' is nil."
   :type '(repeat directory)
   :group 'chirp)
 
@@ -333,12 +342,6 @@ commands still work, and displays alt text when twitter-cli provides it."
   (unless (eq (window-buffer (selected-window)) buffer)
     (switch-to-buffer buffer)))
 
-(defun chirp--active-buffer-p ()
-  "Return non-nil when the current buffer is a Chirp view buffer."
-  (or (derived-mode-p 'chirp-view-mode)
-      (derived-mode-p 'chirp-media-image-mode)
-      (derived-mode-p 'chirp-media-view-mode)))
-
 (defun chirp--persistent-timeline-buffer-p (&optional buffer)
   "Return non-nil when BUFFER is a main timeline Chirp buffer.
 
@@ -352,19 +355,6 @@ revisited later."
   "Close the current Chirp buffer."
   (interactive)
   (quit-window (not (chirp--persistent-timeline-buffer-p))))
-
-(defun chirp-show-loading (buffer title refresh)
-  "Display a loading message in BUFFER for TITLE.
-
-Return a token that identifies the current request."
-  (let ((token (chirp-begin-request buffer)))
-    (chirp-set-status buffer (format "Loading %s..." title))
-    (chirp-render-into-buffer
-     buffer title refresh
-     (lambda ()
-       (insert "Loading...\n")))
-    (chirp-display-buffer buffer)
-    token))
 
 (defun chirp-begin-background-request (buffer title)
   "Start an async request for BUFFER titled TITLE without displaying it yet."
@@ -435,47 +425,19 @@ Return a token that identifies the current request."
                     (chirp-restore-window-state window-state))))))
           target))))))
 
+(defun chirp--text-property-at-point (property)
+  "Return PROPERTY at point or immediately before point."
+  (or (get-text-property (point) property)
+      (and (> (point) (point-min))
+           (get-text-property (1- (point)) property))))
+
 (defun chirp-author-handle-at-point ()
   "Return the author handle stored at point, or nil."
-  (or (get-text-property (point) 'chirp-author-handle)
-      (and (> (point) (point-min))
-           (get-text-property (1- (point)) 'chirp-author-handle))))
-
-(defun chirp-author-profile-url-at-point ()
-  "Return the author profile URL stored at point, or nil."
-  (or (get-text-property (point) 'chirp-author-profile-url)
-      (and (> (point) (point-min))
-           (get-text-property (1- (point)) 'chirp-author-profile-url))))
+  (chirp--text-property-at-point 'chirp-author-handle))
 
 (defun chirp-reply-parent-id-at-point ()
   "Return the inline reply parent id stored at point, or nil."
-  (or (get-text-property (point) 'chirp-reply-parent-id)
-      (and (> (point) (point-min))
-           (get-text-property (1- (point)) 'chirp-reply-parent-id))))
-
-(defun chirp-profile-list-kind-at-point ()
-  "Return the profile list kind stored at point, or nil."
-  (or (get-text-property (point) 'chirp-profile-list-kind)
-      (and (> (point) (point-min))
-           (get-text-property (1- (point)) 'chirp-profile-list-kind))))
-
-(defun chirp-profile-list-handle-at-point ()
-  "Return the profile list handle stored at point, or nil."
-  (or (get-text-property (point) 'chirp-profile-list-handle)
-      (and (> (point) (point-min))
-           (get-text-property (1- (point)) 'chirp-profile-list-handle))))
-
-(defun chirp-profile-view-mode-at-point ()
-  "Return the profile subview mode stored at point, or nil."
-  (or (get-text-property (point) 'chirp-profile-view-mode)
-      (and (> (point) (point-min))
-           (get-text-property (1- (point)) 'chirp-profile-view-mode))))
-
-(defun chirp-profile-action-at-point ()
-  "Return the profile action stored at point, or nil."
-  (or (get-text-property (point) 'chirp-profile-action)
-      (and (> (point) (point-min))
-           (get-text-property (1- (point)) 'chirp-profile-action))))
+  (chirp--text-property-at-point 'chirp-reply-parent-id))
 
 (defun chirp-open-reply-parent-at-point ()
   "Jump to the visible parent tweet referenced at point."
@@ -490,7 +452,7 @@ Return a token that identifies the current request."
     (user-error "No reply parent available at point")))
 
 (defun chirp-show-error (buffer title refresh message)
-  "Display MESSAGE in BUFFER for TITLE."
+  "Display MESSAGE in BUFFER for TITLE using REFRESH for the view."
   (chirp-set-status buffer "Load failed" 'error)
   (chirp-render-into-buffer
    buffer title refresh
@@ -685,38 +647,48 @@ Return a token that identifies the current request."
 (defun chirp-open-at-point ()
   "Open the entry at point."
   (interactive)
-  (if-let* ((profile-view-mode (chirp-profile-view-mode-at-point))
-            ((functionp chirp--profile-switch-mode-function)))
-      (funcall chirp--profile-switch-mode-function profile-view-mode)
-    (if-let* ((profile-action (chirp-profile-action-at-point)))
-        (pcase profile-action
-          ('toggle-follow (chirp-toggle-follow-user-at-point))
-          (_ (user-error "Unknown profile action at point")))
-      (if-let* ((author-handle (chirp-author-handle-at-point)))
-          (let* ((entry (chirp-entry-at-point))
-                 (clean-author (string-remove-prefix "@" author-handle))
-                 (clean-profile (and chirp--profile-handle
-                                     (string-remove-prefix "@" chirp--profile-handle))))
-            (if (and (eq (plist-get entry :kind) 'tweet)
-                     clean-profile
-                     (equal clean-author clean-profile))
-                (chirp-thread-open entry (plist-get entry :id))
-              (chirp-profile-open author-handle)))
-        (if-let* ((profile-list-kind (chirp-profile-list-kind-at-point))
-                  (profile-list-handle (chirp-profile-list-handle-at-point)))
-            (pcase profile-list-kind
-              ('followers (chirp-profile-followers profile-list-handle))
-              ('following (chirp-profile-following-users profile-list-handle))
-              (_ (user-error "Unknown profile list at point")))
-          (if-let* (((chirp-reply-parent-id-at-point)))
-              (chirp-open-reply-parent-at-point)
-            (if (chirp-media-at-point)
-                (chirp-media-open-at-point)
-              (pcase (plist-get (chirp-entry-at-point) :kind)
-                ('tweet (chirp-thread-open (chirp-entry-at-point)
-                                           (plist-get (chirp-entry-at-point) :id)))
-                ('user (chirp-profile-open (plist-get (chirp-entry-at-point) :handle)))
-                (_ (user-error "No entry at point"))))))))))
+  (let* ((entry (chirp-entry-at-point))
+         (profile-view-mode
+          (chirp--text-property-at-point 'chirp-profile-view-mode))
+         (profile-action
+          (chirp--text-property-at-point 'chirp-profile-action))
+         (author-handle (chirp-author-handle-at-point))
+         (profile-list-kind
+          (chirp--text-property-at-point 'chirp-profile-list-kind))
+         (profile-list-handle
+          (chirp--text-property-at-point 'chirp-profile-list-handle)))
+    (cond
+     ((and profile-view-mode
+           (functionp chirp--profile-switch-mode-function))
+      (funcall chirp--profile-switch-mode-function profile-view-mode))
+     (profile-action
+      (pcase profile-action
+        ('toggle-follow (chirp-toggle-follow-user-at-point))
+        (_ (user-error "Unknown profile action at point"))))
+     (author-handle
+      (let ((clean-author (string-remove-prefix "@" author-handle))
+            (clean-profile (and chirp--profile-handle
+                                (string-remove-prefix "@" chirp--profile-handle))))
+        (if (and (eq (plist-get entry :kind) 'tweet)
+                 clean-profile
+                 (equal clean-author clean-profile))
+            (chirp-thread-open entry (plist-get entry :id))
+          (chirp-profile-open author-handle))))
+     ((and profile-list-kind profile-list-handle)
+      (pcase profile-list-kind
+        ('followers (chirp-profile-followers profile-list-handle))
+        ('following (chirp-profile-following-users profile-list-handle))
+        (_ (user-error "Unknown profile list at point"))))
+     ((chirp-reply-parent-id-at-point)
+      (chirp-open-reply-parent-at-point))
+     ((chirp-media-at-point)
+      (chirp-media-open-at-point))
+     ((eq (plist-get entry :kind) 'tweet)
+      (chirp-thread-open entry (plist-get entry :id)))
+     ((eq (plist-get entry :kind) 'user)
+      (chirp-profile-open (plist-get entry :handle)))
+     (t
+      (user-error "No entry at point")))))
 
 (defun chirp-open-primary-media ()
   "Open the media at point or the first media of the current entry."
@@ -748,7 +720,7 @@ Return a token that identifies the current request."
   (let* ((media (chirp-media-at-point))
          (entry (chirp-entry-at-point))
          (url (or (plist-get media :url)
-                  (chirp-author-profile-url-at-point)
+                  (chirp--text-property-at-point 'chirp-author-profile-url)
                   (chirp-entry-url-at-point)
                   (plist-get entry :url)
                   (plist-get entry :profile-url))))
@@ -853,19 +825,6 @@ Return a token that identifies the current request."
 (defconst chirp--markdown-image-regexp "!\\[\\([^]\n]*\\)\\](\\([^)\n]+\\))"
   "Regexp that matches one Markdown image.")
 
-(defun chirp-normalize-string-list (value)
-  "Normalize VALUE into a de-duplicated list of non-blank strings."
-  (when (listp value)
-    (let ((seen (make-hash-table :test #'equal))
-          items)
-      (dolist (item value (nreverse items))
-        (when-let* ((text (and (stringp item)
-                               (string-trim item))))
-          (unless (or (string-empty-p text)
-                      (gethash text seen))
-            (puthash text t seen)
-            (push text items)))))))
-
 (defun chirp-normalize-url-item (value)
   "Normalize one URL VALUE into an expanded string, or nil."
   (cond
@@ -927,7 +886,9 @@ Return a token that identifies the current request."
      url)))
 
 (defun chirp-tweet-preview-text (tweet &optional max-length)
-  "Return a short one-paragraph preview for TWEET."
+  "Return a short one-paragraph preview for TWEET.
+
+Limit the result to MAX-LENGTH characters when that argument is non-nil."
   (let* ((limit (or max-length 160))
          (text (or (plist-get tweet :text)
                    (chirp-tweet-article-preview tweet limit)
@@ -938,13 +899,47 @@ Return a token that identifies the current request."
       (concat (string-trim-right (substring cleaned 0 (max 0 (- limit 3))))
               "..."))))
 
-(defun chirp-filter-display-urls (urls &optional quoted-tweet)
-  "Return URLS after removing duplicates and quoted-tweet permalinks."
-  (let ((quoted-urls (and quoted-tweet
-                          (chirp-tweet-candidate-urls quoted-tweet))))
-    (cl-remove-if (lambda (url)
-                    (member url quoted-urls))
-                  urls)))
+(defun chirp--tweet-permalink-p (url tweet)
+  "Return non-nil when URL is a permalink for TWEET."
+  (let ((id (plist-get tweet :id)))
+    (or (member url (chirp-tweet-candidate-urls tweet))
+        (and id
+             (stringp url)
+             (string-match
+              "\\`https?://\\(?:www\\.\\)?\\(?:x\\.com\\|twitter\\.com\\)/\\(?:[^/?#]+/\\)*status/\\([0-9]+\\)"
+              url)
+             (equal (format "%s" id) (match-string 1 url))))))
+
+(defun chirp--media-url-p (url media)
+  "Return non-nil when URL represents one of the MEDIA items."
+  (and (stringp url)
+       (or (string-match-p
+            "\\`https?://\\(?:pic\\.\\(?:x\\.com\\|twitter\\.com\\)\\|\\(?:pbs\\|video\\)\\.twimg\\.com\\)/"
+            url)
+           (and media
+                (cl-loop
+                 for item in media
+                 thereis
+                 (or (member url (list (plist-get item :url)
+                                       (plist-get item :preview-url)))
+                     (cl-loop for variant in (plist-get item :variants)
+                              thereis (equal url
+                                             (plist-get variant :url)))))))))
+
+(defun chirp--filter-display-urls (urls context)
+  "Return genuine external URLS described by CONTEXT.
+CONTEXT is a plist containing the current tweet, quoted tweet, and media."
+  (let* ((tweet (plist-get context :tweet))
+         (quoted-tweet (plist-get context :quoted-tweet))
+         (media (plist-get context :media))
+         (tweets (delq nil (list quoted-tweet tweet))))
+    (cl-remove-if
+     (lambda (url)
+       (or (chirp--media-url-p url media)
+           (cl-some (lambda (candidate)
+                      (chirp--tweet-permalink-p url candidate))
+                    tweets)))
+     urls)))
 
 (defun chirp-short-url-count (text)
   "Return how many `t.co` placeholders appear in TEXT."
@@ -1036,15 +1031,6 @@ When MAX-COUNT is non-nil, return at most that many images."
         (cl-subseq images 0 (min max-count (length images)))
       images)))
 
-(defun chirp-tweet-article-display-text (tweet)
-  "Return article body text for TWEET with Markdown image paragraphs removed."
-  (string-join
-   (cl-loop for segment in (chirp-article-segments
-                            (plist-get tweet :article-text))
-            when (eq (plist-get segment :type) 'text)
-            collect (plist-get segment :text))
-   "\n\n"))
-
 (defun chirp-normalize-quoted-tweet (value)
   "Normalize VALUE into a quoted-tweet plist, or nil."
   (when-let* ((quoted
@@ -1067,10 +1053,17 @@ When MAX-COUNT is non-nil, return at most that many images."
 (defun chirp--dispatch-quoted-tweet-callbacks (tweet-id payload)
   "Run pending callbacks for TWEET-ID with PAYLOAD."
   (let ((callbacks (prog1 (gethash tweet-id chirp-quoted-tweet-pending)
-                     (remhash tweet-id chirp-quoted-tweet-pending))))
+                      (remhash tweet-id chirp-quoted-tweet-pending))))
     (dolist (callback callbacks)
       (when callback
-        (ignore-errors (funcall callback payload))))))
+        (condition-case err
+            (funcall callback payload)
+          (error
+           (display-warning
+            'chirp-core
+            (format "Quoted-tweet callback failed for %s: %s"
+                    tweet-id (error-message-string err))
+            :warning)))))))
 
 (defun chirp--request-quoted-tweet (tweet-id callback)
   "Fetch quoted tweet TWEET-ID and run CALLBACK with the result."
@@ -1131,6 +1124,25 @@ When MAX-COUNT is non-nil, return at most that many images."
     (if number
         (max 0 (+ number delta))
       value)))
+
+(defun chirp-tweet-key (tweet)
+  "Return a stable merge key for normalized TWEET."
+  (or (plist-get tweet :id)
+      (plist-get tweet :url)
+      (plist-get tweet :text)))
+
+(defun chirp-append-unique-tweets (current fetched)
+  "Append unique FETCHED tweets to CURRENT and return the merged list."
+  (let ((seen (make-hash-table :test #'equal))
+        additions)
+    (dolist (tweet current)
+      (puthash (chirp-tweet-key tweet) t seen))
+    (dolist (tweet fetched)
+      (let ((key (chirp-tweet-key tweet)))
+        (unless (gethash key seen)
+          (puthash key t seen)
+          (push tweet additions))))
+    (append current (nreverse additions))))
 
 (defun chirp-plist-override (plist prop fallback)
   "Return PROP from PLIST when present, otherwise FALLBACK."
@@ -1397,9 +1409,17 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
          (metrics (chirp-get object "metrics"))
          (author (chirp-extract-user-object object))
          (author-user (chirp-normalize-user author))
+         (author-handle (plist-get author-user :handle))
          (id (chirp-first-nonblank
               (chirp-get object "id" "id_str" "rest_id")
               (chirp-get legacy "id_str")))
+         (url (chirp-first-nonblank
+               (chirp-get object "url")
+               (chirp-get legacy "url")
+               (and id author-handle
+                    (format "https://x.com/%s/status/%s" author-handle id))
+               (and id (format "https://x.com/i/status/%s" id))))
+         (tweet-identity (list :id id :url url :author-handle author-handle))
          (text (chirp-clean-text
                 (chirp-first-nonblank
                  (chirp-get object "full_text" "text")
@@ -1407,20 +1427,35 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
                  (chirp-get-in object '("note_tweet" "note_tweet_results" "result" "text"))
                  (chirp-get-in object '("note_tweet" "text")))))
          (quoted-tweet (chirp-normalize-quoted-tweet object))
+         (timeline-context
+          (pcase (chirp-get object "timelineContext" "timeline_context")
+            ("related" 'related)
+            (_ nil)))
          (all-urls (chirp-extract-tweet-urls object legacy))
-         (display-text (if (>= (length all-urls)
+         (media (chirp-normalize-media-list (chirp-get object "media")))
+         (url-context (list :tweet tweet-identity
+                            :quoted-tweet quoted-tweet
+                            :media media))
+         (media-url-covered-p
+          (and media
+               (cl-some (lambda (candidate)
+                          (or (chirp--media-url-p candidate media)
+                              (chirp--tweet-permalink-p candidate tweet-identity)))
+                        all-urls)))
+         (covered-short-url-count
+          (+ (length all-urls)
+             (if (and media (not media-url-covered-p)) 1 0)))
+         (display-text (if (>= covered-short-url-count
                                (chirp-short-url-count text))
                            (chirp-strip-short-urls text)
                          text))
-         (urls (chirp-filter-display-urls all-urls quoted-tweet))
+         (urls (chirp--filter-display-urls all-urls url-context))
          (article-title (chirp-first-nonblank
                          (chirp-get object "articleTitle" "article_title")))
          (article-text-raw (chirp-first-nonblank
                             (chirp-get object "articleText" "article_text")))
          (article-text (and article-text-raw
                             (chirp-clean-text article-text-raw)))
-         (author-handle (plist-get author-user :handle))
-         (media (chirp-normalize-media-list (chirp-get object "media")))
          (reply-to-handle (let ((handle (chirp-first-nonblank
                                          (chirp-get object "inReplyToScreenName"
                                                     "in_reply_to_screen_name")
@@ -1458,13 +1493,7 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
                        (chirp-get object "isPromoted" "is_promoted" "promoted")
                        (chirp-get-in object '("itemContent" "promotedMetadata"))
                        (chirp-get object "promotedMetadata"))))
-         (state-overrides (and id (gethash id chirp-tweet-state-overrides)))
-         (url (chirp-first-nonblank
-               (chirp-get object "url")
-               (chirp-get legacy "url")
-               (and id author-handle
-                    (format "https://x.com/%s/status/%s" author-handle id))
-               (and id (format "https://x.com/i/status/%s" id)))))
+         (state-overrides (and id (gethash id chirp-tweet-state-overrides))))
     (when (or id (not (string-empty-p text)))
       (list :kind 'tweet
             :id id
@@ -1478,6 +1507,7 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
             :conversation-id (chirp-first-nonblank
                               (chirp-get object "conversationId" "conversation_id")
                               (chirp-get legacy "conversation_id_str"))
+            :timeline-context timeline-context
             :reply-to-id reply-to-id
             :reply-to-handle reply-to-handle
             :retweeted-by retweeted-by

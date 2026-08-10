@@ -1,35 +1,20 @@
 # chirp.el
 
-`chirp.el` is a small Emacs browser for X/Twitter. It uses [`twitter-cli`](https://github.com/public-clis/twitter-cli) for authentication and data fetching, then renders each view in its own `special-mode` buffer.
+`chirp.el` is an Emacs browser for X/Twitter for people who want to read, search, inspect, and act on posts without leaving Emacs. Browsing views use dedicated Emacs buffers; read-only text views use Chirp's `special-mode` UI, image views use `image-mode`, and compose buffers remain editable. Chirp delegates authentication and data fetching to [`twitter-cli`](https://github.com/public-clis/twitter-cli).
 
-## Scope
+## What you can do
 
-This first cut is intentionally narrow:
+Use Chirp to follow timelines, search and inspect posts, move from a post to its thread, author, profile lists, or media, and perform common post, reply, quote, like, bookmark, and follow actions without leaving Emacs. Optional desktop notifications surface account activity, and translation is available on demand.
 
-- Home timeline
-- Following timeline
-- Bookmarks
-- Liked tweets for the current account
-- Lists
-- Search
-- Tweet thread/detail
-- Profile header with a direct posts stream
-- Profile follower/following lists
-- On-demand inline tweet translation
-- Native desktop notifications for mentions, replies, quotes, likes, follows,
-  and reposts
-- Basic write actions via a `transient` menu: post (including Premium long-form
-  posts), reply, quote, retweet, like, bookmark, follow, and unfollow
+Chirp is a client around `twitter-cli`, not a replacement for it: authentication, X API compatibility, and network behavior belong to the CLI. Direct messages are not implemented, and publishing outcomes and account limits remain dependent on the external CLI and X.
 
-It does not implement DMs.
+## Quick Start
 
-## Requirements
+Chirp requires GNU Emacs 29.1 or newer and `twitter-cli` installed and available as `twitter` or `twitter-cli`.
 
-- GNU Emacs 29.1 or newer
-- `twitter-cli` installed and available as `twitter` or `twitter-cli`
+### Install `twitter-cli`
 
-If you want the `twitter-cli` fork/version currently used by Chirp before
-upstream merges land, install the `stable` branch from this fork:
+If you want the `twitter-cli` fork/version currently used by Chirp before upstream merges land, install the `stable` branch from this fork:
 
 ```bash
 uv tool install --force "git+https://github.com/LuciusChen/twitter-cli.git@stable"
@@ -43,30 +28,31 @@ git switch stable
 uv tool install --force -e .
 ```
 
-The editable install is convenient for local development, but remember that the
-active CLI will follow whatever branch that checkout is currently on.
+The editable install is convenient for local development, but remember that the active CLI will follow whatever branch that checkout is currently on.
 
-Chirp auto-detects either executable name by default. If your binary lives
-elsewhere, customize:
+Chirp auto-detects either executable name by default. If your binary lives elsewhere, customize:
 
 ```elisp
 (setq chirp-cli-command "/path/to/twitter")
 ```
 
-If Emacs does not inherit your shell `PATH`, Chirp also checks a few common
-user bin directories such as `~/.local/bin`. You can extend that list with:
+If Emacs does not inherit your shell `PATH`, Chirp also checks a few common user bin directories such as `~/.local/bin`. You can extend that list with:
 
 ```elisp
 (setq chirp-cli-search-paths
       '("~/.local/bin" "~/bin" "/some/other/bin"))
 ```
 
-## Load
+### Load Chirp
 
 ```elisp
 (add-to-list 'load-path "~/chirp")
 (require 'chirp)
 ```
+
+Run `M-x chirp-home` to open the For You timeline in a dedicated buffer.
+
+## Notifications
 
 To receive account activity notifications, enable the global mode:
 
@@ -125,7 +111,6 @@ M-x chirp-profile-following-users
 - `x`: open the actions menu for timeline switching, your own profile, bookmarks, liked tweets, lists, post/reply/quote, follow/unfollow, translation, and tweet actions
 - `x T`: translate the tweet at point and show the result below its original text
 - `o`: open the current item in a browser
-- `q`: close the current Chirp buffer
 
 Inside the compose buffer:
 
@@ -144,7 +129,27 @@ posting operation for posts, replies, and quotes.
 
 Tweet metrics also reflect the current local state: liked tweets show `Liked`,
 bookmarked tweets show `Saved`, and retweeted tweets show `RTed`.
+Every tweet returned by the Likes view is shown with its like state active, even when twitter-cli omits the per-item `favorited` field.
 Clipboard image paste uses `wl-paste` on Wayland and `pngpaste` on macOS when available.
+
+## Thread Reply Filtering
+
+Chirp hides likely spam replies using a conservative default list collected from repeated public reply spam, prioritizing Chinese templates before English ones. Matching configured literal phrases against reply text and expanded links ignores case and never filters the thread's focus tweet. A nested list requires every fragment to occur, which catches split templates without filtering on either broad fragment alone; set the option to nil to disable filtering.
+
+```elisp
+(setq chirp-thread-spam-keywords nil) ; Disable filtering entirely.
+
+;; Or replace the defaults with local patterns.
+(setq chirp-thread-spam-keywords
+      '("联系我领取"
+        ("体制内幼师" "sao的很")
+        "check my bio asappp"
+        "t.me/"))
+```
+
+Refresh an open thread after changing the option.
+
+X-provided related-tweet modules remain visible with a highlighted `Related tweet` context label and are not treated as replies by the keyword spam filter. Reply-target `@username` handles are highlighted separately from their muted `replying to` context, while standard quote tweets continue to render as nested `Quoted …` blocks.
 
 ## Appearance
 
@@ -169,6 +174,7 @@ so media commands still work, and shows alt text when twitter-cli provides it.
 
 ## Media
 
+- Chirp hides tweet permalinks and image/video resource links; genuine external links remain visible and highlight on hover.
 - Images render as small thumbnails in timeline, thread, and profile post lists.
 - Images and video/GIF cover thumbnails are split into gapless text-row slices, so point can move through a tall cover one row at a time. Multiple media items remain aligned in the same thumbnail grid.
 - Timeline, thread, and profile views now render cached avatars/thumbnails first; missing media are prefetched in the background so text appears faster.
@@ -215,5 +221,11 @@ customize the short in-memory backend cache:
 
 - The package expects `twitter-cli --json` to return the documented envelope from `SCHEMA.md`.
 - The parser is deliberately defensive because upstream X payloads can drift.
+- Chirp retries explicit network and server failures only for safely repeatable requests; post, reply, and quote commands are never retried automatically because a lost response can leave the publishing outcome unknown.
+- X application error `344` is a posting-window limit rather than a transport failure; with the current `twitter-cli` stable branch, Chirp reports it without retrying so the account can wait for the window to reset.
 - Timeline "load more" uses `twitter-cli feed --cursor` and appends older posts without re-fetching the already loaded prefix.
-- This repository was bootstrapped without `twitter-cli` installed locally, so the code is byte-compile checked but not end-to-end runtime tested yet.
+- Automated tests exercise the `twitter-cli` JSON and process boundary without sending live X writes; account limits and network behavior remain external to the test suite.
+
+## License
+
+Chirp is available under the [MIT License](LICENSE).

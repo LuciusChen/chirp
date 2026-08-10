@@ -1,6 +1,7 @@
-;;; chirp.el --- Browse X timelines from Emacs -*- lexical-binding: t; -*-
+;;; chirp.el --- Browse X timelines -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
+;; SPDX-License-Identifier: MIT
 
 ;; Author: lucius
 ;; Version: 0.1.0
@@ -32,9 +33,6 @@
 (require 'chirp-thread)
 (require 'chirp-profile)
 (require 'chirp-timeline)
-
-(declare-function chirp-profile-open-followers "chirp-profile" (handle &optional buffer))
-(declare-function chirp-profile-open-following-users "chirp-profile" (handle &optional buffer))
 
 ;;;###autoload
 (defun chirp-home ()

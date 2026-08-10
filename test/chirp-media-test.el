@@ -88,6 +88,35 @@ rerender and creates a CPU loop."
       (when (file-exists-p thumbnail-file)
         (delete-file thumbnail-file)))))
 
+(ert-deftest chirp-media-prefetch-callback-errors-are-reported-and-queue-advances ()
+  "A failed media callback should warn and not block later callbacks or jobs."
+  (let ((chirp-media--prefetch-pending (make-hash-table :test #'equal))
+        (chirp-media--prefetch-active 1)
+        (path "/tmp/chirp-prefetch-test.jpg")
+        warning
+        later-called
+        queue-advanced)
+    (puthash path
+             (list (lambda (&rest _args)
+                     (error "prefetch callback failed"))
+                   (lambda (_success _path)
+                     (setq later-called t)))
+             chirp-media--prefetch-pending)
+    (cl-letf (((symbol-function 'display-warning)
+               (lambda (type message &rest _args)
+                 (setq warning (list type message))))
+              ((symbol-function 'chirp-media--start-next-prefetch)
+               (lambda ()
+                 (setq queue-advanced t))))
+      (chirp-media--prefetch-finish path t))
+    (should later-called)
+    (should queue-advanced)
+    (should (= chirp-media--prefetch-active 0))
+    (should (eq (car warning) 'chirp-media))
+    (should (string-match-p
+             "prefetch callback failed for /tmp/chirp-prefetch-test.jpg"
+             (cadr warning)))))
+
 (ert-deftest chirp-media-prefetch-tweet-recurses-into-quoted-tweet ()
   "Quoted tweet media should also be prefetched."
   (let (avatars media-urls)

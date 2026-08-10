@@ -179,9 +179,7 @@
     (should (equal (mapcar (lambda (segment) (plist-get segment :type)) segments)
                    '(text image text)))
     (should (equal (plist-get (car images) :url)
-                   "https://example.com/cover.jpg"))
-    (should (equal (chirp-tweet-article-display-text tweet)
-                   "First paragraph.\n\nSecond paragraph."))))
+                   "https://example.com/cover.jpg"))))
 
 (ert-deftest chirp-normalize-tweet-keeps-quoted-tweet-and-filters-quote-link ()
   "Quoted tweets should survive normalization without duplicate permalinks."
@@ -191,6 +189,81 @@
     (should (equal (plist-get quoted :id) "456"))
     (should (equal (plist-get tweet :text) "Commentary"))
     (should (string-match-p "Quoted body text" (plist-get quoted :text)))
+    (should-not (plist-get tweet :urls))))
+
+(ert-deftest chirp-normalize-tweet-preserves-related-timeline-context-only ()
+  "Known timeline context should normalize without interning arbitrary values."
+  (let ((related
+         (chirp-normalize-tweet
+          '(("id" . "123")
+            ("text" . "Related body")
+            ("timelineContext" . "related"))))
+        (snake-related
+         (chirp-normalize-tweet
+          '(("id" . "234")
+            ("text" . "Related body")
+            ("timeline_context" . "related"))))
+        (unknown
+         (chirp-normalize-tweet
+          '(("id" . "456")
+            ("text" . "Unknown body")
+            ("timelineContext" . "future-context")))))
+    (should (eq (plist-get related :timeline-context) 'related))
+    (should (eq (plist-get snake-related :timeline-context) 'related))
+    (should-not (plist-get unknown :timeline-context))))
+
+(ert-deftest chirp-normalize-tweet-filters-own-permalink ()
+  "A tweet's own permalink should not be rendered as an expanded link."
+  (dolist (permalink '("https://twitter.com/alice/status/123?ref_src=twsrc"
+                       "https://x.com/i/web/status/123"))
+    (let ((tweet (chirp-normalize-tweet
+                  `(("id" . "123")
+                    ("text" . "Original body https://t.co/self")
+                    ("urls" . (,permalink))
+                    ("author" . (("screenName" . "alice")
+                                 ("name" . "Alice")))))))
+      (should (equal (plist-get tweet :text) "Original body"))
+      (should-not (plist-get tweet :urls)))))
+
+(ert-deftest chirp-normalize-tweet-hides-photo-and-video-links ()
+  "Media placeholders and resource URLs should not be displayed as links."
+  (dolist (media '((("type" . "photo")
+                     ("url" . "https://pbs.twimg.com/media/example.jpg"))
+                    (("type" . "video")
+                     ("url" . "https://video.twimg.com/ext_tw_video/example.mp4"))))
+    (let* ((media-url (cdr (assoc "url" media)))
+           (tweet (chirp-normalize-tweet
+                   `(("id" . "123")
+                     ("text" . "External https://t.co/site Media https://t.co/media")
+                     ("urls" . ("https://example.com/article" ,media-url))
+                     ("media" . (,media))
+                     ("author" . (("screenName" . "alice")
+                                  ("name" . "Alice")))))))
+      (should (equal (plist-get tweet :text) "External Media"))
+      (should (equal (plist-get tweet :urls)
+                     '("https://example.com/article"))))))
+
+(ert-deftest chirp-normalize-tweet-strips-unexpanded-media-placeholder ()
+  "A rendered media item should cover its otherwise unexpanded short URL."
+  (let ((tweet (chirp-normalize-tweet
+                '(("id" . "123")
+                  ("text" . "Photo https://t.co/media")
+                  ("media" . ((("type" . "photo")
+                               ("url" . "https://pbs.twimg.com/media/example.jpg"))))
+                  ("author" . (("screenName" . "alice")
+                               ("name" . "Alice")))))))
+    (should (equal (plist-get tweet :text) "Photo"))
+    (should-not (plist-get tweet :urls))))
+
+(ert-deftest chirp-normalize-tweet-hides-known-media-host-without-metadata ()
+  "A known media host should stay hidden without structured media metadata."
+  (let ((tweet (chirp-normalize-tweet
+                '(("id" . "123")
+                  ("text" . "Photo https://t.co/media")
+                  ("urls" . ("https://pic.x.com/example"))
+                  ("author" . (("screenName" . "alice")
+                               ("name" . "Alice")))))))
+    (should (equal (plist-get tweet :text) "Photo"))
     (should-not (plist-get tweet :urls))))
 
 (ert-deftest chirp-normalize-tweet-extracts-multiple-note-tweet-links ()
@@ -250,6 +323,28 @@
         (should (string-match-p "First paragraph with details\\." rendered))
         (should (string-match-p "https://example.com/article" rendered))
         (should-not (string-match-p "https://t\\.co/demo" rendered))))))
+
+(ert-deftest chirp-render-insert-tweet-highlights-genuine-external-links ()
+  "Genuine external links should highlight on hover and open themselves."
+  (let ((tweet (chirp-normalize-tweet
+                '(("id" . "123")
+                  ("text" . "Read https://t.co/article")
+                  ("urls" . ("https://example.com/article"))
+                  ("author" . (("screenName" . "alice")
+                               ("name" . "Alice")))))))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet)))
+      (goto-char (point-min))
+      (search-forward "https://example.com/article")
+      (let ((position (match-beginning 0)))
+        (should (eq (get-text-property position 'face) 'chirp-link-face))
+        (should (eq (get-text-property position 'mouse-face) 'highlight))
+        (should (equal (get-text-property position 'chirp-subentry-url)
+                       "https://example.com/article"))))))
 
 (ert-deftest chirp-render-insert-tweet-renders-multiple-note-tweet-links ()
   "Tweet rendering should show multiple expanded links extracted from note entities."
@@ -364,6 +459,10 @@
       (should (search-forward "↳ replying to @dingyi above" nil t))
       (should (equal (get-text-property (match-beginning 0) 'chirp-reply-parent-id)
                      "100"))
+      (goto-char (point-min))
+      (search-forward "@dingyi")
+      (should (eq (get-text-property (match-beginning 0) 'face)
+                  'chirp-handle-face))
       (goto-char (point-min))
       (search-forward "Reply body text")
       (let* ((needle "Reply body text")
@@ -552,6 +651,52 @@
       (goto-char (point-min))
       (search-forward "Quoted @bob (Bob)")
       (should (equal (plist-get (chirp-entry-at-point) :id) "456")))))
+
+(ert-deftest chirp-render-insert-thread-reply-labels-related-tweet ()
+  "Thread replies should visibly distinguish related timeline items."
+  (let ((tweet
+         (chirp-normalize-tweet
+          '(("id" . "related-1")
+            ("text" . "Related body")
+            ("timelineContext" . "related")
+            ("author" . (("screenName" . "alice")
+                          ("name" . "Alice")))))))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-thread-reply tweet)))
+      (goto-char (point-min))
+      (search-forward "Related tweet")
+      (let ((label-position (match-beginning 0)))
+        (should (chirp-test--face-member-p
+                 'chirp-thread-related-context
+                 (get-text-property label-position 'face)))
+        (search-forward "Alice @alice")
+        (should (< label-position (match-beginning 0)))))))
+
+(ert-deftest chirp-render-insert-thread-reply-highlights-reply-handle ()
+  "Thread reply context should highlight only the target handle."
+  (let ((tweet '(:kind tweet
+                 :id "reply-1"
+                 :text "Reply body"
+                 :reply-to-handle "bob"
+                 :author-name "Alice"
+                 :author-handle "alice")))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-thread-reply tweet)))
+      (goto-char (point-min))
+      (search-forward "replying to ")
+      (should (eq (get-text-property (match-beginning 0) 'face)
+                  'chirp-thread-reply-context-face))
+      (search-forward "@bob")
+      (should (eq (get-text-property (match-beginning 0) 'face)
+                  'chirp-handle-face)))))
 
 (ert-deftest chirp-render-insert-tweet-highlights-quoted-tweet-block ()
   "Quoted tweet previews should carry a distinct block face."
@@ -885,7 +1030,6 @@
                    (setq opened-profile handle))))
         (let ((inhibit-read-only t))
           (chirp-render-insert-user-summary user)
-          (chirp-render-insert-section "Recent Posts")
           (chirp-render-insert-tweet-list (list tweet)))
         (goto-char (point-min))
         (search-forward "Hello world")
@@ -990,6 +1134,27 @@
       (dolist (name '(" *chirp-quote-enrich-test*"))
         (when-let* ((buffer (get-buffer name)))
           (kill-buffer buffer))))))
+
+(ert-deftest chirp-quoted-tweet-callback-errors-are-reported-and-isolated ()
+  "A failed quoted-tweet callback should not block later pending callbacks."
+  (let ((chirp-quoted-tweet-pending (make-hash-table :test #'equal))
+        warning
+        later-payload)
+    (puthash "456"
+             (list (lambda (_payload)
+                     (error "quoted-tweet callback failed"))
+                   (lambda (payload)
+                     (setq later-payload payload)))
+             chirp-quoted-tweet-pending)
+    (cl-letf (((symbol-function 'display-warning)
+               (lambda (type message &rest _args)
+                 (setq warning (list type message)))))
+      (chirp--dispatch-quoted-tweet-callbacks "456" :payload))
+    (should (eq later-payload :payload))
+    (should-not (gethash "456" chirp-quoted-tweet-pending))
+    (should (eq (car warning) 'chirp-core))
+    (should (string-match-p "Quoted-tweet callback failed for 456"
+                            (cadr warning)))))
 
 (ert-deftest chirp-entry-navigation-jumps-between-top-level-tweets ()
   "Entry navigation should move between top-level tweets from nested regions."

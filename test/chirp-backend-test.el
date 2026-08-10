@@ -2,16 +2,52 @@
 
 ;; Copyright (C) 2026
 
+;;; Commentary:
+
+;; Exercise backend caching, argument shaping, structured-error dispatch, and
+;; the retry boundary around one-shot twitter-cli processes.
+
 ;;; Code:
 
 (require 'ert)
 (require 'cl-lib)
 (require 'chirp-backend)
 
-(declare-function chirp-backend-clear-cache "chirp-backend" ())
-(declare-function chirp-backend-invalidate-user "chirp-backend" (handle))
-(defvar chirp-backend-read-cache-ttl)
-(defvar chirp-backend--bypass-read-cache)
+(defun chirp-backend-test--run-process-payload (args payload)
+  "Run ARGS through process dispatch using JSON string PAYLOAD."
+  (let ((chirp-cli-max-retries 2)
+        stdout-buffer
+        sentinel
+        scheduled
+        success
+        failure)
+    (cl-letf (((symbol-function 'chirp-backend-command)
+               (lambda ()
+                 "/tmp/twitter"))
+              ((symbol-function 'make-process)
+               (lambda (&rest plist)
+                 (setq stdout-buffer (plist-get plist :buffer)
+                       sentinel (plist-get plist :sentinel))
+                 'chirp-backend-test-process))
+              ((symbol-function 'process-status)
+               (lambda (_process)
+                 'exit))
+              ((symbol-function 'process-exit-status)
+               (lambda (_process)
+                 1))
+              ((symbol-function 'chirp-backend--schedule-retry)
+               (lambda (retry-args _callback _errback attempt)
+                 (setq scheduled (list retry-args attempt)))))
+      (chirp-backend-request
+       args
+       (lambda (data envelope)
+         (setq success (cons data envelope)))
+       (lambda (message)
+         (setq failure message)))
+      (with-current-buffer stdout-buffer
+        (insert payload))
+      (funcall sentinel 'chirp-backend-test-process "finished\n"))
+    (list :scheduled scheduled :success success :failure failure)))
 
 (ert-deftest chirp-backend-thread-cache-reuses-fresh-results ()
   "Fresh cached thread results should avoid a second backend request."
@@ -46,8 +82,8 @@
                                   (lambda (tweets _envelope)
                                     (setq third tweets)))
             (should (equal (plist-get (car third) :text) "hello"))
-            (let ((chirp-backend--bypass-read-cache t))
-              (chirp-backend-thread "123" #'ignore))
+            (chirp-backend-invalidate-thread "123")
+            (chirp-backend-thread "123" #'ignore)
             (should (= request-count 2))
             (setq now 1016)
             (chirp-backend-thread "123" #'ignore)
@@ -232,14 +268,18 @@
                  (funcall callback 'raw '((ok . t)))))
               ((symbol-function 'chirp-collect-top-level-tweets)
                (lambda (_data)
-                 (list (list :id "1")))))
+                 (list (list :id "1")
+                       (list :id "2" :liked-p nil)))))
       (chirp-backend-likes
        "@Alice"
        (lambda (items _envelope)
          (setq tweets items))))
     (should (equal captured-args
                    '("likes" "Alice" "--max" "20")))
-    (should (equal tweets '((:id "1"))))))
+    (should (equal (mapcar (lambda (tweet)
+                             (plist-get tweet :liked-p))
+                           tweets)
+                   '(t t)))))
 
 (ert-deftest chirp-backend-user-replies-passes-cursor-and-normalizes-tweets ()
   "Replies requests should pass through handle, cursor, and tweet normalization."
@@ -370,6 +410,66 @@
       (chirp-backend-thread "123" #'ignore))
     (should (equal captured-args
                    '("tweet" "123" "--max" "20")))))
+
+(ert-deftest chirp-backend-process-does-not-retry-http-zero-business-errors ()
+  "HTTP zero business errors should reach the caller without a retry."
+  (let ((result
+         (chirp-backend-test--run-process-payload
+          '("feed")
+          (concat
+           "{\"ok\":false,\"error\":{\"code\":\"api_error\","
+           "\"message\":\"Twitter API error (HTTP 0): "
+           "Authorization: daily limit reached (344)\"}}"))))
+    (should-not (plist-get result :scheduled))
+    (should-not (plist-get result :success))
+    (should (string-match-p "daily limit reached (344)"
+                            (plist-get result :failure)))
+    (should-not (string-match-p "Chirp retried"
+                                (plist-get result :failure)))))
+
+(ert-deftest chirp-backend-process-retries-transient-read-errors ()
+  "Explicit network and HTTP 5xx failures should retry read commands."
+  (dolist (payload
+           '("{\"ok\":false,\"error\":{\"code\":\"network_error\",\"message\":\"Connection reset\"}}"
+             "{\"ok\":false,\"error\":{\"code\":\"api_error\",\"message\":\"Twitter API error (HTTP 503): unavailable\"}}"))
+    (let ((result (chirp-backend-test--run-process-payload '("feed") payload)))
+      (should (equal (plist-get result :scheduled)
+                     '(("feed") 0)))
+      (should-not (plist-get result :success))
+      (should-not (plist-get result :failure)))))
+
+(ert-deftest chirp-backend-process-honors-structured-nonretryable-errors ()
+  "Structured retryable false should prevent an otherwise transient retry."
+  (let ((result
+         (chirp-backend-test--run-process-payload
+          '("feed")
+          (concat
+           "{\"ok\":false,\"error\":{\"code\":\"network_error\","
+           "\"message\":\"Connection reset\","
+           "\"details\":{\"retryable\":false}}}"))))
+    (should-not (plist-get result :scheduled))
+    (should-not (plist-get result :success))
+    (should (equal (plist-get result :failure)
+                   "Connection reset (network_error)"))))
+
+(ert-deftest chirp-backend-process-never-retries-publishing-commands ()
+  "Post, reply, and quote commands should never retry unknown outcomes."
+  (dolist (case
+           '(("post"
+              "{\"ok\":false,\"error\":{\"code\":\"network_error\",\"message\":\"Connection reset\"}}")
+             ("reply"
+              "{\"ok\":false,\"error\":{\"code\":\"api_error\",\"message\":\"Twitter API error (HTTP 503): unavailable\"}}")
+             ("quote"
+              "{\"ok\":false,\"error\":{\"code\":\"network_error\",\"message\":\"Timed out\"}}")))
+    (let ((result
+           (chirp-backend-test--run-process-payload
+            (list (car case) "content")
+            (cadr case))))
+      (should-not (plist-get result :scheduled))
+      (should-not (plist-get result :success))
+      (should (stringp (plist-get result :failure)))
+      (should-not (string-match-p "Chirp retried"
+                                  (plist-get result :failure))))))
 
 (ert-deftest chirp-backend-process-requests-enable-compact-json ()
   "One-shot backend requests should ask twitter-cli for compact structured JSON."

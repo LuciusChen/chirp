@@ -1,6 +1,11 @@
 ;;; chirp-media.el --- Media fetching and display for chirp -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; Fetch, cache, prefetch, render, and open media attached to Chirp entries.
 
 ;;; Code:
 
@@ -10,6 +15,7 @@
 (require 'svg)
 (require 'url)
 (require 'url-parse)
+(require 'warnings)
 (require 'chirp-core)
 
 (defcustom chirp-cache-directory
@@ -298,7 +304,7 @@ When nil, Chirp falls back to a text placeholder for video-like media."
     url))
 
 (defun chirp-media--cache-file (url kind fallback-ext)
-  "Return a cache file path for URL of KIND."
+  "Return a cache file path for URL of KIND using FALLBACK-EXT when needed."
   (expand-file-name
    (format "%s.%s"
            (secure-hash 'sha1 url)
@@ -306,7 +312,9 @@ When nil, Chirp falls back to a text placeholder for video-like media."
    (chirp-media--cache-subdir kind)))
 
 (defun chirp-media-cached-file (url kind &optional fallback-ext)
-  "Return the cached local file for URL of KIND, or nil when absent."
+  "Return the cached local file for URL of KIND, or nil when absent.
+
+Use FALLBACK-EXT when URL has no recognizable extension."
   (when (and (stringp url)
              (not (string-empty-p url)))
     (let ((path (chirp-media--cache-file url kind (or fallback-ext "bin"))))
@@ -324,7 +332,9 @@ When nil, Chirp falls back to a text placeholder for video-like media."
     path))
 
 (defun chirp-media-local-file (url kind &optional fallback-ext)
-  "Return a local cached file for URL of KIND."
+  "Return a local cached file for URL of KIND.
+
+Use FALLBACK-EXT when URL has no recognizable extension."
   (when (and (stringp url)
              (not (string-empty-p url)))
     (chirp-media--download-file
@@ -344,14 +354,29 @@ When nil, Chirp falls back to a text placeholder for video-like media."
        chirp-media-prefetch-command
        (> chirp-link-card-prefetch-concurrency 0)))
 
+(defun chirp-media--add-pending-callback (key callback table)
+  "Add CALLBACK for KEY to pending callback TABLE."
+  (puthash key (cons callback (gethash key table)) table))
+
+(defun chirp-media--dispatch-callback (kind key callback &rest args)
+  "Run media CALLBACK for KIND and KEY, reporting recoverable errors."
+  (condition-case err
+      (apply callback args)
+    (error
+     (display-warning
+      'chirp-media
+      (format "Chirp media %s callback failed for %s: %s"
+              kind key (error-message-string err))
+      :warning))))
+
 (defun chirp-media--prefetch-finish (path success)
   "Finish a background prefetch for PATH with SUCCESS."
   (let ((callbacks (prog1 (gethash path chirp-media--prefetch-pending)
-                     (remhash path chirp-media--prefetch-pending))))
+                      (remhash path chirp-media--prefetch-pending))))
     (setq chirp-media--prefetch-active (max 0 (1- chirp-media--prefetch-active)))
     (dolist (callback callbacks)
       (when callback
-        (ignore-errors (funcall callback success path))))
+        (chirp-media--dispatch-callback 'prefetch path callback success path)))
     (chirp-media--start-next-prefetch)))
 
 (defun chirp-media--thumbnail-finish (path success)
@@ -361,7 +386,7 @@ When nil, Chirp falls back to a text placeholder for video-like media."
     (setq chirp-media--thumbnail-active (max 0 (1- chirp-media--thumbnail-active)))
     (dolist (callback callbacks)
       (when callback
-        (ignore-errors (funcall callback success path))))
+        (chirp-media--dispatch-callback 'thumbnail path callback success path)))
     (chirp-media--start-next-thumbnail)))
 
 (defun chirp-media--link-card-finish (url card)
@@ -373,7 +398,7 @@ When nil, Chirp falls back to a text placeholder for video-like media."
              chirp-media-link-card-cache)
     (dolist (callback callbacks)
       (when callback
-        (ignore-errors (funcall callback card))))
+        (chirp-media--dispatch-callback 'link-card url callback card)))
     (chirp-media--start-next-link-card-fetch)))
 
 (defun chirp-media--start-next-thumbnail ()
@@ -434,13 +459,12 @@ When nil, Chirp falls back to a text placeholder for video-like media."
         (<= chirp-media-thumbnail-concurrency 0))
     nil)
    ((gethash thumbnail-file chirp-media--thumbnail-pending)
-    (puthash thumbnail-file
-             (cons callback
-                   (gethash thumbnail-file chirp-media--thumbnail-pending))
-             chirp-media--thumbnail-pending)
+    (chirp-media--add-pending-callback
+     thumbnail-file callback chirp-media--thumbnail-pending)
     thumbnail-file)
    (t
-    (puthash thumbnail-file (list callback) chirp-media--thumbnail-pending)
+    (chirp-media--add-pending-callback
+     thumbnail-file callback chirp-media--thumbnail-pending)
     (setq chirp-media--thumbnail-queue
           (nconc chirp-media--thumbnail-queue
                  (list (list :path thumbnail-file :command command))))
@@ -478,19 +502,21 @@ When nil, Chirp falls back to a text placeholder for video-like media."
              (chirp-media--prefetch-finish path ok))))))))
 
 (defun chirp-media-prefetch-file (url kind &optional fallback-ext callback)
-  "Prefetch URL of KIND into cache and run CALLBACK when newly available."
+  "Prefetch URL of KIND and run CALLBACK when newly available.
+
+Use FALLBACK-EXT when URL has no recognizable extension."
   (when (chirp-media--prefetch-enabled-p)
     (let ((path (chirp-media--cache-file url kind (or fallback-ext "bin"))))
       (cond
        ((file-exists-p path)
         path)
        ((gethash path chirp-media--prefetch-pending)
-        (puthash path
-                 (cons callback (gethash path chirp-media--prefetch-pending))
-                 chirp-media--prefetch-pending)
+        (chirp-media--add-pending-callback
+         path callback chirp-media--prefetch-pending)
         path)
        (t
-        (puthash path (list callback) chirp-media--prefetch-pending)
+        (chirp-media--add-pending-callback
+         path callback chirp-media--prefetch-pending)
         (setq chirp-media--prefetch-queue
               (nconc chirp-media--prefetch-queue
                      (list (list :url url :path path))))
@@ -608,14 +634,15 @@ When nil, Chirp falls back to a text placeholder for video-like media."
                                        (chirp-media--prefetch-callback buffer))))
         cached)
        ((gethash url chirp-media--link-card-pending)
-        (puthash url
-                 (cons (chirp-media--link-card-rerender-callback buffer)
-                       (gethash url chirp-media--link-card-pending))
-                 chirp-media--link-card-pending))
+        (chirp-media--add-pending-callback
+         url
+         (chirp-media--link-card-rerender-callback buffer)
+         chirp-media--link-card-pending))
        (t
-        (puthash url
-                 (list (chirp-media--link-card-rerender-callback buffer))
-                 chirp-media--link-card-pending)
+        (chirp-media--add-pending-callback
+         url
+         (chirp-media--link-card-rerender-callback buffer)
+         chirp-media--link-card-pending)
         (setq chirp-media--link-card-queue
               (nconc chirp-media--link-card-queue
                      (list (list :url url))))
@@ -765,7 +792,7 @@ When FALLBACK is non-nil, call it if remote extraction fails."
       (chirp-media-prefetch-avatar (plist-get user :avatar-url) buffer))))
 
 (defun chirp-media--scaled-image (file max-width max-height)
-  "Create a scaled image descriptor for FILE."
+  "Create a FILE image descriptor constrained by MAX-WIDTH and MAX-HEIGHT."
   (when (and file
              (display-images-p))
     (condition-case nil
@@ -824,7 +851,7 @@ When FALLBACK is non-nil, call it if remote extraction fails."
       (error nil))))
 
 (defun chirp-media--photo-thumbnail-image (file max-width max-height)
-  "Return FILE rendered at its final thumbnail size without runtime scaling."
+  "Render FILE within MAX-WIDTH and MAX-HEIGHT without runtime scaling."
   (when (and file
              (display-images-p))
     (condition-case nil
@@ -1415,7 +1442,7 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
     (chirp-display-buffer buffer)))
 
 (defun chirp-media-open (media-list index &optional title buffer)
-  "Open MEDIA-LIST at INDEX."
+  "Open MEDIA-LIST at INDEX with TITLE in BUFFER."
   (let* ((safe-index (max 0 (min index (1- (length media-list)))))
          (media (nth safe-index media-list))
          (base-title (or title "Chirp Media")))

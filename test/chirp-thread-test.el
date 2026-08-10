@@ -105,6 +105,134 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest chirp-thread-open-filters-keyword-spam-replies ()
+  "Thread loading should hide matching replies without hiding the focus tweet."
+  (let ((buffer (generate-new-buffer " *chirp-thread-spam-test*"))
+        (chirp-thread-spam-keywords '("dm me" "t.me/" "  "))
+        thread-callback
+        rendered)
+    (unwind-protect
+        (cl-letf (((symbol-function 'chirp-begin-background-request)
+                   (lambda (_buffer _title)
+                     'thread-token))
+                  ((symbol-function 'chirp-request-current-p)
+                   (lambda (_buffer token)
+                     (eq token 'thread-token)))
+                  ((symbol-function 'chirp-backend-thread)
+                   (lambda (_target callback &optional _errback)
+                     (setq thread-callback callback)))
+                  ((symbol-function 'chirp-backend-article) #'ignore)
+                  ((symbol-function 'chirp-thread--render-view)
+                   (lambda (_buffer _title _refresh ordered
+                            &optional _anchor-id _display-p)
+                     (setq rendered ordered)))
+                  ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
+                  ((symbol-function 'chirp-display-buffer) #'ignore))
+          (chirp-thread-open
+           '(:kind tweet :id "123" :text "DM me is quoted in the focus")
+           "123"
+           buffer)
+          (should (functionp thread-callback))
+          (funcall thread-callback
+                   (list
+                    '(:kind tweet :id "123" :text "DM me is quoted in the focus")
+                    '(:kind tweet :id "spam-text" :text "Please DM ME for support")
+                    '(:kind tweet :id "spam-url" :text "More details"
+                      :urls ("https://t.me/example"))
+                    '(:kind tweet :id "related" :text "DM me for context"
+                      :timeline-context related)
+                    '(:kind tweet :id "legit" :text "Useful reply"))
+                   nil)
+          (should (equal (mapcar (lambda (tweet) (plist-get tweet :id)) rendered)
+                         '("123" "related" "legit"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-thread-spam-keywords-default-to-collected-templates ()
+  "Spam defaults should contain collected templates but omit broad terms."
+  (dolist (template '("三网优化专线"
+                      "刚放个人主页上了"
+                      "比她好看的没她骚"
+                      "我福不黑不信你看"
+                      "应该没人比我玩的开"
+                      "應該沒人比我玩得開"
+                      "线下sao货"
+                      "比我好看的没我骚"
+                      "有人想锐评一下我的福嘛"
+                      "check my bio asappp"
+                      "dm me or follow back"
+                      "no upfront payment is required until after a successful recovery"))
+    (should (member template chirp-thread-spam-keywords)))
+  (should (member '("体制内幼师" "sao的很")
+                  chirp-thread-spam-keywords))
+  (dolist (broad-term '("主页" "私信" "微信" "带单" "稳赚" "空投" "DM me"))
+    (should-not (member broad-term chirp-thread-spam-keywords)))
+  (dolist (legitimate-template '("空投详情现已公布" "更多详情请查看公告"))
+    (should-not (member legitimate-template chirp-thread-spam-keywords))))
+
+(ert-deftest chirp-thread-default-spam-rules-have-no-redundant-overlap ()
+  "Default spam rules should not duplicate or subsume one another."
+  (let ((rules chirp-spam-rules-default))
+    (cl-labels
+        ((normalized (fragment)
+           (and (stringp fragment)
+                (let ((trimmed (string-trim fragment)))
+                  (unless (string-empty-p trimmed)
+                    trimmed))))
+         (fragments (rule)
+           (if (listp rule) rule (list rule)))
+         (fragment-subsumes-p (broad narrow)
+           (when-let* ((broad (normalized broad))
+                       (narrow (normalized narrow)))
+             (let ((case-fold-search t))
+               (string-match-p (regexp-quote broad) narrow))))
+         (rule-subsumes-p (broad narrow)
+           (let ((broad-fragments (fragments broad))
+                 (narrow-fragments (fragments narrow)))
+             (or (null narrow-fragments)
+                 (and broad-fragments
+                      (cl-every
+                       (lambda (broad-fragment)
+                         (cl-some
+                          (lambda (narrow-fragment)
+                            (fragment-subsumes-p
+                             broad-fragment narrow-fragment))
+                          narrow-fragments))
+                       broad-fragments))))))
+      (should-not
+       (cl-loop for tail on rules
+                thereis
+                (cl-some
+                 (lambda (other)
+                   (or (rule-subsumes-p (car tail) other)
+                       (rule-subsumes-p other (car tail))))
+                 (cdr tail)))))))
+
+(ert-deftest chirp-thread-default-spam-rules-match-collected-variants ()
+  "Default spam rules should match collected evasive variants."
+  (dolist (text '("线下sao货没人pK比她sao😂👌 y7N"
+                  "线下sao货pK比她sao🎍🎼比我骚的没我好看"
+                  "比我好看的没我骚🎍🎼比我骚的没我好看"
+                  "我果然太涩了🌜🤲有人想锐评一下我的福嘛"
+                  "体制内幼师🌻📣sao的很Q1"))
+    (should (chirp-thread--spam-reply-p (list :text text))))
+  (dolist (text '("我是一名体制内幼师"
+                  "空投详情现已公布"
+                  "更多详情请查看公告"))
+    (should-not (chirp-thread--spam-reply-p (list :text text)))))
+
+(ert-deftest chirp-thread-spam-keyword-groups-require-every-fragment ()
+  "Grouped spam rules should require every configured fragment."
+  (let ((chirp-thread-spam-keywords '(("体制内幼师" "sao的很"))))
+    (should
+     (chirp-thread--spam-reply-p
+      '(:text "体制内幼师🌻📣sao的很Q1")))
+    (should-not
+     (chirp-thread--spam-reply-p '(:text "体制内幼师的日常")))
+    (should-not
+     (chirp-thread--spam-reply-p '(:text "这个说法 sao的很")))))
+
 (provide 'chirp-thread-test)
 
 ;;; chirp-thread-test.el ends here

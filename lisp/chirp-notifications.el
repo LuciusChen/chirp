@@ -1,6 +1,11 @@
 ;;; chirp-notifications.el --- Desktop notifications for Chirp -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; Poll account activity and present new events as desktop notifications.
 
 ;;; Code:
 

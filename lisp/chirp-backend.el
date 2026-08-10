@@ -1,6 +1,13 @@
 ;;; chirp-backend.el --- twitter-cli integration for chirp -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; Resolve and invoke twitter-cli, decode its structured responses, and share
+;; short-lived read results.  Automatic retries are limited to transient errors
+;; on safely repeatable commands; publishing outcomes may otherwise be unknown.
 
 ;;; Code:
 
@@ -20,6 +27,9 @@
 (defconst chirp-backend--lists-cache-key '(:lists)
   "Cache key for the authenticated account's list catalog.")
 
+(defconst chirp-backend--non-idempotent-commands '("post" "reply" "quote")
+  "Commands that Chirp must never retry automatically through twitter-cli.")
+
 (defcustom chirp-backend-read-cache-ttl 15
   "Seconds to keep successful thread/profile/article reads in memory.
 
@@ -33,9 +43,6 @@ When zero or negative, the in-memory read cache is disabled."
 (defvar chirp-backend--pending-read-requests (make-hash-table :test #'equal)
   "Map cache keys to queued Chirp read callbacks while a request is in flight.")
 
-(defvar chirp-backend--bypass-read-cache nil
-  "When non-nil, Chirp read requests bypass the in-memory cache and pending reuse.")
-
 (defun chirp-backend--auto-detect-command-p ()
   "Return non-nil when Chirp should auto-detect the CLI command."
   (or (null chirp-cli-command)
@@ -48,7 +55,7 @@ When zero or negative, the in-memory read cache is disabled."
     (list chirp-cli-command)))
 
 (defun chirp-backend--resolve-from-exec-path (candidates)
-  "Return the first executable in CANDIDATES found via `exec-path'."
+  "Return the first executable in CANDIDATES found via variable `exec-path'."
   (catch 'found
     (dolist (candidate candidates)
       (let ((command (executable-find candidate)))
@@ -107,7 +114,7 @@ When zero or negative, the in-memory read cache is disabled."
     (format "%s" target))))
 
 (defun chirp-backend--thread-cache-key (tweet-or-url)
-  "Return the cache key for thread TARGET."
+  "Return the cache key for thread TWEET-OR-URL."
   (list :thread (or (chirp-backend--tweet-id-from-target tweet-or-url)
                     (format "%s" tweet-or-url))))
 
@@ -118,10 +125,6 @@ When zero or negative, the in-memory read cache is disabled."
 (defun chirp-backend--user-cache-key (handle)
   "Return the cache key for HANDLE profile metadata."
   (list :user (chirp-backend--normalize-handle handle)))
-
-(defun chirp-backend--whoami-cache-key ()
-  "Return the cache key for the current authenticated user."
-  '(:whoami))
 
 (defun chirp-backend--user-posts-cache-key (handle)
   "Return the cache key for HANDLE recent posts."
@@ -209,14 +212,12 @@ When zero or negative, the in-memory read cache is disabled."
 (defun chirp-backend--cached-read (key fetcher callback &optional errback)
   "Fetch KEY via FETCHER and serve CALLBACK from the short-lived read cache.
 
-FETCHER is called with success and error callbacks."
-  (if-let* (((not chirp-backend--bypass-read-cache))
-            (entry (chirp-backend--cached-result key)))
+ERRBACK handles failures.  FETCHER is called with success and error callbacks."
+  (if-let* ((entry (chirp-backend--cached-result key)))
       (funcall callback
                (chirp-backend--clone-data (plist-get entry :value))
                (chirp-backend--clone-data (plist-get entry :envelope)))
-    (let ((pending (and (not chirp-backend--bypass-read-cache)
-                        (gethash key chirp-backend--pending-read-requests))))
+    (let ((pending (gethash key chirp-backend--pending-read-requests)))
       (if pending
           (puthash key
                    (append pending (list (cons callback errback)))
@@ -324,7 +325,7 @@ Use STDOUT-BUFFER and STDERR-BUFFER for process output."
                       (error "%s" error-message)
                     result)))
                ((zerop status)
-                (error "twitter-cli exited successfully but did not return valid JSON."))
+                (error "The twitter-cli process exited successfully but did not return valid JSON"))
                (t
                 (error "Command failed: %s %s"
                        command
@@ -344,15 +345,25 @@ Use STDOUT-BUFFER and STDERR-BUFFER for process output."
         (format "%s (%s)" message code)
       message)))
 
-(defun chirp-backend--transient-error-p (payload)
-  "Return non-nil when PAYLOAD describes a transient backend failure."
-  (let* ((message (chirp-backend--payload-error-message payload))
+(defun chirp-backend--retryable-error-p (payload)
+  "Return non-nil when PAYLOAD describes a retryable backend failure."
+  (let* ((error (chirp-get payload "error"))
+         (code (chirp-get error "code"))
+         (retryable (chirp-get-in error '("details" "retryable")))
+         (message (chirp-backend--payload-error-message payload))
          (status (when (string-match "HTTP \\([0-9]+\\)" message)
                    (string-to-number (match-string 1 message)))))
-    (or (and status
-             (or (= status 0)
-                 (>= status 500)))
-        (string-match-p "network error" message))))
+    (and (not (eq retryable chirp-backend--json-false))
+         (or (equal code "network_error")
+             (and status (>= status 500))
+             (let ((case-fold-search t))
+               (string-match-p "network error" message))))))
+
+(defun chirp-backend--request-retryable-p (args payload)
+  "Return non-nil when ARGS may be retried after failure PAYLOAD."
+  (and args
+       (not (member (car args) chirp-backend--non-idempotent-commands))
+       (chirp-backend--retryable-error-p payload)))
 
 (defun chirp-backend--format-retried-message (message attempt)
   "Annotate MESSAGE with retry information for ATTEMPT."
@@ -368,9 +379,10 @@ Use STDOUT-BUFFER and STDERR-BUFFER for process output."
   (let ((next-attempt (1+ attempt)))
     (if (> chirp-cli-retry-delay 0)
         (run-at-time chirp-cli-retry-delay nil
-                     #'chirp-backend--request
+                     #'chirp-backend--request-via-process
                      args callback errback next-attempt)
-      (chirp-backend--request args callback errback next-attempt))))
+      (chirp-backend--request-via-process
+       args callback errback next-attempt))))
 
 (defun chirp-backend--dispatch (payload callback errback)
   "Dispatch PAYLOAD to CALLBACK or ERRBACK."
@@ -417,13 +429,13 @@ ATTEMPT tracks how many retries have already been used."
                      (cond
                       ((and payload
                             (< attempt chirp-cli-max-retries)
-                            (chirp-backend--transient-error-p payload))
+                            (chirp-backend--request-retryable-p args payload))
                        (chirp-backend--schedule-retry args callback errback attempt))
                       (payload
                        (chirp-backend--dispatch payload callback wrapped-error-fn))
                       ((zerop (process-exit-status process))
                        (funcall wrapped-error-fn
-                                "twitter-cli exited successfully but did not return valid JSON."))
+                                "The twitter-cli process exited successfully but did not return valid JSON."))
                       (t
                        (funcall wrapped-error-fn
                                 (chirp-backend--error-message command
@@ -433,17 +445,11 @@ ATTEMPT tracks how many retries have already been used."
                  (kill-buffer stdout-buffer)
                  (kill-buffer stderr-buffer))))))))))
 
-(defun chirp-backend--request (args callback errback attempt)
-  "Run twitter-cli with ARGS and call CALLBACK.
-
-ERRBACK receives a single human-readable string.
-ATTEMPT tracks how many retries have already been used."
-  (chirp-backend--request-via-process args callback errback attempt))
-
 (defun chirp-backend-request (args callback &optional errback)
   "Run twitter-cli with ARGS and call CALLBACK.
+
 ERRBACK receives a single human-readable string."
-  (chirp-backend--request args callback errback 0))
+  (chirp-backend--request-via-process args callback errback 0))
 
 (defun chirp-backend-envelope-next-cursor (envelope)
   "Return the next pagination cursor from ENVELOPE, or nil."
@@ -452,7 +458,9 @@ ERRBACK receives a single human-readable string."
 
 (defun chirp-backend-feed (callback &optional following errback max-results cursor)
   "Fetch the home timeline and call CALLBACK.
-When FOLLOWING is non-nil, fetch the Following timeline."
+
+FOLLOWING selects the Following timeline.  ERRBACK handles failures,
+MAX-RESULTS limits the response, and CURSOR continues pagination."
   (chirp-backend-request
    (append '("feed")
            (when following
@@ -466,7 +474,9 @@ When FOLLOWING is non-nil, fetch the Following timeline."
    errback))
 
 (defun chirp-backend-notifications (callback &optional errback max-results)
-  "Fetch account activity notifications and call CALLBACK."
+  "Fetch account activity notifications and call CALLBACK.
+
+ERRBACK handles failures and MAX-RESULTS limits the response."
   (chirp-backend-request
    (list "notifications"
          "--max" (number-to-string (or max-results
@@ -475,7 +485,7 @@ When FOLLOWING is non-nil, fetch the Following timeline."
    errback))
 
 (defun chirp-backend-bookmarks (callback &optional errback)
-  "Fetch bookmarks and call CALLBACK."
+  "Fetch bookmarks and call CALLBACK, or ERRBACK on failure."
   (chirp-backend-request
    (list "bookmarks" "--max" (number-to-string chirp-default-max-results))
    (lambda (data envelope)
@@ -483,7 +493,7 @@ When FOLLOWING is non-nil, fetch the Following timeline."
    errback))
 
 (defun chirp-backend-search (query callback &optional errback)
-  "Search for QUERY and call CALLBACK."
+  "Search for QUERY and call CALLBACK, or ERRBACK on failure."
   (chirp-backend-request
    (list "search" query "--max" (number-to-string chirp-default-max-results))
    (lambda (data envelope)
@@ -498,16 +508,16 @@ When FOLLOWING is non-nil, fetch the Following timeline."
               "--max" (number-to-string (or max-results 10))))))
 
 (defun chirp-backend-translate (tweet-id language callback &optional errback)
-  "Translate TWEET-ID into LANGUAGE and call CALLBACK."
+  "Translate TWEET-ID into LANGUAGE and call CALLBACK, or ERRBACK on failure."
   (chirp-backend-request
    (list "translate" tweet-id "--to" language)
    callback
    errback))
 
 (defun chirp-backend-whoami (callback &optional errback)
-  "Fetch the authenticated user profile and call CALLBACK."
+  "Fetch the authenticated user profile and call CALLBACK, or ERRBACK on failure."
   (chirp-backend--cached-read
-   (chirp-backend--whoami-cache-key)
+   '(:whoami)
    (lambda (success error)
      (chirp-backend-request
       '("whoami")
@@ -522,13 +532,16 @@ When FOLLOWING is non-nil, fetch the Following timeline."
    errback))
 
 (defun chirp-backend-likes (handle callback &optional errback)
-  "Fetch liked tweets for HANDLE and call CALLBACK."
+  "Fetch liked tweets for HANDLE and call CALLBACK, or ERRBACK on failure."
   (chirp-backend-request
    (list "likes"
          (string-remove-prefix "@" handle)
          "--max" (number-to-string chirp-default-max-results))
    (lambda (data envelope)
-     (funcall callback (chirp-collect-top-level-tweets data) envelope))
+     (let ((tweets (chirp-collect-top-level-tweets data)))
+       (dolist (tweet tweets)
+         (plist-put tweet :liked-p t))
+       (funcall callback tweets envelope)))
    errback))
 
 (defun chirp-backend-lists-sync ()
@@ -548,7 +561,7 @@ When FOLLOWING is non-nil, fetch the Following timeline."
       lists)))
 
 (defun chirp-backend-list (list-target callback &optional errback)
-  "Fetch list timeline data for LIST-TARGET and call CALLBACK."
+  "Fetch LIST-TARGET timeline data and call CALLBACK, or ERRBACK on failure."
   (chirp-backend-request
    (list "list"
          (chirp-backend--list-id-from-target list-target)
@@ -558,7 +571,7 @@ When FOLLOWING is non-nil, fetch the Following timeline."
    errback))
 
 (defun chirp-backend-thread (tweet-or-url callback &optional errback)
-  "Fetch thread data for TWEET-OR-URL and call CALLBACK."
+  "Fetch TWEET-OR-URL thread data and call CALLBACK, or ERRBACK on failure."
   (chirp-backend--cached-read
    (chirp-backend--thread-cache-key tweet-or-url)
    (lambda (success error)
@@ -573,7 +586,7 @@ When FOLLOWING is non-nil, fetch the Following timeline."
    errback))
 
 (defun chirp-backend-tweet (tweet-id callback &optional errback)
-  "Fetch a single tweet for TWEET-ID and call CALLBACK."
+  "Fetch TWEET-ID and call CALLBACK, or ERRBACK on failure."
   (chirp-backend-thread
    tweet-id
    (lambda (tweets envelope)
@@ -587,7 +600,7 @@ When FOLLOWING is non-nil, fetch the Following timeline."
    errback))
 
 (defun chirp-backend-article (tweet-id callback &optional errback)
-  "Fetch article content for TWEET-ID and call CALLBACK."
+  "Fetch article content for TWEET-ID and call CALLBACK, or ERRBACK on failure."
   (chirp-backend--cached-read
    (chirp-backend--article-cache-key tweet-id)
    (lambda (success error)
@@ -604,7 +617,7 @@ When FOLLOWING is non-nil, fetch the Following timeline."
    errback))
 
 (defun chirp-backend-user (handle callback &optional errback)
-  "Fetch profile data for HANDLE and call CALLBACK."
+  "Fetch profile data for HANDLE and call CALLBACK, or ERRBACK on failure."
   (chirp-backend--cached-read
    (chirp-backend--user-cache-key handle)
    (lambda (success error)
@@ -623,8 +636,8 @@ When FOLLOWING is non-nil, fetch the Following timeline."
 (defun chirp-backend-user-posts (handle callback &optional errback max-results cursor)
   "Fetch posts for HANDLE and call CALLBACK.
 
-When CURSOR is non-nil, continue from that pagination cursor without using the
-short-lived read cache."
+ERRBACK handles failures and MAX-RESULTS limits the response.  When CURSOR is
+non-nil, continue from it without using the short-lived read cache."
   (chirp-backend--profile-timeline
    "user-posts"
    (chirp-backend--user-posts-cache-key handle)
@@ -632,10 +645,10 @@ short-lived read cache."
 
 (defun chirp-backend--profile-timeline
     (command cache-key handle callback &optional errback max-results cursor)
-  "Fetch profile timeline COMMAND for HANDLE and call CALLBACK.
+  "Fetch profile timeline COMMAND using CACHE-KEY for HANDLE and call CALLBACK.
 
-When CURSOR is non-nil, continue from that pagination cursor without using the
-short-lived read cache."
+ERRBACK handles failures and MAX-RESULTS limits the response.  When CURSOR is
+non-nil, continue from it without using the short-lived read cache."
   (let* ((clean-handle (string-remove-prefix "@" handle))
          (limit (or max-results chirp-profile-post-limit))
          (args (append (list command clean-handle)
@@ -660,21 +673,30 @@ short-lived read cache."
        errback))))
 
 (defun chirp-backend-user-replies (handle callback &optional errback max-results cursor)
-  "Fetch posts and replies for HANDLE and call CALLBACK."
+  "Fetch posts and replies for HANDLE and call CALLBACK.
+
+ERRBACK handles failures, MAX-RESULTS limits the response, and CURSOR continues
+pagination."
   (chirp-backend--profile-timeline
    "user-replies"
    (chirp-backend--profile-timeline-cache-key handle 'replies)
    handle callback errback max-results cursor))
 
 (defun chirp-backend-user-highlights (handle callback &optional errback max-results cursor)
-  "Fetch highlights for HANDLE and call CALLBACK."
+  "Fetch highlights for HANDLE and call CALLBACK.
+
+ERRBACK handles failures, MAX-RESULTS limits the response, and CURSOR continues
+pagination."
   (chirp-backend--profile-timeline
    "user-highlights"
    (chirp-backend--profile-timeline-cache-key handle 'highlights)
    handle callback errback max-results cursor))
 
 (defun chirp-backend-user-media (handle callback &optional errback max-results cursor)
-  "Fetch media posts for HANDLE and call CALLBACK."
+  "Fetch media posts for HANDLE and call CALLBACK.
+
+ERRBACK handles failures, MAX-RESULTS limits the response, and CURSOR continues
+pagination."
   (chirp-backend--profile-timeline
    "user-media"
    (chirp-backend--profile-timeline-cache-key handle 'media)
@@ -687,7 +709,7 @@ short-lived read cache."
     nil))
 
 (defun chirp-backend-followers (handle callback &optional errback)
-  "Fetch followers for HANDLE and call CALLBACK."
+  "Fetch followers for HANDLE and call CALLBACK, or ERRBACK on failure."
   (chirp-backend--cached-read
    (chirp-backend--followers-cache-key handle)
    (lambda (success error)
@@ -702,7 +724,7 @@ short-lived read cache."
    errback))
 
 (defun chirp-backend-following-users (handle callback &optional errback)
-  "Fetch accounts followed by HANDLE and call CALLBACK."
+  "Fetch accounts followed by HANDLE and call CALLBACK, or ERRBACK on failure."
   (chirp-backend--cached-read
    (chirp-backend--following-users-cache-key handle)
    (lambda (success error)

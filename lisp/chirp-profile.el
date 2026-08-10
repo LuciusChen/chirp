@@ -1,19 +1,20 @@
 ;;; chirp-profile.el --- Profile view for chirp -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; Fetch and render profile summaries, timelines, and account lists.
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'chirp-core)
 (require 'chirp-backend)
 (require 'chirp-media)
 (require 'chirp-render)
 
-(declare-function chirp-backend-invalidate-user "chirp-backend" (handle))
-(declare-function chirp-backend-envelope-next-cursor "chirp-backend" (envelope))
-(declare-function chirp-backend-user-highlights "chirp-backend" (handle callback &optional errback max-results cursor))
-(declare-function chirp-backend-user-media "chirp-backend" (handle callback &optional errback max-results cursor))
-(defvar chirp-backend--bypass-read-cache)
 (defconst chirp-profile--base-modes '(posts replies highlights media)
   "Profile subviews shown for all profiles.")
 (defvar-local chirp-profile--user nil
@@ -60,14 +61,13 @@
     (nth (mod (1+ index) (length modes)) modes)))
 
 (defun chirp-profile--open-user-list (kind handle &optional buffer)
-  "Open KIND user list for HANDLE."
+  "Open KIND user list for HANDLE in BUFFER."
   (let* ((clean-handle (string-remove-prefix "@" handle))
          (title (chirp-profile--list-title kind clean-handle))
          (buffer (or buffer (chirp-buffer)))
          (refresh (lambda ()
                     (chirp-backend-invalidate-user clean-handle)
-                    (let ((chirp-backend--bypass-read-cache t))
-                      (chirp-profile--open-user-list kind clean-handle buffer))))
+                    (chirp-profile--open-user-list kind clean-handle buffer)))
          (fetch-fn (pcase kind
                      ('followers #'chirp-backend-followers)
                      ('following #'chirp-backend-following-users)
@@ -92,28 +92,14 @@
                  (when (chirp-request-current-p buffer token)
                    (chirp-show-error buffer title refresh message)))))))
 
-(defun chirp-profile--tweet-key (tweet)
-  "Return a stable merge key for profile timeline TWEET."
-  (or (plist-get tweet :id)
-      (plist-get tweet :url)
-      (plist-get tweet :text)))
-
-(defun chirp-profile--append-older-tweets (current fetched)
-  "Return CURRENT with older FETCHED tweets appended without duplicates."
-  (let ((seen (make-hash-table :test #'equal))
-        (merged (copy-sequence current)))
-    (dolist (tweet current)
-      (puthash (chirp-profile--tweet-key tweet) t seen))
-    (dolist (tweet fetched merged)
-      (let ((key (chirp-profile--tweet-key tweet)))
-        (unless (gethash key seen)
-          (puthash key t seen)
-          (setq merged (append merged (list tweet))))))))
-
-(defun chirp-profile--render
+(cl-defun chirp-profile--render
     (buffer title refresh user tweets current-mode modes
-            &optional anchor-id display-p timeline-ready next-cursor status-message)
-  "Render USER and TWEETS into BUFFER."
+            &key anchor-id display-p timeline-ready next-cursor status-message)
+  "Render USER and TWEETS into BUFFER with TITLE and REFRESH metadata.
+
+CURRENT-MODE selects one of MODES.  ANCHOR-ID restores point, and DISPLAY-P
+shows the buffer.  TIMELINE-READY controls the empty state.  NEXT-CURSOR and
+STATUS-MESSAGE record pagination and loading status."
   (chirp-render-into-buffer
    buffer title refresh
    (lambda ()
@@ -174,11 +160,10 @@
                      saved-tweets
                      saved-mode
                      saved-modes
-                     (chirp-capture-point-anchor)
-                     nil
-                     saved-timeline-ready
-                     saved-next-cursor
-                     saved-status-message))))
+                     :anchor-id (chirp-capture-point-anchor)
+                     :timeline-ready saved-timeline-ready
+                     :next-cursor saved-next-cursor
+                     :status-message saved-status-message))))
     (or (and anchor-id
              (chirp-restore-point-anchor anchor-id))
         (chirp-move-point-to-first-entry)))
@@ -186,7 +171,7 @@
     (chirp-display-buffer buffer)))
 
 (defun chirp-profile-load-more (&optional anchor-id)
-  "Load older items for the current profile timeline."
+  "Load older items and restore point to ANCHOR-ID when supplied."
   (interactive)
   (unless chirp--profile-handle
     (user-error "Current view does not support loading more items"))
@@ -218,14 +203,16 @@
        (lambda (tweets envelope)
          (when (chirp-request-current-p buffer token)
            (let* ((next-cursor (chirp-backend-envelope-next-cursor envelope))
-                  (merged (chirp-profile--append-older-tweets current tweets))
+                  (merged (chirp-append-unique-tweets current tweets))
                   (added-p (> (length merged) (length current))))
              (with-current-buffer buffer
                (setq-local chirp--request-token nil))
              (chirp-profile--render
-             buffer title refresh saved-user merged
-              saved-mode saved-modes
-              anchor t t next-cursor nil)
+              buffer title refresh saved-user merged saved-mode saved-modes
+              :anchor-id anchor
+              :display-p t
+              :timeline-ready t
+              :next-cursor next-cursor)
              (chirp-clear-status buffer)
              (chirp-media-prefetch-tweets tweets buffer)
              (chirp-enrich-quoted-tweets tweets buffer)
@@ -244,7 +231,8 @@
 (defun chirp-profile--fetch-content (mode handle callback errback &optional max-results cursor)
   "Fetch profile MODE content for HANDLE and call CALLBACK.
 
-MODE selects the timeline source.  CURSOR is only used for paginated modes."
+Call ERRBACK on failure.  MAX-RESULTS limits the response.  CURSOR is only used
+for paginated modes."
   (pcase mode
     ('posts
      (chirp-backend-user-posts handle callback errback max-results cursor))
@@ -277,7 +265,7 @@ When TARGET is `:next', cycle through the available profile modes."
       (chirp-profile-open handle buffer mode))))
 
 (defun chirp-profile-open (handle &optional buffer mode)
-  "Open HANDLE's profile.
+  "Open HANDLE's profile in BUFFER.
 
 MODE selects the active profile subview and defaults to `posts'."
   (interactive "sProfile handle: ")
@@ -287,8 +275,7 @@ MODE selects the active profile subview and defaults to `posts'."
          (buffer (or buffer (chirp-buffer)))
          (refresh (lambda ()
                     (chirp-backend-invalidate-user clean-handle)
-                    (let ((chirp-backend--bypass-read-cache t))
-                      (chirp-profile-open clean-handle buffer mode))))
+                    (chirp-profile-open clean-handle buffer mode)))
          (token nil)
          (saved-user nil)
          (saved-tweets nil)
@@ -296,11 +283,13 @@ MODE selects the active profile subview and defaults to `posts'."
          (timeline-next-cursor nil)
          (user-ready nil)
          (timeline-ready nil)
+         (whoami-ready nil)
          (timeline-error-message nil)
+         (content-prefetched nil)
          (displayed nil))
     (cl-labels
-        ((render-current (&optional anchor-id)
-           (when saved-user
+        ((present-current ()
+           (when user-ready
              (chirp-profile--render
               buffer
               title
@@ -309,19 +298,45 @@ MODE selects the active profile subview and defaults to `posts'."
               saved-tweets
               mode
               available-modes
-              anchor-id
-              displayed
-              timeline-ready
-              timeline-next-cursor
-              (and timeline-ready timeline-error-message))))
-         (show-current ()
-           (unless displayed
-             (setq displayed t)
-             (chirp-display-buffer buffer)))
-         (prefetch-current-posts ()
-           (when saved-tweets
-             (chirp-media-prefetch-tweets saved-tweets buffer)
-             (chirp-enrich-quoted-tweets saved-tweets buffer))))
+              :anchor-id (and displayed
+                              (with-current-buffer buffer
+                                (chirp-capture-point-anchor)))
+              :display-p displayed
+              :timeline-ready timeline-ready
+              :next-cursor timeline-next-cursor
+              :status-message (and timeline-ready timeline-error-message))
+             (unless displayed
+               (setq displayed t)
+               (chirp-display-buffer buffer)))
+           (when (and user-ready
+                      timeline-ready
+                      (not content-prefetched))
+             (setq content-prefetched t)
+             (when saved-tweets
+               (chirp-media-prefetch-tweets saved-tweets buffer)
+               (chirp-enrich-quoted-tweets saved-tweets buffer)))
+           (when (and user-ready timeline-ready whoami-ready)
+             (with-current-buffer buffer
+               (setq-local chirp--request-token nil))))
+         (update-status ()
+           (cond
+            (timeline-error-message
+             (chirp-set-status
+              buffer
+              (format "%s failed" (chirp-profile--mode-label mode))
+              'error))
+            ((and user-ready timeline-ready)
+             (chirp-clear-status buffer))
+            (user-ready
+             (chirp-set-status
+              buffer
+              (format "Profile ready · loading %s..."
+                      (downcase (chirp-profile--mode-label mode)))))
+            (timeline-ready
+             (chirp-set-status
+              buffer
+              (format "%s ready · loading profile..."
+                      (chirp-profile--mode-label mode)))))))
       (setq token (chirp-begin-background-request buffer title))
       (chirp-set-status buffer "Loading profile...")
       (with-current-buffer buffer
@@ -335,29 +350,9 @@ MODE selects the active profile subview and defaults to `posts'."
            (setq saved-user user
                  user-ready t)
            (plist-put saved-user :self-p (memq 'likes available-modes))
-           (cond
-            (timeline-error-message
-             (chirp-set-status
-              buffer
-              (format "%s failed"
-                      (chirp-profile--mode-label mode))
-              'error))
-            (timeline-ready
-             (chirp-clear-status buffer))
-            (t
-             (chirp-set-status
-              buffer
-              (format "Profile ready · loading %s..."
-                      (downcase (chirp-profile--mode-label mode))))))
-           (render-current (and displayed
-                                (with-current-buffer buffer
-                                  (chirp-capture-point-anchor))))
-           (show-current)
-           (chirp-media-prefetch-user saved-user buffer)
-           (when timeline-ready
-             (with-current-buffer buffer
-               (setq-local chirp--request-token nil))
-             (prefetch-current-posts))))
+           (update-status)
+           (present-current)
+           (chirp-media-prefetch-user saved-user buffer)))
        (lambda (message)
          (when (chirp-request-current-p buffer token)
            (with-current-buffer buffer
@@ -373,18 +368,20 @@ MODE selects the active profile subview and defaults to `posts'."
                                    (downcase clean-handle)))
                              (append chirp-profile--base-modes '(likes))
                            chirp-profile--base-modes)))
-             (setq available-modes modes)
+             (setq available-modes modes
+                   whoami-ready t)
              (when saved-user
                (plist-put saved-user :self-p (memq 'likes modes)))
              (when (not (memq mode modes))
                (setq mode 'posts
                      title (chirp-profile--title clean-handle mode)))
              (when user-ready
-               (render-current (and displayed
-                                    (with-current-buffer buffer
-                                      (chirp-capture-point-anchor))))))))
+               (update-status)
+               (present-current)))))
        (lambda (_message)
-         nil))
+         (when (chirp-request-current-p buffer token)
+           (setq whoami-ready t)
+           (present-current))))
       (chirp-profile--fetch-content
        mode
        clean-handle
@@ -396,20 +393,8 @@ MODE selects the active profile subview and defaults to `posts'."
                  timeline-next-cursor
                  (and (chirp-profile--paginated-mode-p mode)
                       (chirp-backend-envelope-next-cursor timeline-envelope)))
-           (if user-ready
-               (chirp-clear-status buffer)
-             (chirp-set-status
-              buffer
-              (format "%s ready · loading profile..."
-                      (chirp-profile--mode-label mode))))
-           (when user-ready
-             (render-current (and displayed
-                                  (with-current-buffer buffer
-                                    (chirp-capture-point-anchor))))
-             (show-current)
-             (with-current-buffer buffer
-               (setq-local chirp--request-token nil))
-             (prefetch-current-posts))))
+           (update-status)
+           (present-current)))
        (lambda (message)
          (when (chirp-request-current-p buffer token)
            (setq saved-tweets nil
@@ -419,30 +404,19 @@ MODE selects the active profile subview and defaults to `posts'."
                  (format "Unable to load %s.\n\n%s"
                          (downcase (chirp-profile--mode-label mode))
                          message))
-           (chirp-set-status
-            buffer
-            (format "%s failed"
-                    (chirp-profile--mode-label mode))
-            'error)
-           (when user-ready
-             (render-current (and displayed
-                                  (with-current-buffer buffer
-                                    (chirp-capture-point-anchor))))
-             (show-current)
-             (with-current-buffer buffer
-               (setq-local chirp--request-token nil))))))
-       chirp-profile-post-limit)
-      ))
+           (update-status)
+           (present-current)))
+       chirp-profile-post-limit))))
 
 ;;;###autoload
 (defun chirp-profile-open-followers (handle &optional buffer)
-  "Open followers for HANDLE."
+  "Open followers for HANDLE in BUFFER."
   (interactive "sProfile handle: ")
   (chirp-profile--open-user-list 'followers handle buffer))
 
 ;;;###autoload
 (defun chirp-profile-open-following-users (handle &optional buffer)
-  "Open followed accounts for HANDLE."
+  "Open followed accounts for HANDLE in BUFFER."
   (interactive "sProfile handle: ")
   (chirp-profile--open-user-list 'following handle buffer))
 

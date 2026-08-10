@@ -181,7 +181,9 @@
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
           (chirp-profile--render
-           buffer "@alice" #'ignore user first-page 'posts '(posts) nil nil t "cursor-prev" nil)
+           buffer "@alice" #'ignore user first-page 'posts '(posts)
+           :timeline-ready t
+           :next-cursor "cursor-prev")
           (with-current-buffer buffer
             (chirp-profile-load-more)
             (funcall callback
@@ -216,8 +218,10 @@
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
           (chirp-profile--render
-           buffer "@alice · Replies" #'ignore user first-page 'replies '(posts replies highlights media)
-           nil nil t "cursor-prev" nil)
+           buffer "@alice · Replies" #'ignore user first-page 'replies
+           '(posts replies highlights media)
+           :timeline-ready t
+           :next-cursor "cursor-prev")
           (with-current-buffer buffer
             (chirp-profile-load-more)
             (funcall callback
@@ -237,11 +241,10 @@
         whoami-callback)
     (unwind-protect
         (cl-letf (((symbol-function 'chirp-begin-background-request)
-                   (lambda (_buffer _title)
+                   (lambda (target _title)
+                     (with-current-buffer target
+                       (setq-local chirp--request-token 'profile-token))
                      'profile-token))
-                  ((symbol-function 'chirp-request-current-p)
-                   (lambda (_buffer token)
-                     (eq token 'profile-token)))
                   ((symbol-function 'chirp-backend-user)
                    (lambda (_handle callback &optional _errback)
                      (setq user-callback callback)))
