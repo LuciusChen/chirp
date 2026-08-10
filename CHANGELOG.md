@@ -21,3 +21,4 @@ history remains available in Git.
 - Tweet and media permalinks no longer appear as trailing links, while genuine external links highlight on hover.
 - Publishing failures no longer trigger automatic post, reply, or quote retries; structured non-retryable errors such as X code `344` now reach the user directly.
 - Likes views now show every returned tweet with its like state active.
+- Reply filtering now recognizes collected affiliate, dating, and drug-spam nickname templates without relying on broad single-word matches.

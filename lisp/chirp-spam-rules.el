@@ -22,6 +22,12 @@
     "线下sao货"
     "有人想锐评一下我的福嘛"
     ("体制内幼师" "sao的很")
+    ("Deepcoin" "大户返佣")
+    ("找炮友" "点主页")
+    ("同城上门" "线下选妃")
+    ("Gate" "Visa卡")
+    ("催情" "听话")
+    ("只入身体" "不入生活")
     "check my bio asappp"
     "be brave and check my bio"
     "talk to me pleaseee check my bio"

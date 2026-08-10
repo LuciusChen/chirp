@@ -168,6 +168,13 @@
     (should (member template chirp-thread-spam-keywords)))
   (should (member '("体制内幼师" "sao的很")
                   chirp-thread-spam-keywords))
+  (dolist (template '(("Deepcoin" "大户返佣")
+                      ("找炮友" "点主页")
+                      ("同城上门" "线下选妃")
+                      ("Gate" "Visa卡")
+                      ("催情" "听话")
+                      ("只入身体" "不入生活")))
+    (should (member template chirp-thread-spam-keywords)))
   (dolist (broad-term '("主页" "私信" "微信" "带单" "稳赚" "空投" "DM me"))
     (should-not (member broad-term chirp-thread-spam-keywords)))
   (dolist (legitimate-template '("空投详情现已公布" "更多详情请查看公告"))
@@ -223,6 +230,29 @@
                   "空投详情现已公布"
                   "更多详情请查看公告"))
     (should-not (chirp-thread--spam-reply-p (list :text text)))))
+
+(ert-deftest chirp-thread-default-spam-rules-match-collected-author-variants ()
+  "Default spam rules should match collected author-name templates."
+  (dolist (name '("深币Deepcoin93%大户返佣"
+                  "草莓熊🍑找炮友🍑点主页🍑"
+                  "方露🌸同城上门♥线下选妃"
+                  "返85 Gate·Visa卡可领"
+                  "返佣85·Gate｜Visa卡免费"
+                  "👈催情💊春💊男用💊听话 🧳 🎌 🍀"))
+    (should
+     (chirp-thread--spam-reply-p
+      (list :text "普通回复" :author-name name))))
+  (dolist (text '("只入身体🌱🪐不入生活。"
+                  "只入身体🍁🍁不入生活。"))
+    (should (chirp-thread--spam-reply-p (list :text text))))
+  (dolist (name '("Deepcoin 使用体验"
+                  "Gate 平台"
+                  "Visa卡可领"
+                  "同城生活"
+                  "请勿轻信催情药"))
+    (should-not
+     (chirp-thread--spam-reply-p
+      (list :text "普通回复" :author-name name)))))
 
 (ert-deftest chirp-thread-spam-keyword-groups-require-every-fragment ()
   "Grouped spam rules should require every configured fragment."
