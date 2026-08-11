@@ -274,6 +274,24 @@ When ACTIVE is non-nil, prefer the action-specific face for LABEL."
                             pointer hand
                             help-echo "RET: toggle follow"))))
 
+(defun chirp-render--mark-tweet-action-region (start end action)
+  "Mark the region from START to END as tweet ACTION."
+  (when (< start end)
+    (add-text-properties
+     start end
+     `(chirp-tweet-action ,action
+                          keymap ,chirp--tweet-action-map
+                          mouse-face highlight
+                          pointer hand
+                          help-echo
+                          ,(pcase action
+                             ('reply "Mouse-1: reply to this tweet")
+                             ('retweet "Mouse-1: toggle repost/retweet")
+                             ('like "Mouse-1: toggle like")
+                             ('bookmark "Mouse-1: toggle bookmark")
+                             (_ (error "Unknown tweet action: %S" action)))
+                          rear-nonsticky t))))
+
 (defun chirp-render--profile-follow-action-label (user)
   "Return the primary follow button label for USER, or nil."
   (cond
@@ -368,6 +386,14 @@ When ACTIVE is non-nil, emphasize the metric."
              (format "%s" label)))))
     (propertize (format "%s %s" prefix (chirp-format-count value))
                 'face face)))
+
+(defun chirp-render--insert-metric (label value &optional active)
+  "Insert the metric for LABEL and VALUE, returning its buffer region.
+
+When ACTIVE is non-nil, emphasize the metric."
+  (let ((start (point)))
+    (insert (chirp-render--metric-string label value active))
+    (cons start (point))))
 
 (defun chirp-render--insert-filled-text (text &optional prefix prefix-face)
   "Insert TEXT and let Emacs wrap it visually in the current window.
@@ -883,7 +909,8 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
                   (chirp--tweet-expanded-p tweet))
               'full
             article-mode))
-         (meta-start nil))
+         (meta-start nil)
+         (action-regions nil))
     (when reply-parent
       (chirp-render--insert-list-reply-context tweet reply-parent prefix prefix-face))
     (when (and show-reply-context
@@ -938,29 +965,42 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
                                      prefix-face)
     (setq meta-start (point))
     (chirp-render--insert-prefix prefix prefix-face)
-    (insert (chirp-render--metric-string 'reply (plist-get tweet :reply-count)))
+    (push (cons 'reply
+                (chirp-render--insert-metric
+                 'reply (plist-get tweet :reply-count)))
+          action-regions)
     (insert "   ")
-    (insert (chirp-render--metric-string
-             'retweet
-             (plist-get tweet :retweet-count)
-             (plist-get tweet :retweeted-p)))
+    (push (cons 'retweet
+                (chirp-render--insert-metric
+                 'retweet
+                 (plist-get tweet :retweet-count)
+                 (plist-get tweet :retweeted-p)))
+          action-regions)
     (insert "   ")
-    (insert (chirp-render--metric-string
-             'like
-             (plist-get tweet :like-count)
-             (plist-get tweet :liked-p)))
+    (push (cons 'like
+                (chirp-render--insert-metric
+                 'like
+                 (plist-get tweet :like-count)
+                 (plist-get tweet :liked-p)))
+          action-regions)
     (insert "   ")
-    (insert (chirp-render--metric-string 'quote (plist-get tweet :quote-count)))
+    (chirp-render--insert-metric 'quote (plist-get tweet :quote-count))
     (insert "   ")
-    (insert (chirp-render--metric-string
-             'bookmark
-             (plist-get tweet :bookmark-count)
-             (plist-get tweet :bookmarked-p)))
+    (push (cons 'bookmark
+                (chirp-render--insert-metric
+                 'bookmark
+                 (plist-get tweet :bookmark-count)
+                 (plist-get tweet :bookmarked-p)))
+          action-regions)
     (insert "   ")
-    (insert (chirp-render--metric-string 'view (plist-get tweet :view-count)))
+    (chirp-render--insert-metric 'view (plist-get tweet :view-count))
     (insert "\n")
     (insert "\n")
     (chirp-render--mark-entry start (point) tweet)
+    (dolist (action-region action-regions)
+      (pcase-let ((`(,action ,region-start . ,region-end) action-region))
+        (chirp-render--mark-tweet-action-region
+         region-start region-end action)))
     (put-text-property meta-start (point) 'rear-nonsticky t)))
 
 (defun chirp-render-insert-tweet (tweet)

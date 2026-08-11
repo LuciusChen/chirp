@@ -680,6 +680,76 @@
                                  (chirp-render--metric-string 'reply 1 nil))
               'chirp-meta-face)))
 
+(ert-deftest chirp-render-insert-tweet-marks-mouse-action-metrics ()
+  "Tweet action metrics should expose mouse controls without changing faces."
+  (let ((tweet '(:kind tweet
+                 :id "mouse-1"
+                 :text "Clickable actions"
+                 :author-name "Alice"
+                 :author-handle "alice"
+                 :reply-count 1
+                 :retweet-count 2
+                 :like-count 3
+                 :quote-count 4
+                 :bookmark-count 5
+                 :view-count 6
+                 :retweeted-p t
+                 :liked-p t
+                 :bookmarked-p t)))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (let ((inhibit-read-only t))
+        (chirp-render-insert-tweet tweet))
+      (let (actions)
+        (goto-char (point-min))
+        (while (< (point) (point-max))
+          (when-let* ((action (get-text-property (point) 'chirp-tweet-action)))
+            (push (list action
+                        (point)
+                        (get-text-property (point) 'face)
+                        (get-text-property (point) 'mouse-face)
+                        (get-text-property (point) 'pointer)
+                        (get-text-property (point) 'help-echo)
+                        (get-text-property (point) 'keymap)
+                        (get-text-property (point) 'chirp-entry-item))
+                  actions))
+          (goto-char
+           (or (next-single-property-change
+                (point) 'chirp-tweet-action nil (point-max))
+               (point-max))))
+        (setq actions (nreverse actions))
+        (should (equal (mapcar #'car actions)
+                       '(reply retweet like bookmark)))
+        (dolist (action-data actions)
+          (pcase-let ((`(,action ,position ,face ,mouse-face ,pointer ,help
+                                  ,keymap ,entry)
+                       action-data))
+            (should (eq face
+                        (pcase action
+                          ('reply 'chirp-meta-face)
+                          ('retweet 'chirp-retweeted-metric-face)
+                          ('like 'chirp-liked-metric-face)
+                          ('bookmark 'chirp-bookmarked-metric-face))))
+            (should (eq mouse-face 'highlight))
+            (should (eq pointer 'hand))
+            (should (string-match-p "\\`Mouse-1:" help))
+            (should (keymapp keymap))
+            (should (eq (lookup-key keymap [mouse-1])
+                        #'chirp--dispatch-mouse-action))
+            (goto-char position)
+            (should (eq (key-binding (kbd "RET"))
+                        #'chirp-open-at-point))
+            (should (equal entry tweet))))
+        (dolist (metric `((quote . ,(chirp-render--metric-string 'quote 4))
+                          (view . ,(chirp-render--metric-string 'view 6))))
+          (goto-char (point-min))
+          (search-forward (cdr metric))
+          (let ((position (1- (point))))
+            (should-not (get-text-property position 'chirp-tweet-action))
+            (should-not (get-text-property position 'keymap))
+            (should-not (get-text-property position 'mouse-face))))
+        (should buffer-read-only)))))
+
 (ert-deftest chirp-render-insert-tweet-renders-quoted-tweet-preview ()
   "Tweet rendering should show quoted tweet text instead of just its link."
   (let ((tweet (chirp-test--sample-quoted-tweet)))

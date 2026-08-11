@@ -812,6 +812,25 @@ When TWEET is non-nil, use it as the reply or quote target."
   (interactive)
   (chirp-compose-open 'reply (chirp-actions--tweet-at-point)))
 
+(defun chirp--dispatch-mouse-action (event)
+  "Dispatch the tweet action at mouse EVENT."
+  (interactive "e")
+  (let* ((position (event-start event))
+         (window (posn-window position)))
+    (unless (and (window-live-p window)
+                 (integer-or-marker-p (posn-point position)))
+      (user-error "Mouse click is not inside a Chirp buffer"))
+    (with-current-buffer (window-buffer window)
+      (unless (derived-mode-p 'chirp-view-mode)
+        (user-error "Mouse click is not inside a Chirp view"))
+      (posn-set-point position)
+      (pcase (chirp--text-property-at-point 'chirp-tweet-action)
+        ('reply (chirp-reply-at-point))
+        ('retweet (chirp-toggle-retweet-at-point))
+        ('like (chirp-toggle-like-at-point))
+        ('bookmark (chirp-toggle-bookmark-at-point))
+        (_ (user-error "No tweet action at mouse position"))))))
+
 (defun chirp-quote-at-point ()
   "Open a compose buffer to quote the tweet at point."
   (interactive)

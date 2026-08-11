@@ -22,6 +22,7 @@
 (declare-function chirp-thread-open "chirp-thread" (tweet-or-url &optional focus-id buffer))
 (declare-function chirp-thread-add-spam-rule "chirp-thread" (&optional authorp))
 (declare-function chirp-dispatch "chirp-actions" ())
+(declare-function chirp--dispatch-mouse-action "chirp-actions" (event))
 (declare-function chirp-toggle-follow-user-at-point "chirp-actions" ())
 (declare-function chirp-load-more "chirp-timeline" (&optional anchor-id))
 (declare-function chirp-toggle-home-following "chirp-timeline" ())
@@ -436,6 +437,12 @@ revisited later."
   (or (get-text-property (point) property)
       (and (> (point) (point-min))
            (get-text-property (1- (point)) property))))
+
+(defvar chirp--tweet-action-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-1] #'chirp--dispatch-mouse-action)
+    map)
+  "Keymap used by clickable tweet action metrics.")
 
 (defun chirp-author-handle-at-point ()
   "Return the author handle stored at point, or nil."

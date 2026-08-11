@@ -8,6 +8,7 @@
 (require 'cl-lib)
 (require 'transient)
 (require 'chirp-actions)
+(require 'chirp-render)
 
 (defun chirp-test--make-compose-buffer (body)
   "Return a cons of compose and source buffers seeded with BODY."
@@ -390,6 +391,96 @@ Return a list of (compose source foreign)."
             (put-text-property (point-min) (1+ (point-min)) 'chirp-entry-start t)
             (goto-char (point-min)))
           (funcall fn buffer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-actions-mouse-action-targets-clicked-tweet ()
+  "Mouse tweet metrics should dispatch their action for the clicked tweet."
+  (let ((buffer (generate-new-buffer " *chirp-mouse-action-test*"))
+        (first-tweet '(:kind tweet
+                       :id "first"
+                       :text "First tweet"
+                       :author-name "Alice"
+                       :author-handle "alice"
+                       :reply-count 1
+                       :retweet-count 2
+                       :like-count 3
+                       :quote-count 4
+                       :bookmark-count 5
+                       :view-count 6))
+        (clicked-tweet '(:kind tweet
+                         :id "clicked"
+                         :text "Clicked tweet"
+                         :author-name "Bob"
+                         :author-handle "bob"
+                         :reply-count 7
+                         :retweet-count 8
+                         :like-count 9
+                         :quote-count 10
+                         :bookmark-count 11
+                         :view-count 12))
+        dispatched
+        event-position)
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (set-window-buffer (selected-window) buffer)
+          (with-current-buffer buffer
+            (chirp-view-mode)
+            (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                       (lambda (&rest _args) nil)))
+              (let ((inhibit-read-only t))
+                (chirp-render-insert-tweet first-tweet)
+                (chirp-render-insert-tweet clicked-tweet)))
+            (let (positions)
+              (dolist (action '(reply retweet like bookmark))
+                (goto-char (point-min))
+                (let (position)
+                  (while (< (point) (point-max))
+                    (when (eq (get-text-property (point) 'chirp-tweet-action)
+                              action)
+                      (setq position (point)))
+                    (goto-char
+                     (or (next-single-property-change
+                          (point) 'chirp-tweet-action nil (point-max))
+                         (point-max))))
+                  (push (cons action position) positions)))
+              (cl-letf (((symbol-function 'event-start)
+                         (lambda (_event) event-position))
+                        ((symbol-function 'chirp-reply-at-point)
+                         (lambda ()
+                           (setq dispatched
+                                 (list 'reply (chirp-entry-id-at-point)))))
+                        ((symbol-function 'chirp-toggle-retweet-at-point)
+                         (lambda ()
+                           (setq dispatched
+                                 (list 'retweet (chirp-entry-id-at-point)))))
+                        ((symbol-function 'chirp-toggle-like-at-point)
+                         (lambda ()
+                           (setq dispatched
+                                 (list 'like (chirp-entry-id-at-point)))))
+                        ((symbol-function 'chirp-toggle-bookmark-at-point)
+                         (lambda ()
+                           (setq dispatched
+                                 (list 'bookmark (chirp-entry-id-at-point))))))
+                (dolist (action '(reply retweet like bookmark))
+                  (setq event-position
+                        (list (selected-window)
+                              nil
+                              (cons 0 0)
+                              nil
+                              nil
+                              (cdr (assq action positions))
+                              nil
+                              nil
+                              nil
+                              nil))
+                  (let* ((position (posn-point event-position))
+                         (keymap (get-text-property position 'keymap)))
+                    (should (eq (lookup-key keymap [mouse-1])
+                                #'chirp--dispatch-mouse-action))
+                    (funcall (lookup-key keymap [mouse-1]) '(mouse-1)))
+                  (should (equal dispatched (list action "clicked"))))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

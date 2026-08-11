@@ -103,6 +103,7 @@ M-x chirp-profile-following-users
 - `q`: close the current Chirp window; on For You and Following, keep the timeline buffer alive so you can switch back later
 - When Home or Following has no more older posts, Chirp says so instead of leaving the last loading message in place
 - `RET`: expand an article when point is on `Show more`; otherwise open the current tweet or profile, or open large media when point is on a thumbnail
+- `Mouse-1` on a tweet's reply, repost/retweet, like, or bookmark metric opens or toggles that action for the clicked tweet
 - In profile summaries, `RET` on `Followers` or `Following` opens that user list
 - In profile buffers, `RET` on the subview strip switches between available profile timelines
 - `m`: open the first media item for the current tweet
@@ -128,8 +129,7 @@ over the standard 280 weighted-character limit. Chirp passes the complete text
 through unchanged, and `twitter-cli` automatically selects its long-form
 posting operation for posts, replies, and quotes.
 
-Tweet metrics also reflect the current local state: liked tweets show `Liked`,
-bookmarked tweets show `Saved`, and retweeted tweets show `RTed`.
+Tweet metrics also reflect the current local state: liked tweets show `Liked`, bookmarked tweets show `Saved`, and retweeted tweets show `RTed`. The visible reply, repost/retweet, like, and bookmark metrics also provide mouse-1 action controls.
 Every tweet returned by the Likes view is shown with its like state active, even when twitter-cli omits the per-item `favorited` field.
 Clipboard image paste uses `wl-paste` on Wayland and `pngpaste` on macOS when available.
 
