@@ -109,6 +109,7 @@
   "Thread loading should hide matching replies without hiding the focus tweet."
   (let ((buffer (generate-new-buffer " *chirp-thread-spam-test*"))
         (chirp-thread-spam-keywords '("dm me" "t.me/" "推广昵称" "  "))
+        (chirp-thread-spam-rules-file nil)
         thread-callback
         rendered)
     (unwind-protect
@@ -151,8 +152,133 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest chirp-thread-user-spam-rules-load-and-deduplicate ()
+  "Persistent rules should ignore comments, blanks, and case duplicates."
+  (let ((file (make-temp-file "chirp-spam-rules-")))
+    (unwind-protect
+        (let ((chirp-thread-spam-rules-file file))
+          (with-temp-file file
+            (insert "# Local rules\n\n  Promo Name  \nspam_handle\nSPAM_HANDLE\n"))
+          (should (equal (chirp-thread--read-user-spam-rules)
+                         '("Promo Name" "spam_handle"))))
+      (delete-file file))))
+
+(ert-deftest chirp-thread-user-spam-rules-share-reply-match-scope ()
+  "One persistent rule set should inspect reply content and author identity."
+  (let ((file (make-temp-file "chirp-spam-rules-"))
+        (chirp-thread-spam-keywords '("built-in phrase")))
+    (unwind-protect
+        (let ((chirp-thread-spam-rules-file file))
+          (with-temp-file file
+            (insert "local phrase\nPromo Name\nspam_handle\n"))
+          (should
+           (equal
+            (mapcar
+             (lambda (tweet) (plist-get tweet :id))
+             (chirp-thread--filter-spam-replies
+              (list '(:id "focus" :text "built-in phrase")
+                    '(:id "built-in" :text "contains BUILT-IN PHRASE")
+                    '(:id "text" :text "contains LOCAL PHRASE")
+                    '(:id "name" :text "ordinary" :author-name "Promo Name 01")
+                    '(:id "handle" :text "ordinary" :author-handle "Spam_Handle_01")
+                    '(:id "related" :text "local phrase"
+                      :timeline-context related)
+                    '(:id "legit" :text "ordinary" :author-name "Alice"))))
+            '("focus" "related" "legit"))))
+      (delete-file file))))
+
+(ert-deftest chirp-thread-user-spam-rules-respect-filter-disable ()
+  "Setting the keyword option to nil should also disable persistent rules."
+  (let ((file (make-temp-file "chirp-spam-rules-"))
+        (chirp-thread-spam-keywords nil))
+    (unwind-protect
+        (let ((chirp-thread-spam-rules-file file)
+              (tweets (list '(:id "focus" :text "ordinary")
+                            '(:id "reply" :text "local phrase"))))
+          (with-temp-file file
+            (insert "local phrase\n"))
+          (should (eq (chirp-thread--filter-spam-replies tweets) tweets)))
+      (delete-file file))))
+
+(ert-deftest chirp-thread-add-spam-rule-persists-and-avoids-duplicates ()
+  "Adding a rule should persist once and refresh only for a new rule."
+  (let ((file (make-temp-file "chirp-spam-rules-"))
+        (chirp-thread-spam-keywords '("built-in"))
+        (refresh-count 0)
+        initial-input)
+    (unwind-protect
+        (let ((chirp-thread-spam-rules-file file))
+          (with-temp-buffer
+            (chirp-view-mode)
+            (setq-local chirp--refresh-function #'ignore)
+            (let ((inhibit-read-only t))
+              (insert "Selected phrase"))
+            (set-mark (point-min))
+            (activate-mark)
+            (let ((transient-mark-mode t))
+              (cl-letf (((symbol-function 'read-string)
+                         (lambda (_prompt &optional initial-input-arg &rest _args)
+                           (setq initial-input initial-input-arg)
+                           "Selected phrase"))
+                        ((symbol-function 'chirp-refresh)
+                         (lambda ()
+                           (cl-incf refresh-count))))
+                (chirp-thread-add-spam-rule)
+                (should (equal initial-input "Selected phrase"))
+                (should (= refresh-count 1))
+                (should (equal (chirp-thread--read-user-spam-rules)
+                               '("Selected phrase")))
+                (chirp-thread-add-spam-rule)
+                (should (= refresh-count 1))
+                (should (equal (chirp-thread--read-user-spam-rules)
+                               '("Selected phrase")))))))
+      (delete-file file))))
+
+(ert-deftest chirp-thread-spam-rule-suggestion-can-use-author ()
+  "A prefix request should suggest the current author display name."
+  (with-temp-buffer
+    (cl-letf (((symbol-function 'chirp-entry-at-point)
+               (lambda ()
+                 '(:kind tweet :text "Reply text" :author-name "Promo Author"))))
+      (should (equal (chirp-thread--spam-rule-suggestion nil) "Reply text"))
+      (should (equal (chirp-thread--spam-rule-suggestion t) "Promo Author")))))
+
+(ert-deftest chirp-thread-add-spam-rule-rejects-comments ()
+  "Interactive additions should reject values parsed as file comments."
+  (let ((chirp-thread-spam-rules-file (make-temp-file "chirp-spam-rules-")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'read-string)
+                   (lambda (&rest _args) "# ignored")))
+          (should-error (chirp-thread-add-spam-rule) :type 'user-error)
+          (should (string-empty-p
+                   (with-temp-buffer
+                     (insert-file-contents chirp-thread-spam-rules-file)
+                     (buffer-string)))))
+      (delete-file chirp-thread-spam-rules-file))))
+
+(ert-deftest chirp-view-mode-binds-spam-rule-capture ()
+  "The documented spam capture key should invoke its command."
+  (should (eq (lookup-key chirp-view-mode-map (kbd "S"))
+              #'chirp-thread-add-spam-rule)))
+
+(ert-deftest chirp-thread-edit-spam-rules-opens-configured-file ()
+  "The edit command should create the parent directory and open the rule file."
+  (let* ((directory (make-temp-file "chirp-spam-directory-" t))
+         (nested-directory (expand-file-name "nested" directory))
+         (file (expand-file-name "rules.txt" nested-directory))
+         opened)
+    (unwind-protect
+        (let ((chirp-thread-spam-rules-file file))
+          (cl-letf (((symbol-function 'find-file)
+                     (lambda (path)
+                       (setq opened path))))
+            (chirp-thread-edit-spam-rules)
+            (should (file-directory-p nested-directory))
+            (should (equal opened file))))
+      (delete-directory directory t))))
+
 (ert-deftest chirp-thread-spam-keywords-default-to-collected-templates ()
-  "Spam defaults should contain collected templates but omit broad terms."
+  "Spam defaults should contain accepted templates and omit unsafe terms."
   (dolist (template '("三网优化专线"
                       "刚放个人主页上了"
                       "比她好看的没她骚"
@@ -160,6 +286,7 @@
                       "应该没人比我玩的开"
                       "應該沒人比我玩得開"
                       "线下sao货"
+                      "返佣"
                       "比我好看的没我骚"
                       "有人想锐评一下我的福嘛"
                       "check my bio asappp"
@@ -168,7 +295,7 @@
     (should (member template chirp-thread-spam-keywords)))
   (should (member '("体制内幼师" "sao的很")
                   chirp-thread-spam-keywords))
-  (dolist (template '(("Deepcoin" "大户返佣")
+  (dolist (template '(("FoxLink" "银狐")
                       ("找炮友" "点主页")
                       ("同城上门" "线下选妃")
                       ("Gate" "Visa卡")
@@ -224,6 +351,7 @@
                   "线下sao货pK比她sao🎍🎼比我骚的没我好看"
                   "比我好看的没我骚🎍🎼比我骚的没我好看"
                   "我果然太涩了🌜🤲有人想锐评一下我的福嘛"
+                  "FoxLink🚀银狐全球高速连接"
                   "体制内幼师🌻📣sao的很Q1"))
     (should (chirp-thread--spam-reply-p (list :text text))))
   (dolist (text '("我是一名体制内幼师"
@@ -234,6 +362,7 @@
 (ert-deftest chirp-thread-default-spam-rules-match-collected-author-variants ()
   "Default spam rules should match collected author-name templates."
   (dolist (name '("深币Deepcoin93%大户返佣"
+                  "FoxLink银狐全球高速连接"
                   "草莓熊🍑找炮友🍑点主页🍑"
                   "方露🌸同城上门♥线下选妃"
                   "返85 Gate·Visa卡可领"
@@ -245,7 +374,9 @@
   (dolist (text '("只入身体🌱🪐不入生活。"
                   "只入身体🍁🍁不入生活。"))
     (should (chirp-thread--spam-reply-p (list :text text))))
-  (dolist (name '("Deepcoin 使用体验"
+  (dolist (name '("FoxLink 服务"
+                  "银狐读书会"
+                  "Deepcoin 使用体验"
                   "Gate 平台"
                   "Visa卡可领"
                   "同城生活"

@@ -108,6 +108,7 @@ M-x chirp-profile-following-users
 - `m`: open the first media item for the current tweet
 - `D`: download the current media, or choose one media item from the current tweet; photos try the original-resolution URL and videos use the highest-quality variant
 - `A`: open the author profile
+- `S`: add a persistent spam phrase or keyword using the active region or current tweet text; use `C-u S` to start with the author's display name
 - `x`: open the actions menu for timeline switching, your own profile, bookmarks, liked tweets, lists, post/reply/quote, follow/unfollow, translation, and tweet actions
 - `x T`: translate the tweet at point and show the result below its original text
 - `o`: open the current item in a browser
@@ -136,10 +137,16 @@ Clipboard image paste uses `wl-paste` on Wayland and `pngpaste` on macOS when av
 
 Chirp hides likely spam replies using a conservative default list collected from repeated public reply spam, prioritizing Chinese templates before English ones. Matching configured literal phrases against reply text, expanded links, the author's display name, and the author's `@handle` ignores case and never filters the thread's focus tweet. A nested list requires every fragment to occur, which catches split templates without filtering on either broad fragment alone; set the option to nil to disable filtering.
 
+Press `S` on a reply to edit and save a literal phrase, or select the useful portion first so it becomes the initial input. Use `C-u S` to start from the author's display name. Chirp stores accepted entries under `user-emacs-directory` (`~/.emacs.d/chirp/spam-rules.txt` in the usual setup), one UTF-8 literal per line, de-duplicates them without regard to case, and immediately refreshes the current view. Blank lines and lines beginning with `#` are ignored. Nicknames, handles, reply text, and expanded links all use this same combined rule set.
+
+Run `M-x chirp-thread-edit-spam-rules` to edit the file directly, or customize `chirp-thread-spam-rules-file` to keep it in another location such as a dotfiles repository. After manual edits, refresh an open thread with `g`. Complex rules requiring every fragment to occur remain available through `chirp-thread-spam-keywords` and the source-controlled defaults.
+
+To propose local rules for everyone, open the [spam rule submission form](https://github.com/LuciusChen/chirp/issues/new?template=spam-rule.yml), paste one or more entries from the local file, and include public examples or other evidence. The same submitted rule covers reply text and author identity, so it does not need separate nickname and content variants. Built-in additions are reviewed for false positives; maintainers can keep a specific literal rule or turn broad fragments into an all-fragment rule in [`lisp/chirp-spam-rules.el`](lisp/chirp-spam-rules.el).
+
 ```elisp
 (setq chirp-thread-spam-keywords nil) ; Disable filtering entirely.
 
-;; Or replace the defaults with local patterns.
+;; Or use Elisp for grouped or fully customized in-memory rules.
 (setq chirp-thread-spam-keywords
       '("联系我领取"
         ("体制内幼师" "sao的很")

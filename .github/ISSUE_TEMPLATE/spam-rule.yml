@@ -1,0 +1,39 @@
+name: Spam rule submission
+description: Propose reply spam phrases or keywords for Chirp's built-in rules
+title: "[Spam rules] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Submit repeated, specific spam patterns here. Chirp applies every accepted rule to reply text, author nicknames, `@handles`, and expanded links through one shared rule set.
+
+  - type: textarea
+    id: rules
+    attributes:
+      label: Candidate rules
+      description: Enter one literal phrase or keyword per line. Keep enough context to avoid matching legitimate replies.
+      placeholder: |
+        repeated spam phrase
+        spam nickname fragment
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Public examples or evidence
+      description: Link public example posts when possible, or explain where each pattern repeatedly appeared.
+      placeholder: |
+        https://x.com/example/status/123
+        The first rule appeared in several unrelated replies.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: False-positive check
+      options:
+        - label: I removed broad standalone terms that could commonly occur in legitimate replies.
+          required: true
