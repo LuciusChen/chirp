@@ -5,6 +5,8 @@ history remains available in Git.
 
 ## Unreleased
 
+- Move X access into Emacs. Configure the X session in auth-source or the environment.
+
 ### Added
 
 - Load additional pages of bookmarks and replies in thread views with `N` or by moving past the last entry.

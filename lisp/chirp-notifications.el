@@ -13,6 +13,8 @@
 (require 'chirp-core)
 (require 'chirp-backend)
 
+(defvar chirp-notifications-mode)
+
 (declare-function notifications-notify "notifications" (&rest params))
 
 (defcustom chirp-notifications-interval 300

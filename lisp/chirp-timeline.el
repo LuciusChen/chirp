@@ -466,7 +466,7 @@ When HANDLE is nil, resolve the currently authenticated account first."
                 buffer
                 title
                 (lambda () (chirp-timeline-open-likes nil buffer))
-                "twitter-cli returned a whoami payload Chirp could not parse."))))
+                "X returned a whoami payload Chirp could not parse."))))
          (lambda (message)
            (when (chirp-request-current-p buffer token)
              (chirp-timeline--set-kind buffer nil)

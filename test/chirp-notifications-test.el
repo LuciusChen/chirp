@@ -8,14 +8,14 @@
 (require 'cl-lib)
 (require 'chirp-notifications)
 
-(ert-deftest chirp-backend-notifications-builds-minimal-command ()
-  "Notification requests should only pass the command and result limit."
+(ert-deftest chirp-backend-notifications-requests-count ()
+  "Notification reads should forward the requested result limit."
   (let (captured-args)
-    (cl-letf (((symbol-function 'chirp-backend-request)
-               (lambda (args _callback &optional _errback)
+    (cl-letf (((symbol-function 'chirp-x-graphql-request)
+               (lambda (_operation args _callback &rest _options)
                  (setq captured-args args))))
       (chirp-backend-notifications #'ignore nil 12))
-    (should (equal captured-args '("notifications" "--max" "12")))))
+    (should (equal (cdr (assoc "count" captured-args)) 12))))
 
 (ert-deftest chirp-notifications-first-check-is-baseline-and-new-items-notify-once ()
   "The first response seeds ids; later unseen activities notify once."

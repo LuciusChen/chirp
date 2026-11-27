@@ -1,47 +1,16 @@
 # chirp.el
 
-`chirp.el` is an Emacs browser for X/Twitter for people who want to read, search, inspect, and act on posts without leaving Emacs. Browsing views use dedicated Emacs buffers; read-only text views use Chirp's `special-mode` UI, image views use `image-mode`, and compose buffers remain editable. Chirp delegates authentication and data fetching to [`twitter-cli`](https://github.com/public-clis/twitter-cli).
+`chirp.el` is an Emacs browser for X/Twitter for people who want to read, search, inspect, and act on posts without leaving Emacs. Browsing views use dedicated Emacs buffers; read-only text views use Chirp's `special-mode` UI, image views use `image-mode`, and compose buffers remain editable. Chirp fetches data directly from X.
 
 ## What you can do
 
 Use Chirp to follow timelines, search and inspect posts, move from a post to its thread, author, profile lists, or media, and perform common post, reply, quote, like, bookmark, and follow actions without leaving Emacs. Optional desktop notifications surface account activity, and translation is available on demand.
 
-Chirp is a client around `twitter-cli`, not a replacement for it: authentication, X API compatibility, and network behavior belong to the CLI. Direct messages are not implemented, and publishing outcomes and account limits remain dependent on the external CLI and X.
-
 ## Quick Start
 
-Chirp requires GNU Emacs 29.1 or newer and `twitter-cli` installed and available as `twitter` or `twitter-cli`.
+Chirp requires GNU Emacs 29.1 or newer. Configure your X session in Emacs auth-source using host `x.com` with users `auth_token` and `ct0`, or set `TWITTER_AUTH_TOKEN` and `TWITTER_CT0` for the Emacs process.
 
-### Install `twitter-cli`
-
-If you want the `twitter-cli` fork/version currently used by Chirp before upstream merges land, install the `stable` branch from this fork:
-
-```bash
-uv tool install --force "git+https://github.com/LuciusChen/twitter-cli.git@stable"
-```
-
-If you keep a local checkout and want Chirp to follow that checkout directly:
-
-```bash
-cd ~/repos/twitter-cli
-git switch stable
-uv tool install --force -e .
-```
-
-The editable install is convenient for local development, but remember that the active CLI will follow whatever branch that checkout is currently on.
-
-Chirp auto-detects either executable name by default. If your binary lives elsewhere, customize:
-
-```elisp
-(setq chirp-cli-command "/path/to/twitter")
-```
-
-If Emacs does not inherit your shell `PATH`, Chirp also checks a few common user bin directories such as `~/.local/bin`. You can extend that list with:
-
-```elisp
-(setq chirp-cli-search-paths
-      '("~/.local/bin" "~/bin" "/some/other/bin"))
-```
+For auth-source, the two entries in your encrypted authinfo file have the form `machine x.com login auth_token password VALUE` and `machine x.com login ct0 password VALUE`. Use values from the same X session.
 
 ### Load Chirp
 
@@ -124,13 +93,10 @@ Inside the compose buffer:
 - `C-c C-c`: close the draft immediately and send it in the background
 - `C-c C-k`: cancel the draft
 
-With the `twitter-cli` `stable` branch above, Premium accounts can send drafts
-over the standard 280 weighted-character limit. Chirp passes the complete text
-through unchanged, and `twitter-cli` automatically selects its long-form
-posting operation for posts, replies, and quotes.
+Chirp selects the long-form operation for drafts exceeding the standard weighted length.
 
 Tweet metrics also reflect the current local state: liked tweets show `Liked`, bookmarked tweets show `Saved`, and retweeted tweets show `RTed`. The visible reply, repost/retweet, like, and bookmark metrics also provide mouse-1 action controls.
-Every tweet returned by the Likes view is shown with its like state active, even when twitter-cli omits the per-item `favorited` field.
+Every tweet returned by the Likes view is shown with its like state active, even when X omits the per-item `favorited` field.
 Clipboard image paste uses `wl-paste` on Wayland and `pngpaste` on macOS when available.
 
 ## Thread Reply Filtering
@@ -177,7 +143,7 @@ Avatars and tweet media thumbnails can be hidden independently:
 ```
 
 When tweet media thumbnails are hidden, Chirp keeps compact text media entries
-so media commands still work, and shows alt text when twitter-cli provides it.
+so media commands still work, and shows alt text when X provides it.
 
 ## Media
 
@@ -226,12 +192,7 @@ customize the short in-memory backend cache:
 
 ## Notes
 
-- The package expects `twitter-cli --json` to return the documented envelope from `SCHEMA.md`.
-- The parser is deliberately defensive because upstream X payloads can drift.
-- Chirp retries explicit network and server failures only for safely repeatable requests; post, reply, and quote commands are never retried automatically because a lost response can leave the publishing outcome unknown.
-- X application error `344` is a posting-window limit rather than a transport failure; with the current `twitter-cli` stable branch, Chirp reports it without retrying so the account can wait for the window to reset.
-- Chirp passes the CLI’s continuation cursor to the same feed, bookmark list, or thread and appends new entries. Bookmark and thread pagination require a CLI that returns `pagination.nextCursor` for those commands.
-- Automated tests exercise the `twitter-cli` JSON and process boundary without sending live X writes; account limits and network behavior remain external to the test suite.
+- X may change its web API independently of Chirp releases. Creating a bookmark currently returns HTTP 404 in live testing. Reading bookmarks is available.
 
 ## License
 

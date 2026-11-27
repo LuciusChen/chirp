@@ -189,7 +189,7 @@ cancelled, the attachment is removed, or the send completes."
     (chirp-actions--refresh-buffer buffer)))
 
 (defun chirp-actions--perform (args on-success &optional on-error)
-  "Run twitter-cli ARGS and call ON-SUCCESS with the decoded payload.
+  "Run action ARGS and call ON-SUCCESS with the decoded payload.
 
 When ON-ERROR is non-nil, call it with the human-readable error message."
   (chirp-backend-request
@@ -666,7 +666,7 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
     args))
 
 (defun chirp-compose--command-args ()
-  "Return twitter-cli arguments for the current draft."
+  "Return backend arguments for the current draft."
   (let ((text (chirp-compose--body-text))
         (image-args (chirp-compose--image-args)))
     (pcase chirp-compose-kind
@@ -877,7 +877,7 @@ When TWEET is non-nil, use it as the reply or quote target."
               t)
              (message "Translated to %s." destination))
          (chirp-actions--show-error
-          "No translated text returned by twitter-cli")))
+          "No translated text returned by X")))
      #'chirp-actions--show-error)))
 
 (transient-define-prefix chirp-dispatch ()

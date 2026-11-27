@@ -11,8 +11,7 @@
 
 ;;; Commentary:
 
-;; chirp.el is a lightweight X/Twitter browser for Emacs.  It delegates
-;; network access and authentication to twitter-cli, then renders timelines,
+;; chirp.el is a lightweight X/Twitter browser for Emacs.  It retrieves data directly from X and renders timelines,
 ;; tweet threads, and profiles inside special-mode buffers.
 
 ;;; Code:
@@ -66,7 +65,7 @@
    (lambda (user _envelope)
      (if-let* ((handle (plist-get user :handle)))
          (chirp-profile-open handle)
-       (message "twitter-cli returned a whoami payload Chirp could not parse.")))
+       (message "X returned a whoami payload Chirp could not parse.")))
    (lambda (message)
      (message "%s" message))))
 
