@@ -292,6 +292,9 @@ restore point to that entry after rendering."
                       (chirp-backend-invalidate-article focus-id))
                     (chirp-thread-open request-target focus-id buffer)))
          (saved-ordered nil)
+         (next-cursor nil)
+         (loading-more nil)
+         (ready nil)
          (prefetched-article nil)
          (article-requested-p nil)
          (token nil))
@@ -300,11 +303,36 @@ restore point to that entry after rendering."
            (chirp-thread--render-view
             buffer title refresh saved-ordered anchor-id display-p)
            (with-current-buffer buffer
+             (setq-local chirp--timeline-next-cursor next-cursor
+                         chirp--timeline-exhausted-p (and ready (not next-cursor))
+                         chirp--timeline-load-more-function
+                         (and next-cursor #'load-more))
              (setq-local chirp--rerender-function
                          (lambda ()
                            (render-current
                             (with-current-buffer buffer
                               (chirp-capture-point-anchor)))))))
+         (load-more (anchor-id)
+           (unless (or loading-more (null next-cursor))
+             (setq loading-more t)
+             (chirp-set-status buffer "Loading replies...")
+             (chirp-backend-thread
+              request-target
+              (lambda (tweets envelope)
+                (when (chirp-request-current-p buffer token)
+                  (let ((cursor (chirp-backend-envelope-next-cursor envelope)))
+                    (setq next-cursor (unless (equal cursor next-cursor) cursor)
+                          loading-more nil
+                          saved-ordered
+                          (chirp-thread--filter-spam-replies
+                           (chirp-append-unique-tweets saved-ordered tweets))))
+                  (present-current anchor-id)
+                  (chirp-clear-status buffer)))
+              (lambda (reason)
+                (when (chirp-request-current-p buffer token)
+                  (setq loading-more nil)
+                  (chirp-set-status buffer reason 'error)))
+              next-cursor)))
          (prefetch-current ()
            (chirp-media-prefetch-tweets saved-ordered buffer)
            (chirp-enrich-quoted-tweets saved-ordered buffer))
@@ -346,9 +374,11 @@ restore point to that entry after rendering."
       (maybe-request-article tweet-or-url))
     (chirp-backend-thread
      request-target
-     (lambda (tweets _envelope)
+     (lambda (tweets envelope)
        (when (chirp-request-current-p buffer token)
-         (setq saved-ordered
+         (setq ready t
+               next-cursor (chirp-backend-envelope-next-cursor envelope)
+               saved-ordered
                (chirp-thread--filter-spam-replies
                 (chirp-thread--reorder tweets focus-id)))
          (apply-prefetched-article)

@@ -411,6 +411,26 @@
     (should (equal captured-args
                    '("tweet" "123" "--max" "20")))))
 
+(ert-deftest chirp-backend-continues-bookmarks-and-cached-threads ()
+  "Pass continuation cursors to the CLI even when the first thread page is cached."
+  (let ((chirp-backend--read-cache (make-hash-table :test #'equal))
+        (chirp-backend--pending-read-requests (make-hash-table :test #'equal))
+        (chirp-backend-read-cache-ttl 60)
+        (chirp-thread-max-results 7)
+        calls)
+    (cl-letf (((symbol-function 'chirp-backend-request)
+               (lambda (args success &optional _errback)
+                 (push args calls)
+                 (funcall success nil nil))))
+      (chirp-backend-thread "123" #'ignore)
+      (chirp-backend-thread "123" #'ignore nil "thread-page")
+      (chirp-backend-thread "123" #'ignore)
+      (chirp-backend-bookmarks #'ignore nil 5 "bookmark-page"))
+    (should (equal (nreverse calls)
+                   '(("tweet" "123" "--max" "7")
+                     ("tweet" "123" "--max" "7" "--cursor" "thread-page")
+                     ("bookmarks" "--max" "5" "--cursor" "bookmark-page"))))))
+
 (ert-deftest chirp-backend-process-does-not-retry-http-zero-business-errors ()
   "HTTP zero business errors should reach the caller without a retry."
   (let ((result

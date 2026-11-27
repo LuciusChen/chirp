@@ -7,6 +7,7 @@ history remains available in Git.
 
 ### Added
 
+- Load additional pages of bookmarks and replies in thread views with `N` or by moving past the last entry.
 - Inline tweet translation from the actions menu with `T`.
 - Native desktop notifications for account activity.
 - User-handle completion while composing posts.
