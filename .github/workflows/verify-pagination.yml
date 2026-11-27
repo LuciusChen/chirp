@@ -1,0 +1,49 @@
+name: Verify pagination changes
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  emacs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check the diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: git diff --check "$BASE" HEAD
+      - name: Install Emacs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends emacs-nox elpa-package-lint
+          emacs --version
+      - name: Run all ERT tests
+        run: |
+          emacs -Q --batch -L . -L lisp -l ert \
+            --eval '(mapc (function load) (directory-files (expand-file-name "test") t "-test\\.el$"))' \
+            -f ert-run-tests-batch-and-exit
+      - name: Byte compile
+        if: success() || failure()
+        run: |
+          emacs -Q --batch -L . -L lisp --eval '(setq byte-compile-error-on-warn t)' \
+            -f batch-byte-compile chirp.el lisp/*.el test/*.el
+      - name: Check docstrings
+        if: success() || failure()
+        run: |
+          emacs -Q --batch -L . -L lisp -l checkdoc \
+            --eval '(setq checkdoc-autofix-flag (quote never))' \
+            --eval '(advice-add (quote checkdoc-error) :after (lambda (&rest _) (setq verification-doc-warnings t)))' \
+            --eval '(defvar verification-doc-warnings nil)' \
+            --eval '(mapc (function checkdoc-file) (cons "chirp.el" (file-expand-wildcards "lisp/*.el")))' \
+            --eval '(kill-emacs (if verification-doc-warnings 1 0))'
+      - name: Check package metadata
+        if: success() || failure()
+        run: |
+          emacs --batch -L . -L lisp -l package-lint \
+            --eval '(setq-default package-lint-main-file (expand-file-name "chirp.el") package-lint-batch-fail-on-warnings t)' \
+            -f package-lint-batch-and-exit chirp.el lisp/*.el
