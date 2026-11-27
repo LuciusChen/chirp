@@ -970,6 +970,22 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
                              #'ert-fail))
     (should (equal outcome "Done"))))
 
+(ert-deftest chirp-backend-search-http-error-is-a-read-failure ()
+  (let (failure)
+    (cl-letf (((symbol-function 'chirp-x-credentials)
+               (lambda () '(:auth-token "example" :ct0 "csrf" :bearer-token "public")))
+              ((symbol-function 'url-retrieve)
+               (lambda (url callback &rest _)
+                 (should (string-suffix-p "/SearchTimeline" url))
+                 (should (equal url-request-method "POST"))
+                 (with-current-buffer (generate-new-buffer " *chirp search response*")
+                   (setq-local url-http-response-status 503)
+                   (setq-local url-http-end-of-headers (point-marker))
+                   (funcall callback nil)))))
+      (chirp-backend-search "emacs" #'ert-fail (lambda (reason) (setq failure reason))))
+    (should (string-match-p "HTTP 503" failure))
+    (should-not (string-match-p "write" failure))))
+
 (provide 'chirp-backend-test)
 
 ;;; chirp-backend-test.el ends here

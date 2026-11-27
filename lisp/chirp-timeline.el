@@ -75,6 +75,7 @@
 
 (defun chirp-timeline--read-list-target ()
   "Prompt for one accessible list and return its id."
+  (message "Loading lists… C-g cancels")
   (let* ((lists (chirp-backend-lists-sync))
          (choices (mapcar (lambda (list-info)
                             (cons (chirp-timeline--list-candidate list-info)
@@ -190,7 +191,9 @@ DISPLAY-P, and NEXT-CURSOR control pagination and presentation."
      (lambda ()
        (if tweets
            (chirp-render-insert-tweet-list tweets)
-         (chirp-render-insert-empty "No posts returned."))))
+         (chirp-render-insert-empty
+          (if (eq kind 'bookmarks) "No saved bookmarks.  x actions · g refresh"
+            "No posts returned.  x actions · g refresh")))))
     (with-current-buffer buffer
       (setq-local chirp--timeline-kind kind)
       (setq-local chirp--timeline-limit (and kind limit))
@@ -263,7 +266,9 @@ contains response pagination metadata."
              :next-cursor next-cursor)
           (when exhausted-p
             (message "No older posts.")))
-        (chirp-clear-status buffer)))
+        (if exhausted-p
+            (chirp-set-status buffer "End of timeline · g refresh" 'info)
+          (chirp-clear-status buffer))))
      (refreshing
       (let* ((merged (chirp-timeline--merge-refreshed-tweets previous-tweets tweets))
              (merged-tweets (plist-get merged :tweets))
@@ -343,6 +348,8 @@ requests a specific pagination page."
          (previous-next-cursor (and (or loading-more refreshing)
                                     (with-current-buffer buffer
                                       chirp--timeline-next-cursor)))
+         (same-view (with-current-buffer buffer
+                      (and (eq chirp--timeline-kind kind) chirp--refresh-function)))
          (token (if (or loading-more refreshing)
                     (progn
                       (with-current-buffer buffer
@@ -378,10 +385,12 @@ requests a specific pagination page."
                (setq-local chirp--timeline-loading-more nil)
                (setq-local chirp--request-token nil))
              (chirp-timeline--set-kind buffer kind)
-             (if (or loading-more refreshing)
+             (if (or loading-more refreshing same-view)
                  (progn
                    (chirp-set-status buffer
-                                     (if refreshing "Refresh failed" "Load more failed")
+                                     (format "%s · %s · g retry"
+                                             (if loading-more "Load more failed" "Refresh failed")
+                                             (string-trim reason))
                                      'error)
                    (message "%s" (replace-regexp-in-string "[\r\n]+" "  " reason)))
                (chirp-show-error buffer title refresh reason)))))
@@ -406,6 +415,7 @@ requests a specific pagination page."
    (chirp--timeline-loading-more
     (message "Already loading older posts..."))
    ((or chirp--timeline-exhausted-p (null chirp--timeline-next-cursor))
+    (chirp-set-status (current-buffer) "End of timeline · g refresh" 'info)
     (message "No older posts."))
    (t
     (chirp-timeline--open

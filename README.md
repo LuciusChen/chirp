@@ -19,7 +19,7 @@ For auth-source, the two entries in your encrypted authinfo file have the form `
 (require 'chirp)
 ```
 
-Run `M-x chirp-home` to open the For You timeline in a dedicated buffer.
+Run `M-x chirp` (or `M-x chirp-home`) to open the For You timeline in a dedicated buffer.
 
 ## Notifications
 
@@ -90,7 +90,7 @@ Inside the compose buffer:
 - `C-c C-d`: remove an attached image
 - `M-TAB`: complete a user handle after typing an `@` prefix (also available
   to completion-at-point frontends such as Corfu)
-- `C-c C-c`: close the draft immediately and send it in the background
+- `C-c C-c`: return to browsing while sending. A failed send restores the editable draft and its attachments. Use `C-c C-o` to check your posts before retrying
 - `C-c C-k`: cancel the draft
 
 Chirp selects the long-form operation for drafts exceeding the standard weighted length.

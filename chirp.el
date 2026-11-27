@@ -40,6 +40,9 @@
   (chirp-timeline-open-home))
 
 ;;;###autoload
+(defalias 'chirp #'chirp-home)
+
+;;;###autoload
 (defun chirp-following ()
   "Open the following timeline."
   (interactive)

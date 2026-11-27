@@ -150,7 +150,7 @@
      :query-id "lIDpu_NWL7_VhimGGt0o6A" :name "Likes"
      :features ,chirp-backend--tweet-features)
     (search
-     :query-id "VhUd6vHVmLBcw0uX-6jMLA" :name "SearchTimeline" :method post
+     :query-id "VhUd6vHVmLBcw0uX-6jMLA" :name "SearchTimeline" :method post :query t
      :features ,chirp-backend--tweet-features)
     (bookmarks
      :query-id "2neUNDqrrFzbLui8yallcQ" :name "Bookmarks"
@@ -1500,12 +1500,6 @@ ERRBACK receives transport or response failures."
 (defun chirp-backend-lists-sync ()
   "Return the list picker candidates."
   (chirp-backend--await #'chirp-backend-lists))
-
-(defun chirp-backend-search-users-sync (query &optional limit)
-  "Return mention completion candidates for QUERY, capped at LIMIT."
-  (mapcar (lambda (user) (list (cons "screenName" (plist-get user :handle))))
-          (chirp-backend--await
-           (lambda (ok fail) (chirp-backend-search-users query ok fail limit)))))
 
 (provide 'chirp-backend)
 

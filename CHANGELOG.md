@@ -22,6 +22,9 @@ history remains available in Git.
 
 ### Fixed
 
+- Keep the compose draft and its attachments after a failed send. Use `C-c C-o` to check your posts before retrying.
+- Fetch mention suggestions asynchronously and preserve the current view on a failed refresh.
+
 - Mention completion no longer moves point back to the `@` character.
 - Tweet and media permalinks no longer appear as trailing links, while genuine external links highlight on hover.
 - Publishing failures no longer trigger automatic post, reply, or quote retries; structured non-retryable errors such as X code `344` now reach the user directly.

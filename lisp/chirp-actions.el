@@ -74,6 +74,7 @@ cancelled, the attachment is removed, or the send completes."
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map text-mode-map)
     (define-key map (kbd "C-c C-c") #'chirp-compose-send)
+    (define-key map (kbd "C-c C-o") #'chirp-me)
     (define-key map (kbd "C-c C-k") #'chirp-compose-cancel)
     (define-key map (kbd "C-c C-a") #'chirp-compose-attach-image)
     (define-key map (kbd "C-c C-v") #'chirp-compose-paste-image)
@@ -85,6 +86,7 @@ cancelled, the attachment is removed, or the send completes."
 (define-derived-mode chirp-compose-mode text-mode "Chirp-Compose"
   "Major mode for composing Chirp posts."
   (setq-local header-line-format nil)
+  (add-hook 'kill-buffer-hook #'chirp-compose--cleanup-temp-attachments nil t)
   (setq-local require-final-newline nil)
   (setq-local completion-ignore-case t)
   (setq-local chirp-compose--mention-cache nil)
@@ -110,18 +112,26 @@ cancelled, the attachment is removed, or the send completes."
 
 (defun chirp-compose--mention-candidates (query)
   "Return cached user handles matching QUERY."
-  (let ((cached (assoc-string query chirp-compose--mention-cache t)))
-    (if cached
-        (cdr cached)
-      (let ((candidates
-             (delq nil
-                   (mapcar
-                    (lambda (user)
-                      (when-let* ((handle (chirp-get user "screenName")))
-                        (string-remove-prefix "@" handle)))
-                    (chirp-backend-search-users-sync query)))))
-        (push (cons query candidates) chirp-compose--mention-cache)
-        candidates))))
+  (let ((cached (assoc-string query chirp-compose--mention-cache t))
+        (buffer (current-buffer)))
+    (unless cached
+      (let ((entry (cons query nil)))
+        (push entry chirp-compose--mention-cache)
+        (chirp-backend-search-users
+         query
+         (lambda (users _)
+           (when (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (setcdr entry (delq nil (mapcar (lambda (u) (plist-get u :handle)) users))))))
+         (lambda (reason)
+           (when (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (setq chirp-compose--mention-cache (delq entry chirp-compose--mention-cache))
+               (message "Mention lookup: %s" reason)))))))
+    (delete-dups
+     (cl-loop for (_ . handles) in chirp-compose--mention-cache
+              append (cl-remove-if-not
+                      (lambda (handle) (string-prefix-p query handle t)) handles)))))
 
 (defun chirp-compose-mention-completion-at-point ()
   "Complete the user handle following @ at point."
@@ -198,7 +208,13 @@ When ON-ERROR is non-nil, call it with the human-readable error message."
      (chirp-backend-clear-cache)
      (funcall on-success data envelope))
    (or on-error
-       #'chirp-actions--show-error)))
+       (lambda (reason)
+         (chirp-actions--show-error
+          (if (and (equal (car args) "bookmark")
+                   (string-match-p "(HTTP 404)" reason))
+              (format "%s. Open https://x.com/i/status/%s to bookmark on X."
+                      reason (cadr args))
+            reason))))))
 
 (defun chirp-actions--apply-state (buffer tweet-id state-key state-value count-key)
   "Update tweet state in BUFFER for TWEET-ID.
@@ -563,18 +579,6 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
         (delete-file file))))
   (setq chirp-compose-temp-attachments nil))
 
-(defun chirp-compose--take-temp-attachments ()
-  "Return temporary attachments and detach them from the current buffer."
-  (prog1 (copy-sequence chirp-compose-temp-attachments)
-    (setq-local chirp-compose-temp-attachments nil)))
-
-(defun chirp-compose--cleanup-files (files)
-  "Delete every path in FILES, ignoring missing files."
-  (dolist (file files)
-    (ignore-errors
-      (when (file-exists-p file)
-        (delete-file file)))))
-
 (defun chirp-compose--add-attachment (path &optional temporary)
   "Attach PATH to the current draft.
 
@@ -678,43 +682,34 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
        (append (list "post" text) image-args)))))
 
 (defun chirp-compose-send ()
-  "Send the current draft."
+  "Send this draft and release its attachments after confirmed success."
   (interactive)
-  (when chirp-compose-sending
-    (user-error "Draft is already sending"))
-  (let* ((compose-buffer (current-buffer))
-         (source-buffer chirp-compose-source-buffer)
-         (args (chirp-compose--command-args))
-         (temp-attachments (chirp-compose--take-temp-attachments))
-         (success-message
-          (pcase chirp-compose-kind
-            ('reply "Reply sent.")
-            ('quote "Quote tweet sent.")
-            (_ "Post sent.")))
-         (sending-message
-          (pcase chirp-compose-kind
-            ('reply "Sending reply...")
-            ('quote "Sending quote tweet...")
-            (_ "Sending post..."))))
-    (setq-local chirp-compose-sending t)
-    (condition-case err
-        (progn
+  (when chirp-compose-sending (user-error "Draft is already sending"))
+  (let ((draft (current-buffer))
+        (source chirp-compose-source-buffer)
+        (args (chirp-compose--command-args)))
+    (setq chirp-compose-sending t buffer-read-only t)
+    (chirp-compose--hide draft source)
+    (message "Sending draft...")
+    (cl-labels ((restore (reason)
+                  (when (buffer-live-p draft)
+                    (with-current-buffer draft
+                      (setq chirp-compose-sending nil buffer-read-only nil)
+                      (setq-local header-line-format
+                                  "Draft retained · C-c C-o checks your posts before retrying"))
+                    (display-buffer draft))
+                  (chirp-actions--show-error reason)))
+      (condition-case err
           (chirp-actions--perform
            args
            (lambda (_data _envelope)
-             (chirp-compose--cleanup-files temp-attachments)
-             (when (buffer-live-p source-buffer)
-               (chirp-actions--refresh-buffer source-buffer))
-             (message "%s" success-message))
-           (lambda (message)
-             (chirp-compose--cleanup-files temp-attachments)
-             (chirp-actions--show-error message)))
-          (chirp-compose--close compose-buffer source-buffer)
-          (message "%s" sending-message))
-      (error
-       (setq-local chirp-compose-sending nil)
-       (setq-local chirp-compose-temp-attachments temp-attachments)
-       (signal (car err) (cdr err))))))
+             (when (buffer-live-p draft)
+               (with-current-buffer draft (set-buffer-modified-p nil))
+               (kill-buffer draft))
+             (when (buffer-live-p source) (chirp-actions--refresh-buffer source))
+             (message "Sent."))
+           #'restore)
+        (error (restore (error-message-string err)))))))
 
 (defun chirp-compose--other-window-showing-buffer (buffer &optional except-window)
   "Return a live window showing BUFFER other than EXCEPT-WINDOW, or nil."
@@ -725,16 +720,13 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
           (eq (window-buffer window) buffer)))
    (window-list nil 'no-minibuf)))
 
-(defun chirp-compose--close (buffer &optional restore-buffer)
-  "Close compose BUFFER and restore RESTORE-BUFFER when possible."
+(defun chirp-compose--hide (buffer &optional restore-buffer)
+  "Hide compose BUFFER and restore RESTORE-BUFFER when possible."
   (when (buffer-live-p buffer)
     (let ((window (get-buffer-window buffer t))
           (restore (and (buffer-live-p restore-buffer)
                         (not (eq buffer restore-buffer))
                         restore-buffer)))
-      (with-current-buffer buffer
-        (set-buffer-modified-p nil)
-        (chirp-compose--cleanup-temp-attachments))
       (when (window-live-p window)
         (let ((other-restore-window
                (and restore
@@ -752,12 +744,16 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
             (set-window-buffer window restore))
            (t
             (switch-to-prev-buffer window)))))
-      (kill-buffer buffer))))
+      (bury-buffer buffer))))
 
 (defun chirp-compose-cancel ()
   "Cancel the current draft."
   (interactive)
-  (chirp-compose--close (current-buffer) chirp-compose-source-buffer))
+  (when chirp-compose-sending (user-error "Draft is still sending"))
+  (let ((draft (current-buffer)))
+    (chirp-compose--hide draft chirp-compose-source-buffer)
+    (with-current-buffer draft (set-buffer-modified-p nil))
+    (kill-buffer draft)))
 
 (defun chirp-compose--view-buffer-p (buffer)
   "Return non-nil when BUFFER is a live Chirp view buffer."
@@ -797,7 +793,6 @@ When TWEET is non-nil, use it as the reply or quote target."
       (setq-local chirp-compose-temp-attachments nil)
       (setq-local chirp-compose-sending nil)
       (rename-buffer (chirp-compose--buffer-name) t)
-      (add-hook 'kill-buffer-hook #'chirp-compose--cleanup-temp-attachments nil t)
       (chirp-compose--refresh-display)
       (set-buffer-modified-p nil)
       (goto-char (marker-position chirp-compose-body-start-marker)))))
@@ -894,13 +889,21 @@ When TWEET is non-nil, use it as the reply or quote target."
     ("r" "Reply" chirp-reply-at-point)
     ("Q" "Quote" chirp-quote-at-point)]
    ["Tweet"
-    ("R" "Retweet" chirp-toggle-retweet-at-point)]
+    ("R" chirp-toggle-retweet-at-point
+     :description (lambda () (if (plist-get (chirp-entry-at-point) :retweeted-p)
+                                 "Undo retweet" "Retweet")))]
    ["People"
-    ("+" "Follow" chirp-follow-user-at-point)
+    ("+" chirp-follow-user-at-point
+     :description (lambda () (if (plist-get (chirp-entry-at-point) :viewer-following-p)
+                                 "Follow (already following)" "Follow")))
     ("-" "Unfollow" chirp-unfollow-user-at-point)]
    ["Engage"
-    ("l" "Like" chirp-toggle-like-at-point)
-    ("B" "Bookmark" chirp-toggle-bookmark-at-point)]
+    ("l" chirp-toggle-like-at-point
+     :description (lambda () (if (plist-get (chirp-entry-at-point) :liked-p)
+                                 "Unlike" "Like")))
+    ("B" chirp-toggle-bookmark-at-point
+     :description (lambda () (if (plist-get (chirp-entry-at-point) :bookmarked-p)
+                                 "Remove bookmark" "Bookmark")))]
    ["Other"
     ("d" "Delete" chirp-delete-at-point)
     ("T" "Translate" chirp-translate-at-point)

@@ -240,7 +240,9 @@ commands still work, and displays alt text when X provides it."
     (let* ((elapsed (if chirp--status-start-time
                         (max 0.0 (- (float-time) chirp--status-start-time))
                       0.0))
-           (text (format " · %s %.1fs" chirp--status-text elapsed)))
+           (text (if (eq chirp--status-kind 'loading)
+                     (format " · %s %.1fs" chirp--status-text elapsed)
+                   (concat " · " chirp--status-text))))
       (propertize text 'face (chirp--status-face chirp--status-kind)))))
 
 (defun chirp--ensure-status-timer (buffer)
@@ -267,9 +269,14 @@ commands still work, and displays alt text when X provides it."
     (with-current-buffer buffer
       (setq-local chirp--status-text text)
       (setq-local chirp--status-kind (or kind 'loading))
-      (setq-local chirp--status-start-time (float-time)))
-    (chirp--ensure-status-timer buffer)
-    (with-current-buffer buffer
+      (if (eq chirp--status-kind 'loading)
+          (progn
+            (setq-local chirp--status-start-time (float-time))
+            (chirp--ensure-status-timer buffer))
+        (when (timerp chirp--status-timer)
+          (cancel-timer chirp--status-timer))
+        (setq-local chirp--status-timer nil)
+        (setq-local chirp--status-start-time nil))
       (force-mode-line-update t))))
 
 (defun chirp-clear-status (&optional buffer)
@@ -433,14 +440,18 @@ revisited later."
 
 (defun chirp-show-error (buffer title refresh message)
   "Display MESSAGE in BUFFER for TITLE using REFRESH for the view."
-  (chirp-set-status buffer "Load failed" 'error)
-  (chirp-render-into-buffer
-   buffer title refresh
-   (lambda ()
-     (insert "Unable to load data.\n\n")
-     (insert message)
-     (insert "\n")))
-  (chirp-display-buffer buffer))
+  (if (with-current-buffer buffer
+        (and (equal title chirp--view-title)
+             (chirp--entry-position-forward (point-min))))
+      (progn
+        (with-current-buffer buffer (setq-local chirp--refresh-function refresh))
+        (chirp-set-status buffer (format "%s · g retry" message) 'error))
+    (chirp-set-status buffer "Load failed" 'error)
+    (chirp-render-into-buffer
+     buffer title refresh
+     (lambda ()
+       (insert "Unable to load data.\n\n" message "\n\ng retry · x actions\n")))
+    (chirp-display-buffer buffer)))
 
 (defun chirp-refresh ()
   "Refresh the current Chirp buffer."

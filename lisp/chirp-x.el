@@ -88,7 +88,7 @@ client token.  This is not an account credential."
                        (auth-source-pick-first-password :host "x.com" :user name)))
                  '("auth_token" "ct0"))))
     (unless (apply #'chirp-x--session-cookie-values-valid-p values)
-      (user-error "Configure auth_token and ct0 for x.com in auth-source"))
+      (user-error "Set auth_token and ct0 for host x.com in auth-source, or set TWITTER_AUTH_TOKEN and TWITTER_CT0. Then press g to reconnect"))
     (list :auth-token (car values) :ct0 (cadr values)
           :bearer-token (or (chirp-x--environment-value "CHIRP_X_BEARER_TOKEN")
                             chirp-x-bearer-token))))
@@ -362,10 +362,11 @@ Return either `(:success PAYLOAD)' or `(:error MESSAGE)'."
      (t (list :success payload)))))
 
 
-(cl-defun chirp-x--request (url method callback &key data content-type errback allow-empty)
+(cl-defun chirp-x--request (url method callback &key data content-type errback allow-empty query-p)
   "Request URL with METHOD and deliver decoded JSON to CALLBACK.
 DATA and CONTENT-TYPE specify the body.  ERRBACK receives errors.
-ALLOW-EMPTY accepts a successful response without a body."
+ALLOW-EMPTY accepts a successful response without a body.
+QUERY-P identifies read-only POST operations."
   (unless (chirp-x--trusted-url-p url) (error "Invalid X request URL"))
   (let ((url-request-method (upcase (symbol-name method)))
         (url-request-extra-headers (chirp-x--headers (chirp-x-credentials) content-type))
@@ -379,7 +380,7 @@ ALLOW-EMPTY accepts a successful response without a body."
                    (lambda (status)
                      (let ((result (unwind-protect
                                        (condition-case err
-                                           (chirp-x--decode-response status allow-empty method)
+                                           (chirp-x--decode-response status allow-empty (unless query-p method))
                                          (error (list :error (error-message-string err))))
                                      (kill-buffer (current-buffer)))))
                        (if (eq (car result) :success)
@@ -402,6 +403,7 @@ ERRBACK receives a single error message."
              (url (chirp-x--graphql-url id (plist-get operation :name) method
                                         variables features fields)))
         (chirp-x--request url method callback :errback errback
+                          :query-p (plist-get operation :query)
                           :content-type (and (eq method 'post) "application/json")
                           :data (and (eq method 'post)
                                      (chirp-x--graphql-post-body id variables features fields))))

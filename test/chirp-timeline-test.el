@@ -26,7 +26,7 @@
 
 (ert-deftest chirp-quit-current-buffer-keeps-main-timeline-buffers ()
   "Quitting For You/Following should keep the timeline buffer alive."
-  (let ((previous (generate-new-buffer " *chirp-prev*"))
+  (let ((previous (generate-new-buffer "*chirp-prev*"))
         (timeline (generate-new-buffer " *chirp-home*")))
     (unwind-protect
         (save-window-excursion
@@ -44,7 +44,7 @@
 
 (ert-deftest chirp-quit-current-buffer-kills-secondary-chirp-views ()
   "Quitting secondary Chirp views should still kill the current buffer."
-  (let ((previous (generate-new-buffer " *chirp-prev*"))
+  (let ((previous (generate-new-buffer "*chirp-prev*"))
         (detail (generate-new-buffer " *chirp-detail*")))
     (unwind-protect
         (save-window-excursion
@@ -160,6 +160,20 @@
         (should (string-match-p "2\\.5s" rendered)))
       (chirp-clear-status (current-buffer))
       (should-not (chirp--mode-line-status-string)))))
+
+(ert-deftest chirp-refresh-error-preserves-view-and-point ()
+  (with-temp-buffer
+    (chirp-view-mode)
+    (setq-local chirp--view-title "Thread")
+    (let ((inhibit-read-only t))
+      (insert (propertize "existing post" 'chirp-entry-start t)))
+    (goto-char 5)
+    (chirp-set-status (current-buffer) "Loading thread")
+    (chirp-show-error (current-buffer) "Thread" #'ignore "HTTP 503")
+    (should (equal (buffer-string) "existing post"))
+    (should (= (point) 5))
+    (should-not chirp--status-timer)
+    (should (equal (chirp--mode-line-status-string) " · HTTP 503 · g retry"))))
 
 (ert-deftest chirp-timeline-render-clears-persistent-status ()
   "Rendering a timeline should clear any previous loading status."
