@@ -98,8 +98,8 @@ M-x chirp-profile-following-users
 
 - `g`: refresh; on Home and Following, Chirp keeps the current timeline visible and merges newer posts at the top
 - `TAB`: switch between Home and Following on those timelines; in profile buffers, cycle `Posts`, `Replies`, `Highlights`, `Media`, and `Likes` when available
-- `n` / `p`: next or previous entry; on Home and Following, `n` on the last entry loads more older posts
-- `N`: load more older posts on Home and Following
+- `n` / `p`: next or previous entry; at the last entry of Home, Following, Bookmarks, or a thread, `n` loads the next available page
+- `N`: load the next available page in Home, Following, Bookmarks, or a thread
 - `q`: close the current Chirp window; on For You and Following, keep the timeline buffer alive so you can switch back later
 - When Home or Following has no more older posts, Chirp says so instead of leaving the last loading message in place
 - `RET`: expand an article when point is on `Show more`; otherwise open the current tweet or profile, or open large media when point is on a thumbnail
@@ -230,7 +230,7 @@ customize the short in-memory backend cache:
 - The parser is deliberately defensive because upstream X payloads can drift.
 - Chirp retries explicit network and server failures only for safely repeatable requests; post, reply, and quote commands are never retried automatically because a lost response can leave the publishing outcome unknown.
 - X application error `344` is a posting-window limit rather than a transport failure; with the current `twitter-cli` stable branch, Chirp reports it without retrying so the account can wait for the window to reset.
-- Timeline "load more" uses `twitter-cli feed --cursor` and appends older posts without re-fetching the already loaded prefix.
+- Chirp passes the CLI’s continuation cursor to the same feed, bookmark list, or thread and appends new entries. Bookmark and thread pagination require a CLI that returns `pagination.nextCursor` for those commands.
 - Automated tests exercise the `twitter-cli` JSON and process boundary without sending live X writes; account limits and network behavior remain external to the test suite.
 
 ## License

@@ -484,10 +484,13 @@ ERRBACK handles failures and MAX-RESULTS limits the response."
    callback
    errback))
 
-(defun chirp-backend-bookmarks (callback &optional errback)
-  "Fetch bookmarks and call CALLBACK, or ERRBACK on failure."
+(defun chirp-backend-bookmarks (callback &optional errback max-results cursor)
+  "Fetch bookmarks and call CALLBACK, or ERRBACK on failure.
+MAX-RESULTS limits the page size.  CURSOR continues an earlier page."
   (chirp-backend-request
-   (list "bookmarks" "--max" (number-to-string chirp-default-max-results))
+   (append (list "bookmarks" "--max"
+                 (number-to-string (or max-results chirp-default-max-results)))
+           (when cursor (list "--cursor" cursor)))
    (lambda (data envelope)
      (funcall callback (chirp-collect-top-level-tweets data) envelope))
    errback))
@@ -570,20 +573,23 @@ ERRBACK handles failures and MAX-RESULTS limits the response."
      (funcall callback (chirp-collect-top-level-tweets data) envelope))
    errback))
 
-(defun chirp-backend-thread (tweet-or-url callback &optional errback)
-  "Fetch TWEET-OR-URL thread data and call CALLBACK, or ERRBACK on failure."
-  (chirp-backend--cached-read
-   (chirp-backend--thread-cache-key tweet-or-url)
-   (lambda (success error)
-     (chirp-backend-request
-      (list "tweet"
-            tweet-or-url
-            "--max" (number-to-string chirp-thread-max-results))
-      (lambda (data envelope)
-        (funcall success (chirp-collect-tweets data) envelope))
-      error))
-   callback
-   errback))
+(defun chirp-backend-thread (tweet-or-url callback &optional errback cursor)
+  "Fetch thread TWEET-OR-URL and call CALLBACK, or ERRBACK on failure.
+CURSOR continues a previous page.  Only the first page is cached."
+  (let ((fetch-page
+         (lambda (success error)
+           (chirp-backend-request
+            (append (list "tweet" tweet-or-url
+                          "--max" (number-to-string chirp-thread-max-results))
+                    (when cursor (list "--cursor" cursor)))
+            (lambda (data envelope)
+              (funcall success (chirp-collect-tweets data) envelope))
+            error))))
+    (if cursor
+        (funcall fetch-page callback errback)
+      (chirp-backend--cached-read
+       (chirp-backend--thread-cache-key tweet-or-url)
+       fetch-page callback errback))))
 
 (defun chirp-backend-tweet (tweet-id callback &optional errback)
   "Fetch TWEET-ID and call CALLBACK, or ERRBACK on failure."

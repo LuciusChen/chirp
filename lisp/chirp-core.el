@@ -24,7 +24,6 @@
 (declare-function chirp-dispatch "chirp-actions" ())
 (declare-function chirp--dispatch-mouse-action "chirp-actions" (event))
 (declare-function chirp-toggle-follow-user-at-point "chirp-actions" ())
-(declare-function chirp-load-more "chirp-timeline" (&optional anchor-id))
 (declare-function chirp-toggle-home-following "chirp-timeline" ())
 (declare-function chirp-media-at-point "chirp-media" ())
 (declare-function chirp-media-open "chirp-media" (media-list index &optional title buffer))
@@ -580,6 +579,16 @@ revisited later."
       (when-let* ((pos (chirp-point-position-from-anchor
                         (plist-get state :point-anchor))))
         (set-window-point window pos)))))
+
+(defun chirp-load-more (&optional anchor-id)
+  "Load the next page in this view and preserve point at ANCHOR-ID."
+  (interactive)
+  (cond
+   (chirp--timeline-load-more-function
+    (funcall chirp--timeline-load-more-function
+             (or anchor-id (chirp-capture-point-anchor))))
+   (chirp--timeline-exhausted-p (message "No older posts."))
+   (t (user-error "Current view does not support loading more posts"))))
 
 (defun chirp-next-entry ()
   "Move to the next entry."

@@ -25,6 +25,7 @@
   (pcase kind
     ('home "For You")
     ('following "Following")
+    ('bookmarks "Bookmarks")
     (_ "Timeline")))
 
 (defun chirp-timeline--likes-title (handle)
@@ -96,7 +97,7 @@
      :limit (or chirp--timeline-limit chirp-default-max-results)
      :anchor-id (chirp-capture-point-anchor)
      :buffer buffer
-     :refreshing t)))
+     :refreshing (not (eq kind 'bookmarks)))))
 
 (defun chirp-timeline--current-count (buffer)
   "Return the current timeline post count for BUFFER."
@@ -194,32 +195,22 @@ DISPLAY-P, and NEXT-CURSOR control pagination and presentation."
       (setq-local chirp--timeline-kind kind)
       (setq-local chirp--timeline-limit (and kind limit))
       (setq-local chirp--timeline-count (and kind tweet-count))
-      (setq-local chirp--timeline-next-cursor (and (memq kind '(home following))
+      (setq-local chirp--timeline-next-cursor (and (memq kind '(home following bookmarks))
                                                    next-cursor))
       (setq-local chirp--timeline-load-more-function
-                  (and (memq kind '(home following))
-                       #'chirp-load-more))
-      (setq-local chirp--timeline-exhausted-p (and (memq kind '(home following))
+                  (and (memq kind '(home following bookmarks))
+                       #'chirp-timeline--load-more))
+      (setq-local chirp--timeline-exhausted-p (and (memq kind '(home following bookmarks))
                                                    exhausted-p))
       (setq-local chirp--rerender-function
-                  (let ((saved-tweets tweets)
-                        (saved-title title)
-                        (saved-refresh refresh)
-                        (saved-kind kind)
-                        (saved-limit limit)
-                        (saved-exhausted exhausted-p)
-                        (saved-next-cursor next-cursor))
-                    (lambda ()
-                      (chirp-timeline--render
-                       buffer
-                       saved-title
-                       saved-refresh
-                       saved-tweets
-                       :kind saved-kind
-                       :limit saved-limit
-                       :anchor-id (chirp-capture-point-anchor)
-                       :exhausted-p saved-exhausted
-                       :next-cursor saved-next-cursor))))
+                  (lambda ()
+                    (chirp-timeline--render
+                     buffer title refresh tweets
+                     :kind kind
+                     :limit limit
+                     :anchor-id (chirp-capture-point-anchor)
+                     :exhausted-p chirp--timeline-exhausted-p
+                     :next-cursor chirp--timeline-next-cursor)))
       (setq-local chirp--timeline-loading-more nil)
       (or (and anchor-id
                (chirp-restore-point-anchor anchor-id))
@@ -244,6 +235,8 @@ contains response pagination metadata."
   (with-current-buffer buffer
     (setq-local chirp--request-token nil))
   (let ((next-cursor (chirp-backend-envelope-next-cursor envelope)))
+    (when (and loading-more (equal next-cursor previous-next-cursor))
+      (setq next-cursor nil))
     (cond
      (loading-more
       (let* ((current (or previous-tweets
@@ -308,7 +301,7 @@ contains response pagination metadata."
        :kind kind
        :limit limit
        :anchor-id anchor-id
-       :exhausted-p (and (memq kind '(home following))
+       :exhausted-p (and (memq kind '(home following bookmarks))
                          (not next-cursor))
        :display-p t
        :next-cursor next-cursor)
@@ -364,40 +357,38 @@ requests a specific pagination page."
       (chirp-set-status buffer "Refreshing timeline...")
       (message "Refreshing timeline...")))
     (chirp-timeline--set-kind buffer kind)
-    (chirp-backend-feed
-     (lambda (tweets envelope)
-       (when (chirp-request-current-p buffer token)
-         (chirp-timeline--handle-feed-success
-          buffer title refresh tweets
-          :kind kind
-          :limit limit
-          :anchor-id anchor-id
-          :loading-more loading-more
-          :refreshing refreshing
-          :previous-count previous-count
-          :previous-tweets previous-tweets
-          :previous-exhausted-p previous-exhausted-p
-          :previous-next-cursor previous-next-cursor
-          :envelope envelope)))
-     (eq kind 'following)
-     (lambda (message)
-       (when (chirp-request-current-p buffer token)
-         (with-current-buffer buffer
-           (setq-local chirp--timeline-loading-more nil)
-           (setq-local chirp--request-token nil))
-         (chirp-timeline--set-kind buffer kind)
-         (if (or loading-more refreshing)
-             (progn
-               (chirp-set-status
-                buffer
-                (if refreshing
-                    "Refresh failed"
-                  "Load more failed")
-                'error)
-               (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message)))
-           (chirp-show-error buffer title refresh message))))
-     fetch-count
-     cursor)))
+    (cl-flet
+        ((success (tweets envelope)
+           (when (chirp-request-current-p buffer token)
+             (chirp-timeline--handle-feed-success
+              buffer title refresh tweets
+              :kind kind
+              :limit limit
+              :anchor-id anchor-id
+              :loading-more loading-more
+              :refreshing refreshing
+              :previous-count previous-count
+              :previous-tweets previous-tweets
+              :previous-exhausted-p previous-exhausted-p
+              :previous-next-cursor previous-next-cursor
+              :envelope envelope)))
+         (failure (reason)
+           (when (chirp-request-current-p buffer token)
+             (with-current-buffer buffer
+               (setq-local chirp--timeline-loading-more nil)
+               (setq-local chirp--request-token nil))
+             (chirp-timeline--set-kind buffer kind)
+             (if (or loading-more refreshing)
+                 (progn
+                   (chirp-set-status buffer
+                                     (if refreshing "Refresh failed" "Load more failed")
+                                     'error)
+                   (message "%s" (replace-regexp-in-string "[\r\n]+" "  " reason)))
+               (chirp-show-error buffer title refresh reason)))))
+      (if (eq kind 'bookmarks)
+          (chirp-backend-bookmarks #'success #'failure fetch-count cursor)
+        (chirp-backend-feed #'success (eq kind 'following)
+                            #'failure fetch-count cursor)))))
 
 (defun chirp-timeline-open-home ()
   "Open the home timeline."
@@ -409,19 +400,14 @@ requests a specific pagination page."
   (interactive)
   (chirp-timeline--open 'following :limit chirp-default-max-results))
 
-(defun chirp-load-more (&optional anchor-id)
+(defun chirp-timeline--load-more (&optional anchor-id)
   "Load older posts and restore point to ANCHOR-ID when supplied."
-  (interactive)
-  (unless (memq chirp--timeline-kind '(home following))
-    (user-error "Current view does not support loading more posts"))
   (cond
    (chirp--timeline-loading-more
     (message "Already loading older posts..."))
-   (chirp--timeline-exhausted-p
+   ((or chirp--timeline-exhausted-p (null chirp--timeline-next-cursor))
     (message "No older posts."))
-   ((not chirp--timeline-next-cursor)
-    (message "No older posts."))
-  (t
+   (t
     (chirp-timeline--open
      chirp--timeline-kind
      :limit (or chirp--timeline-limit chirp-default-max-results)
@@ -433,19 +419,7 @@ requests a specific pagination page."
 (defun chirp-timeline-open-bookmarks (&optional buffer)
   "Open bookmarks in BUFFER."
   (interactive)
-  (let* ((buffer (or buffer (chirp-buffer)))
-         (refresh (lambda () (chirp-timeline-open-bookmarks buffer))))
-    (let ((token (chirp-begin-background-request buffer "Bookmarks")))
-      (chirp-timeline--set-kind buffer nil)
-      (chirp-backend-bookmarks
-       (lambda (tweets _envelope)
-         (when (chirp-request-current-p buffer token)
-           (chirp-timeline--render
-            buffer "Bookmarks" refresh tweets :display-p t)))
-       (lambda (message)
-         (when (chirp-request-current-p buffer token)
-           (chirp-timeline--set-kind buffer nil)
-           (chirp-show-error buffer "Bookmarks" refresh message)))))))
+  (chirp-timeline--open 'bookmarks :buffer buffer))
 
 (defun chirp-timeline-open-likes (&optional handle buffer)
   "Open liked tweets for HANDLE in BUFFER.

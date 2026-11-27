@@ -93,11 +93,38 @@
                                                  ("name" . "Brand")))))))
                    '("1" "2")))))
 
+(ert-deftest chirp-bookmarks-loads-the-next-page ()
+  "Continue bookmarks from the last row and append only new entries."
+  (with-temp-buffer
+    (let ((buffer (current-buffer))
+          (one '(:id "1" :text "First" :kind tweet))
+          (two '(:id "2" :text "Second" :kind tweet))
+          calls)
+      (cl-letf (((symbol-function 'chirp-backend-bookmarks)
+                 (lambda (success _error _limit cursor)
+                   (push cursor calls)
+                   (if cursor
+                       (funcall success (list one two) nil)
+                     (funcall success (list one)
+                              '(("pagination" . (("nextCursor" . "page2"))))))))
+                ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
+                ((symbol-function 'chirp-display-buffer) #'ignore))
+        (chirp-timeline-open-bookmarks buffer)
+        (chirp-next-entry)
+        (should (equal calls '("page2" nil)))
+        (should (equal (mapcar #'chirp-tweet-key
+                               (chirp-timeline--buffer-tweets buffer))
+                       '("1" "2")))
+        (chirp-load-more)
+        (should (= (length calls) 2))))))
+
 (ert-deftest chirp-load-more-stops-when-timeline-is-exhausted ()
   "Loading more should short-circuit once the timeline is exhausted."
   (with-temp-buffer
     (chirp-view-mode)
-    (setq-local chirp--timeline-kind 'home)
+    (setq-local chirp--timeline-kind 'home
+                chirp--timeline-load-more-function #'chirp-timeline--load-more)
     (setq-local chirp--timeline-limit 20)
     (setq-local chirp--timeline-exhausted-p t)
     (let ((open-called nil)
@@ -551,7 +578,8 @@
   "Loading more should request the next cursor without inflating the head page size."
   (with-temp-buffer
     (chirp-view-mode)
-    (setq-local chirp--timeline-kind 'home)
+    (setq-local chirp--timeline-kind 'home
+                chirp--timeline-load-more-function #'chirp-timeline--load-more)
     (setq-local chirp--timeline-limit 20)
     (setq-local chirp--timeline-next-cursor "cursor-next")
     (let ((buffer (current-buffer))
