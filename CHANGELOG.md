@@ -22,6 +22,8 @@ history remains available in Git.
 
 ### Fixed
 
+- Append new entries in Home, Following and Bookmarks without redrawing earlier pages or repeating media prefetch for those entries.
+
 - Keep the compose draft and its attachments after a failed send. Use `C-c C-o` to check your posts before retrying.
 - Fetch mention suggestions asynchronously and preserve the current view on a failed refresh.
 

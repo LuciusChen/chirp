@@ -206,6 +206,35 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest chirp-timeline-pagination-only-renders-new-entries ()
+  "Appending a page preserves existing text and cross-page reply context."
+  (let* ((first '(:id "1" :kind tweet :text "Parent" :author-handle "alice"))
+         (reply '(:id "2" :kind tweet :text "Reply" :reply-to-id "1"))
+         (buffer (generate-new-buffer " *chirp-append*"))
+         prefetched)
+    (unwind-protect
+        (with-current-buffer buffer
+          (chirp-timeline--render buffer "Bookmarks" #'ignore (list first)
+                                  :kind 'bookmarks :limit 1 :next-cursor "next")
+          (let ((inhibit-read-only t))
+            (put-text-property (point-min) (1+ (point-min)) 'old-page t))
+          (cl-letf (((symbol-function 'chirp-display-buffer) #'ignore)
+                    ((symbol-function 'chirp-media-prefetch-tweets)
+                     (lambda (tweets _buffer) (setq prefetched tweets)))
+                    ((symbol-function 'chirp-backend-bookmarks)
+                     (lambda (ok _fail _limit cursor)
+                       (should (equal cursor "next"))
+                       (funcall ok (list first reply) nil))))
+            (chirp-timeline--load-more))
+          (should (get-text-property (point-min) 'old-page))
+          (should (equal prefetched (list reply)))
+          (should (equal (chirp-timeline--buffer-tweets buffer) (list first reply)))
+          (let ((appended (buffer-substring-no-properties (point-min) (point-max))))
+            (funcall chirp--rerender-function)
+            (should (equal appended (buffer-substring-no-properties
+                                     (point-min) (point-max))))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
 (ert-deftest chirp-timeline-handle-feed-success-keeps-view-when-no-growth ()
   "Loading more should keep the current view when the response adds nothing."
   (let ((buffer (generate-new-buffer " *chirp-timeline-test*")))
@@ -232,7 +261,6 @@
                :anchor-id "2"
                :loading-more t
                :refreshing nil
-               :previous-count 2
                :previous-tweets (list (list :id "1") (list :id "2"))
                :previous-exhausted-p nil
                :previous-next-cursor nil
@@ -265,7 +293,6 @@
        :anchor-id "2"
        :loading-more nil
        :refreshing t
-       :previous-count nil
        :previous-tweets (list (list :id "2") (list :id "1"))
        :previous-exhausted-p t
        :previous-next-cursor nil
@@ -286,7 +313,6 @@
           (chirp-view-mode)
           (setq-local chirp--timeline-kind 'home)
           (setq-local chirp--timeline-limit 20)
-          (setq-local chirp--timeline-count 2)
           (setq-local chirp--timeline-next-cursor nil)
           (let ((render-called nil)
                 (last-message nil))
@@ -306,7 +332,6 @@
                :anchor-id "2"
                :loading-more nil
                :refreshing t
-               :previous-count 2
                :previous-tweets (list (list :id "2") (list :id "1"))
                :previous-exhausted-p nil
                :previous-next-cursor nil
@@ -336,7 +361,6 @@
        :anchor-id "2"
        :loading-more nil
        :refreshing t
-       :previous-count nil
        :previous-tweets (list (list :id "2") (list :id "1"))
        :previous-exhausted-p nil
        :previous-next-cursor nil
@@ -356,7 +380,6 @@
           (chirp-view-mode)
           (setq-local chirp--timeline-kind 'home)
           (setq-local chirp--timeline-limit 20)
-          (setq-local chirp--timeline-count 2)
           (setq-local chirp--timeline-next-cursor "cursor-next")
           (setq-local chirp--timeline-exhausted-p nil)
           (setq-local chirp--request-token 'token)
@@ -378,7 +401,6 @@
                :anchor-id "2"
                :loading-more nil
                :refreshing t
-               :previous-count 2
                :previous-tweets (list (list :id "2") (list :id "1"))
                :previous-exhausted-p nil
                :previous-next-cursor "cursor-next"

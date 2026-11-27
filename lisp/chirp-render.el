@@ -1020,22 +1020,21 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
     (insert (propertize line 'face 'chirp-tweet-separator-face))
     (insert "\n\n")))
 
-(defun chirp-render-insert-tweet-list (tweets)
-  "Insert TWEETS, highlighting direct replies to the previous visible tweet."
-  (let (previous)
-    (dolist (tweet tweets)
-      (when previous
-        (chirp-render-insert-tweet-separator))
-      (if-let* ((reply-parent (chirp-render--list-reply-parent tweet previous)))
-          (chirp-render--insert-tweet
-           tweet
-           chirp-render-list-reply-prefix
-           nil
-           nil
-           nil
-           reply-parent)
-        (chirp-render-insert-tweet tweet))
-      (setq previous tweet))))
+(defun chirp-render-insert-tweet-list (tweets &optional previous)
+  "Insert TWEETS, continuing separators and reply context from PREVIOUS."
+  (dolist (tweet tweets)
+    (when previous
+      (chirp-render-insert-tweet-separator))
+    (if-let* ((reply-parent (chirp-render--list-reply-parent tweet previous)))
+        (chirp-render--insert-tweet
+         tweet
+         chirp-render-list-reply-prefix
+         nil
+         nil
+         nil
+         reply-parent)
+      (chirp-render-insert-tweet tweet))
+    (setq previous tweet)))
 
 (defun chirp-render-insert-thread-focus-tweet (tweet)
   "Insert the focus TWEET in a thread view."

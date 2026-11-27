@@ -132,7 +132,6 @@ STATUS-MESSAGE record pagination and loading status."
     (setq-local chirp--profile-switch-mode-function
                 (lambda (target)
                   (chirp-profile--switch-mode (plist-get user :handle) target buffer)))
-    (setq-local chirp--timeline-count (length tweets))
     (setq-local chirp--timeline-next-cursor next-cursor)
     (setq-local chirp--timeline-load-more-function
                 (and timeline-ready

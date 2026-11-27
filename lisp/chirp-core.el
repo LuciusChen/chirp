@@ -117,9 +117,6 @@ commands still work, and displays alt text when X provides it."
 (defvar-local chirp--timeline-limit nil
   "Current max post count for the active timeline buffer.")
 
-(defvar-local chirp--timeline-count nil
-  "Current number of posts shown in the active timeline buffer.")
-
 (defvar-local chirp--timeline-next-cursor nil
   "Pagination cursor used to fetch older posts for the active timeline buffer.")
 
@@ -171,7 +168,6 @@ commands still work, and displays alt text when X provides it."
 (put 'chirp--request-token 'permanent-local t)
 (put 'chirp--timeline-kind 'permanent-local t)
 (put 'chirp--timeline-limit 'permanent-local t)
-(put 'chirp--timeline-count 'permanent-local t)
 (put 'chirp--timeline-next-cursor 'permanent-local t)
 (put 'chirp--timeline-load-more-function 'permanent-local t)
 (put 'chirp--timeline-exhausted-p 'permanent-local t)
@@ -363,7 +359,6 @@ revisited later."
     (setq-local chirp--refresh-function refresh)
     (setq-local chirp--timeline-kind nil)
     (setq-local chirp--timeline-limit nil)
-    (setq-local chirp--timeline-count nil)
     (setq-local chirp--timeline-next-cursor nil)
     (setq-local chirp--timeline-load-more-function nil)
     (setq-local chirp--timeline-exhausted-p nil)
