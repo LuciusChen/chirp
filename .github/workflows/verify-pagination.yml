@@ -6,22 +6,43 @@ permissions:
   contents: read
 jobs:
   emacs:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            revision: base
+          - os: macos-15
+            revision: base
+          - os: macos-15
+            revision: head
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.os }} / ${{ matrix.revision }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
           fetch-depth: 0
+          ref: ${{ matrix.revision == 'base' && github.event.pull_request.base.sha || github.event.pull_request.head.sha }}
       - name: Check the diff
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: git diff --check "$BASE" HEAD
-      - name: Install Emacs
+      - name: Install terminal Emacs for the Linux baseline
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends emacs-nox elpa-package-lint
           emacs --version
+      - name: Install native macOS Emacs
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: |
+          brew install --cask emacs-app
+          echo "/Applications/Emacs.app/Contents/MacOS" >> "$GITHUB_PATH"
+          /Applications/Emacs.app/Contents/MacOS/Emacs --version
       - name: Run all ERT tests
         run: |
           emacs -Q --batch -L . -L lisp -l ert \
@@ -41,9 +62,16 @@ jobs:
             --eval '(defvar verification-doc-warnings nil)' \
             --eval '(mapc (function checkdoc-file) (cons "chirp.el" (file-expand-wildcards "lisp/*.el")))' \
             --eval '(kill-emacs (if verification-doc-warnings 1 0))'
+      - name: Install the macOS package checker
+        if: (success() || failure()) && runner.os == 'macOS'
+        run: |
+          emacs -Q --batch -l package \
+            --eval '(add-to-list (quote package-archives) (cons "melpa" "https://melpa.org/packages/"))' \
+            --eval '(package-initialize)' -f package-refresh-contents \
+            --eval '(package-install (quote package-lint))'
       - name: Check package metadata
         if: success() || failure()
         run: |
-          emacs --batch -L . -L lisp -l package-lint \
+          emacs --batch -L . -L lisp -l package -f package-initialize -l package-lint \
             --eval '(setq-default package-lint-main-file (expand-file-name "chirp.el") package-lint-batch-fail-on-warnings t)' \
             -f package-lint-batch-and-exit chirp.el lisp/*.el
