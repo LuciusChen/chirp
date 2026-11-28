@@ -381,6 +381,16 @@ When ACTIVE is non-nil, emphasize the metric."
     (insert (chirp-render--metric-string label value active))
     (cons start (point))))
 
+(defun chirp-render--insert-state-metric (label tweet state-key count-key)
+  "Insert LABEL for TWEET, previewing a pending STATE-KEY and its COUNT-KEY."
+  (let* ((state (chirp-boolean-value (plist-get tweet state-key)))
+         (pending (gethash (cons (plist-get tweet :id) state-key) chirp-pending-tweet-states))
+         (active (if pending (eq pending 'on) state))
+         (count (plist-get tweet count-key)))
+    (chirp-render--insert-metric label (if (eq active state) count
+                                         (chirp-adjust-count count (if active 1 -1)))
+                                 active)))
+
 (defun chirp-render-timestamp (stamp)
   "Format STAMP in local time, with the full timestamp on hover."
   (condition-case nil
@@ -721,25 +731,20 @@ Precede the line with PREFIX using PREFIX-FACE when provided."
          `(chirp-reply-parent-id ,parent-id
                                  pointer hand))))))
 
-(defun chirp-render--list-reply-parent (tweet previous)
-  "Return PREVIOUS when TWEET looks like a reply to it."
-  (when previous
-    (let ((reply-to-id (plist-get tweet :reply-to-id))
-          (reply-to-handle (plist-get tweet :reply-to-handle))
-          (conversation-id (plist-get tweet :conversation-id))
-          (previous-id (plist-get previous :id))
-          (previous-handle (plist-get previous :author-handle))
-          (previous-conversation-id (plist-get previous :conversation-id)))
-      (when (or (and reply-to-id
-                     previous-id
-                     (equal reply-to-id previous-id))
-                (and reply-to-handle
-                     previous-handle
-                     (string-equal-ignore-case reply-to-handle previous-handle)
-                     conversation-id
-                     (or (equal conversation-id previous-id)
-                         (equal conversation-id previous-conversation-id))))
-        previous))))
+(defun chirp-render--list-reply-parent (tweet chain)
+  "Find the parent of TWEET in the adjacent reply CHAIN, newest first."
+  (let ((id (plist-get tweet :reply-to-id))
+        (handle (plist-get tweet :reply-to-handle))
+        (conversation (plist-get tweet :conversation-id)))
+    (seq-find
+     (lambda (candidate)
+       (if id
+           (equal id (plist-get candidate :id))
+         (and handle conversation
+              (string-equal-ignore-case handle (or (plist-get candidate :author-handle) ""))
+              (or (equal conversation (plist-get candidate :id))
+                  (equal conversation (plist-get candidate :conversation-id))))))
+     chain)))
 
 (defun chirp-render--insert-avatar (url &optional handle)
   "Insert an avatar for URL when possible.
@@ -1074,27 +1079,18 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
           action-regions)
     (insert "   ")
     (push (cons 'retweet
-                (chirp-render--insert-metric
-                 'retweet
-                 (plist-get tweet :retweet-count)
-                 (plist-get tweet :retweeted-p)))
+                (chirp-render--insert-state-metric 'retweet tweet :retweeted-p :retweet-count))
           action-regions)
     (insert "   ")
     (push (cons 'like
-                (chirp-render--insert-metric
-                 'like
-                 (plist-get tweet :like-count)
-                 (plist-get tweet :liked-p)))
+                (chirp-render--insert-state-metric 'like tweet :liked-p :like-count))
           action-regions)
     (insert "   ")
     (push (cons 'quote (chirp-render--insert-metric 'quote (plist-get tweet :quote-count)))
           action-regions)
     (insert "   ")
     (push (cons 'bookmark
-                (chirp-render--insert-metric
-                 'bookmark
-                 (plist-get tweet :bookmark-count)
-                 (plist-get tweet :bookmarked-p)))
+                (chirp-render--insert-state-metric 'bookmark tweet :bookmarked-p :bookmark-count))
           action-regions)
     (insert "   ")
     (chirp-render--insert-metric 'view (plist-get tweet :view-count))
@@ -1124,30 +1120,21 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
     (insert (propertize line 'face 'chirp-tweet-separator-face))
     (insert "\n\n")))
 
-(defun chirp-render-insert-tweet-list (tweets &optional previous)
-  "Insert TWEETS, continuing separators and reply context from PREVIOUS.
+(defvar-local chirp-render--reply-chain nil
+  "Adjacent reply chain at the end of the last rendered tweet list.")
 
-Separators are inserted only between independent posts, never inside an
-adjacent conversation chain."
-  (let ((chain (and previous (list previous))))
-    (dolist (tweet tweets)
-      (if-let* ((reply-parent
-                 (cl-some (lambda (candidate)
-                            (chirp-render--list-reply-parent tweet candidate))
-                          chain)))
-          (progn
-            (chirp-render--insert-tweet
-             tweet
-             chirp-render-list-reply-prefix
-             nil
-             nil
-             nil
-             reply-parent)
-            (push tweet chain))
-        (when chain
-          (chirp-render-insert-tweet-separator))
-        (chirp-render-insert-tweet tweet)
-        (setq chain (list tweet))))))
+(defun chirp-render-insert-tweet-list (tweets &optional previous)
+  "Insert TWEETS, continuing the adjacent reply chain ending at PREVIOUS."
+  (unless (and previous (eq previous (car chirp-render--reply-chain)))
+    (setq chirp-render--reply-chain (and previous (list previous))))
+  (dolist (tweet tweets)
+    (if-let* ((parent (chirp-render--list-reply-parent tweet chirp-render--reply-chain)))
+        (progn
+          (chirp-render--insert-tweet tweet chirp-render-list-reply-prefix nil nil nil parent)
+          (push tweet chirp-render--reply-chain))
+      (when chirp-render--reply-chain (chirp-render-insert-tweet-separator))
+      (chirp-render-insert-tweet tweet)
+      (setq chirp-render--reply-chain (list tweet)))))
 
 (defun chirp-render-insert-thread-focus-tweet (tweet)
   "Insert the focus TWEET in a thread view."

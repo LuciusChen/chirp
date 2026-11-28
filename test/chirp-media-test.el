@@ -549,6 +549,19 @@ rerender and creates a CPU loop."
       (when (file-exists-p photo-file)
         (delete-file photo-file)))))
 
+(ert-deftest chirp-media-copies-with-the-active-display-backend ()
+  (let ((system-type 'gnu/linux)
+        (process-environment (copy-sequence process-environment))
+        (file (locate-library "chirp-media")) invoked)
+    (setenv "DISPLAY" ":1")
+    (cl-letf (((symbol-function 'executable-find) #'identity)
+              ((symbol-function 'call-process)
+               (lambda (program &rest _) (setq invoked program) 0)))
+      (dolist (wayland '(nil "wayland-1"))
+        (setenv "WAYLAND_DISPLAY" wayland)
+        (chirp-media--copy-image-file file)
+        (should (equal invoked (if wayland "wl-copy" "xclip")))))))
+
 (provide 'chirp-media-test)
 
 ;;; chirp-media-test.el ends here

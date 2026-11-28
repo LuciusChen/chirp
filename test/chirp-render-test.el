@@ -1419,6 +1419,10 @@
                               (buffer-substring-no-properties
                                (overlay-start chirp--current-entry-overlay)
                                (overlay-end chirp--current-entry-overlay))))
+      (let ((old chirp--current-entry-overlay))
+        (chirp-render-into-buffer (current-buffer) "Test" nil
+                                  (lambda () (chirp-render-insert-tweet-list tweets)))
+        (should-not (overlay-buffer old)))
       (search-forward chirp-tweet-separator)
       (goto-char (match-beginning 0))
       (chirp--update-current-entry-overlay)
@@ -1475,10 +1479,15 @@
       (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
                 ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) nil)))
         (let ((inhibit-read-only t))
-          (chirp-render-insert-tweet-list (list parent reply1 reply2 standalone))))
+          ;; The nearer author matches the root, but the explicit parent is 100.
+          (setq reply1 (plist-put reply1 :author-handle "dingyi"))
+          (setq reply1 (plist-put reply1 :conversation-id "100"))
+          (chirp-render-insert-tweet-list (list parent reply1))
+          (chirp-render-insert-tweet-list (list reply2 standalone) reply1)))
       (goto-char (point-min))
       (should (search-forward "↳ replying to @dingyi above" nil t))
       (should (search-forward "↳ replying to @DingYi above" nil t))
+      (should (equal (get-text-property (1- (point)) 'chirp-reply-parent-id) "100"))
       (let ((sibling-pos (point))
             (sep-pos (save-excursion
                        (goto-char (point-min))

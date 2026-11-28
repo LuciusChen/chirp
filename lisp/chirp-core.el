@@ -148,9 +148,6 @@ commands still work, and displays alt text when X provides it."
 (defvar-local chirp--timeline-exhausted-p nil
   "Non-nil when the active timeline has no more older posts to fetch.")
 
-(defvar-local chirp--timeline-loading-more nil
-  "Non-nil while Chirp is fetching older timeline posts.")
-
 (defvar-local chirp--rerender-function nil
   "Function used to redraw the current Chirp view without refetching data.")
 
@@ -209,6 +206,9 @@ commands still work, and displays alt text when X provides it."
 (put 'chirp--status-timer 'permanent-local t)
 (defvar chirp-tweet-state-overrides (make-hash-table :test #'equal)
   "Map tweet ids to local state overrides such as likes and bookmarks.")
+
+(defvar chirp-pending-tweet-states (make-hash-table :test #'equal)
+  "Map (tweet id . state key) to the requested symbol `on' or `off'.")
 
 (defvar chirp-quoted-tweet-cache (make-hash-table :test #'equal)
   "Map quoted tweet ids to enriched Chirp tweet plists.")
@@ -270,6 +270,7 @@ commands still work, and displays alt text when X provides it."
         (setq chirp--current-entry-overlay
               (make-overlay (car bounds) (cdr bounds)))
         (overlay-put chirp--current-entry-overlay 'face 'chirp-current-entry)
+        (overlay-put chirp--current-entry-overlay 'evaporate t)
         (overlay-put chirp--current-entry-overlay 'priority -50))
     (when (overlayp chirp--current-entry-overlay)
       (delete-overlay chirp--current-entry-overlay))))
@@ -424,7 +425,6 @@ revisited later."
     (setq-local chirp--timeline-next-cursor nil)
     (setq-local chirp--timeline-load-more-function nil)
     (setq-local chirp--timeline-exhausted-p nil)
-    (setq-local chirp--timeline-loading-more nil)
     (setq-local chirp--rerender-function nil)
     (setq-local chirp--entry-wrap-navigation t)
     (setq-local chirp--profile-handle nil)
@@ -1328,9 +1328,10 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
     (chirp--map-buffer-tweets
      buffer
      (lambda (tweet)
-       (when (equal (plist-get tweet :id) tweet-id)
-         (setq updated t)
-         (funcall fn tweet))))
+       (dolist (item (list tweet (plist-get tweet :quoted-tweet)))
+         (when (and item (equal (plist-get item :id) tweet-id))
+           (setq updated t)
+           (funcall fn item)))))
     (when (and updated rerender)
       (chirp-request-rerender buffer))
     updated))

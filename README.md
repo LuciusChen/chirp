@@ -46,7 +46,7 @@ If you switch away while `M-x chirp-list` is loading, run it again to pick from 
 - `q`: close the current window; Home and Following buffers stay alive so you can switch back to them later.
 - `RET`: open the item at point (a tweet's thread, a profile, a large media view, a link, or inline `Show more` expansion for article previews).
 - `/`: search X (with minibuffer history; press `TAB` in search results to toggle `Top` and `Latest`).
-- `l` / `R` / `B`: toggle like, repost, or bookmark on the tweet at point; counts update immediately and revert if the request fails.
+- `l` / `R` / `B`: toggle like, repost, or bookmark on the tweet at point; open views preview the new count and revert together if the request fails.
 - `c` / `r` / `Q`: compose a new post, reply to the tweet at point, or quote it.
 - `T`: translate the tweet at point and display the translation underneath.
 - `y`: copy the tweet URL as a `fixupx.com` link.

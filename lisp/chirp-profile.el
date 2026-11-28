@@ -131,7 +131,6 @@ the tail starting with the last previously displayed tweet."
                      next-cursor
                      #'chirp-profile-load-more))
     (setq-local chirp--timeline-exhausted-p (and timeline-ready (not next-cursor)))
-    (setq-local chirp--timeline-loading-more nil)
     (setq-local chirp--rerender-function
                 (lambda ()
                   (chirp-profile--render
@@ -151,8 +150,8 @@ the tail starting with the last previously displayed tweet."
   (unless chirp--profile-handle
     (user-error "Current view does not support loading more items"))
   (cond
-   (chirp--timeline-loading-more
-    (message "Already loading older posts..."))
+   (chirp--request-token
+    (message "Profile request in progress…"))
    (chirp--timeline-exhausted-p
     (message "No older posts."))
    ((not chirp--timeline-next-cursor)
@@ -169,7 +168,6 @@ the tail starting with the last previously displayed tweet."
            (cursor chirp--timeline-next-cursor)
            (token (chirp-begin-request buffer))
            (anchor (or anchor-id (chirp-capture-point-anchor))))
-      (setq-local chirp--timeline-loading-more t)
       (chirp-set-status buffer (format "Loading older %s..." mode-label))
       (message "Loading older %s..." mode-label)
       (chirp-profile--fetch-content
@@ -197,7 +195,6 @@ the tail starting with the last previously displayed tweet."
        (lambda (message)
          (when (chirp-request-current-p buffer token)
            (with-current-buffer buffer
-             (setq-local chirp--timeline-loading-more nil)
              (setq-local chirp--request-token nil))
            (chirp-set-status buffer "Load more failed" 'error)
            (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message))))

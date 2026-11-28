@@ -26,6 +26,11 @@ This file records user-visible Chirp changes from 2026-08-01 onward. Earlier his
 
 ### Fixed
 
+- Keep pagination on the selected search ordering while switching between Top and Latest.
+- Keep pending likes, reposts, and bookmarks consistent across open views. Restore their displayed state together if X rejects the action.
+- Preserve reply links across page boundaries and use the explicit parent post ID when available.
+- Copy photos with the clipboard tool for the active Linux display session and release entry highlights on redraw.
+
 - Omit tweet separators inside adjacent reply chains (including sibling replies) so dividers appear only between independent posts.
 - Wrap multi-photo thumbnail grids into separate rows within the window width instead of letting `visual-line-mode` wrap individual slices.
 - Restore timeline avatars for authors whose name and profile image are supplied separately by X.

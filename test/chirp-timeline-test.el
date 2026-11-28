@@ -267,7 +267,6 @@
     (unwind-protect
         (with-current-buffer buffer
           (chirp-view-mode)
-          (setq-local chirp--timeline-loading-more t)
           (setq-local chirp--request-token 'token)
           (let ((render-called nil)
                 (last-message nil))
@@ -293,7 +292,6 @@
                :envelope nil))
             (should-not render-called)
             (should chirp--timeline-exhausted-p)
-            (should-not chirp--timeline-loading-more)
             (should-not chirp--request-token)
             (should (equal last-message "No older posts."))))
       (when (buffer-live-p buffer)
@@ -433,7 +431,6 @@
                :envelope nil))
             (should-not render-called)
             (should-not chirp--request-token)
-            (should-not chirp--timeline-loading-more)
             (should (equal chirp--timeline-next-cursor "cursor-next"))
             (should (equal last-message "No new posts."))))
       (when (buffer-live-p buffer)
@@ -838,6 +835,25 @@
                              ("emacs" . "Latest")
                              ("emacs" . "Top")))))
         (kill-buffer view)))))
+
+(ert-deftest chirp-search-switch-waits-for-the-new-cursor ()
+  (save-window-excursion
+    (with-temp-buffer
+      (let (requests respond)
+        (cl-letf (((symbol-function 'chirp-backend-search)
+                   (lambda (_query success _failure _limit cursor &optional product)
+                     (push (list product cursor) requests)
+                     (setq respond success))))
+          (chirp-timeline-open-search "emacs" (current-buffer))
+          (funcall respond '((:kind tweet :id "top")) '(("nextCursor" . "top-cursor")))
+          (chirp-toggle-home-following)
+          (chirp-load-more)
+          (should (= (length requests) 2))
+          (funcall respond '((:kind tweet :id "latest")) '(("nextCursor" . "latest-cursor")))
+          (chirp-load-more)
+          (should (equal (car requests) '("Latest" "latest-cursor")))
+          (should (equal (mapcar #'chirp-tweet-key (chirp-timeline--buffer-tweets (current-buffer)))
+                         '("latest"))))))))
 
 (provide 'chirp-timeline-test)
 

@@ -225,9 +225,6 @@ cancelled, the attachment is removed, or the send completes."
                (eq (plist-get (chirp-entry-at-point) :kind) 'user)))
     (chirp-actions--refresh-buffer buffer)))
 
-(defvar chirp-actions--pending-states (make-hash-table :test #'equal)
-  "Map (TWEET-ID . STATE-KEY) pairs to non-nil while an update is in flight.")
-
 (defun chirp-actions--format-error (args reason)
   "Format error REASON for backend action ARGS."
   (if (and (equal (car args) "bookmark")
@@ -249,38 +246,22 @@ When ON-ERROR is non-nil, call it with the human-readable error message."
        (lambda (reason)
          (chirp-actions--show-error (chirp-actions--format-error args reason))))))
 
-(defun chirp-actions--restore-state-override (tweet-id state-key had-override old-override)
-  "Restore STATE-KEY override for TWEET-ID using HAD-OVERRIDE and OLD-OVERRIDE."
-  (if had-override
-      (chirp-set-tweet-state-override tweet-id state-key old-override)
-    (when-let* ((existing (gethash tweet-id chirp-tweet-state-overrides)))
-      (let (cleaned)
-        (while existing
-          (unless (eq (car existing) state-key)
-            (setq cleaned (plist-put cleaned (car existing) (cadr existing))))
-          (setq existing (cddr existing)))
-        (if cleaned
-            (puthash tweet-id cleaned chirp-tweet-state-overrides)
-          (remhash tweet-id chirp-tweet-state-overrides))))))
-
-(defun chirp-actions--apply-state (buffer tweet-id state-key state-value count-key)
-  "Update tweet state in BUFFER for TWEET-ID.
-
-STATE-KEY is set to STATE-VALUE and COUNT-KEY is adjusted when needed."
-  (chirp-set-tweet-state-override tweet-id state-key state-value)
-  (chirp-update-tweet-by-id
-   buffer
-   tweet-id
-   (lambda (tweet)
-     (let ((old-state (chirp-boolean-value (plist-get tweet state-key))))
-       (plist-put tweet state-key state-value)
-       (unless (eq old-state state-value)
-         (plist-put tweet
-                    count-key
-                    (chirp-adjust-count
-                     (plist-get tweet count-key)
-                     (if state-value 1 -1))))))
-   t))
+(defun chirp-actions--sync-metric (id state-key count-key target confirmed)
+  "Redraw the metric for ID in open views.
+When CONFIRMED, commit TARGET to STATE-KEY and adjust COUNT-KEY."
+  (when confirmed (chirp-set-tweet-state-override id state-key target))
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (derived-mode-p 'chirp-view-mode)
+        (chirp-update-tweet-by-id
+         buffer id
+         (lambda (tweet)
+           (when (and confirmed
+                      (not (eq target (chirp-boolean-value (plist-get tweet state-key)))))
+             (plist-put tweet state-key target)
+             (plist-put tweet count-key
+                        (chirp-adjust-count (plist-get tweet count-key) (if target 1 -1)))))
+         t)))))
 
 (defun chirp-actions--bookmarks-view-p (buffer)
   "Return non-nil when BUFFER is currently showing bookmarks."
@@ -291,50 +272,33 @@ STATE-KEY is set to STATE-VALUE and COUNT-KEY is adjusted when needed."
 (defun chirp-actions--set-state (state-key command count-key state-value success-message)
   "Set STATE-KEY for the current tweet using COMMAND.
 
-Apply the change optimistically in the current buffer, rolling back on failure.
+Preview the change in open views until X confirms or rejects it.
 COUNT-KEY is adjusted locally to reflect STATE-VALUE.  Display SUCCESS-MESSAGE
 when the request succeeds."
-  (let* ((tweet (chirp-actions--tweet-at-point))
-         (tweet-id (or (plist-get tweet :id)
-                       (user-error "Current tweet has no id")))
-         (pending-key (cons tweet-id state-key))
+  (let* ((id (chirp-actions--tweet-id-at-point))
+         (key (cons id state-key))
+         (pending chirp-pending-tweet-states)
          (buffer (current-buffer))
-         (args (list command tweet-id)))
-    (if (gethash pending-key chirp-actions--pending-states)
+         (args (list command id)))
+    (if (gethash key pending)
         (message "%s already in progress…" (capitalize command))
-      (let* ((old-state (chirp-boolean-value (plist-get tweet state-key)))
-             (old-count (plist-get tweet count-key))
-             (existing-overrides (gethash tweet-id chirp-tweet-state-overrides))
-             (had-override (plist-member existing-overrides state-key))
-             (old-override (and had-override (plist-get existing-overrides state-key))))
-        (cl-labels ((rollback (reason)
-                      (remhash pending-key chirp-actions--pending-states)
-                      (chirp-actions--restore-state-override
-                       tweet-id state-key had-override old-override)
-                      (chirp-update-tweet-by-id
-                       buffer tweet-id
-                       (lambda (item)
-                         (plist-put item state-key old-state)
-                         (plist-put item count-key old-count))
-                       t)
-                      (chirp-actions--show-error
-                       (chirp-actions--format-error args reason))))
-          (puthash pending-key t chirp-actions--pending-states)
-          (chirp-actions--apply-state buffer tweet-id state-key state-value count-key)
-          (message "%s…" (capitalize command))
-          (condition-case err
-              (chirp-actions--perform
-               args
-               (lambda (_data _envelope)
-                 (remhash pending-key chirp-actions--pending-states)
-                 (chirp-actions--apply-state buffer tweet-id state-key state-value count-key)
-                 (when (and (eq state-key :bookmarked-p)
-                            (not state-value)
-                            (chirp-actions--bookmarks-view-p buffer))
-                   (chirp-actions--refresh-buffer buffer))
-                 (message "%s" success-message))
-               #'rollback)
-            (error (rollback (error-message-string err)))))))))
+      (cl-labels ((finish (reason)
+                    (remhash key pending)
+                    (when (eq pending chirp-pending-tweet-states)
+                      (chirp-actions--sync-metric id state-key count-key state-value (null reason))
+                      (cond
+                       (reason (chirp-actions--show-error (chirp-actions--format-error args reason)))
+                       (t
+                        (when (and (eq state-key :bookmarked-p) (not state-value)
+                                   (chirp-actions--bookmarks-view-p buffer))
+                          (chirp-actions--refresh-buffer buffer))
+                        (message "%s" success-message))))))
+        (puthash key (if state-value 'on 'off) pending)
+        (chirp-actions--sync-metric id state-key count-key state-value nil)
+        (message "%s…" (capitalize command))
+        (condition-case err
+            (chirp-actions--perform args (lambda (_data _envelope) (finish nil)) #'finish)
+          (error (finish (error-message-string err))))))))
 
 (defun chirp-actions--toggle-state (state-key command-on command-off count-key
                                               success-on success-off)

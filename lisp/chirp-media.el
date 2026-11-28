@@ -1181,8 +1181,8 @@ function run(argv) {
 (defun chirp-media--copy-image-file (file)
   "Copy local image FILE to the system clipboard."
   (let ((expanded (expand-file-name file))
-        (wl-copy (executable-find "wl-copy"))
-        (xclip (executable-find "xclip")))
+        (wl-copy (and (getenv "WAYLAND_DISPLAY") (executable-find "wl-copy")))
+        (xclip (and (getenv "DISPLAY") (executable-find "xclip"))))
     (unless (file-readable-p expanded)
       (user-error "Image file is not readable: %s" expanded))
     (cond
@@ -1194,12 +1194,8 @@ function run(argv) {
         (unless (and (numberp status) (zerop status))
           (user-error "Failed to copy image to macOS clipboard"))))
      (wl-copy
-      (let ((status (with-temp-buffer
-                      (set-buffer-multibyte nil)
-                      (insert-file-contents-literally expanded)
-                      (call-process-region (point-min) (point-max)
-                                           wl-copy nil nil nil
-                                           "--type" (chirp-media--mime-type expanded)))))
+      (let ((status (call-process wl-copy expanded nil nil
+                                  "--type" (chirp-media--mime-type expanded))))
         (unless (and (numberp status) (zerop status))
           (user-error "Failed to copy image with wl-copy"))))
      (xclip

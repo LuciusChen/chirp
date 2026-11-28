@@ -150,7 +150,6 @@ is the tail of TWEETS starting with the last previously rendered tweet."
                      :anchor-id (chirp-capture-point-anchor)
                      :exhausted-p chirp--timeline-exhausted-p
                      :next-cursor chirp--timeline-next-cursor)))
-      (setq-local chirp--timeline-loading-more nil)
       (or (and anchor-id
                (chirp-restore-point-anchor anchor-id))
           (chirp-move-point-to-first-entry)))
@@ -184,8 +183,6 @@ contains pagination metadata.  BACKGROUND keeps the selected window."
              (additions (if boundary (cdr boundary) merged-tweets))
              (exhausted-p (not next-cursor)))
         (with-current-buffer buffer
-          (setq-local chirp--timeline-loading-more nil)
-          (setq-local chirp--request-token nil)
           (setq-local chirp--timeline-exhausted-p exhausted-p)
           (setq-local chirp--timeline-next-cursor next-cursor))
         (if additions
@@ -223,7 +220,6 @@ contains pagination metadata.  BACKGROUND keeps the selected window."
              :exhausted-p previous-exhausted-p
              :next-cursor effective-next-cursor)
           (with-current-buffer buffer
-            (setq-local chirp--timeline-loading-more nil)
             (setq-local chirp--timeline-exhausted-p previous-exhausted-p)
             (setq-local chirp--timeline-next-cursor effective-next-cursor)))
         (chirp-clear-status buffer)
@@ -281,10 +277,7 @@ requests a specific pagination page."
          (same-view (with-current-buffer buffer
                       (and (equal chirp--timeline-kind kind) chirp--timeline-limit)))
          (token (if (or loading-more refreshing)
-                    (progn
-                      (with-current-buffer buffer
-                        (setq-local chirp--timeline-loading-more t))
-                      (chirp-begin-request buffer))
+                    (chirp-begin-request buffer)
                   (chirp-begin-background-request buffer title))))
     (cond
      (loading-more
@@ -334,7 +327,6 @@ requests a specific pagination page."
            (failure (reason)
              (when (chirp-request-current-p buffer token)
                (with-current-buffer buffer
-                 (setq-local chirp--timeline-loading-more nil)
                  (setq-local chirp--request-token nil))
                (if (or loading-more refreshing same-view)
                    (progn
@@ -374,8 +366,8 @@ requests a specific pagination page."
 (defun chirp-timeline--load-more (&optional anchor-id)
   "Load older posts and restore point to ANCHOR-ID when supplied."
   (cond
-   (chirp--timeline-loading-more
-    (message "Already loading older posts..."))
+   (chirp--request-token
+    (message "Timeline request in progress…"))
    ((or chirp--timeline-exhausted-p (null chirp--timeline-next-cursor))
     (chirp-set-status (current-buffer) "End of timeline · g refresh" 'info)
     (message "No older posts."))

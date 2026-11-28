@@ -39,6 +39,7 @@
                      (chirp-backend-clear-cache)
                      (clrhash chirp-quoted-tweet-cache)
                      (clrhash chirp-tweet-state-overrides)
+                     (setq chirp-pending-tweet-states (make-hash-table :test #'equal))
                      (apply command args))))
 
 (defun chirp--open (command &rest args)
