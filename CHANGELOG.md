@@ -21,6 +21,7 @@ history remains available in Git.
 - Inline tweet translation from the actions menu with `T`.
 - Native desktop notifications for account activity.
 - Complete user handles while composing posts. Suggestions arrive asynchronously through the active completion frontend.
+- Copy opened photos directly to the system clipboard with `c` or `w` in Chirp media views (using AppKit on macOS, `wl-copy` on Wayland, or `xclip` on X11).
 - Gapless row-sliced image and video/GIF cover thumbnails.
 - Configurable case-insensitive filtering of reply content and author nicknames/handles, with conservative Chinese-first literal and all-fragment defaults collected from real public reply spam.
 - Highlighted context labels for related tweets and reply-target handles in thread views.
@@ -32,6 +33,7 @@ history remains available in Git.
 
 - Restore timeline avatars for authors whose name and profile image are supplied separately by X.
 - Open a fresh timeline after WebKit sign-in and recover a timeline read interrupted by the final redirect.
+- Wrap multi-photo thumbnail grids into clean horizontal bands within the window width so wide image sets and narrow split windows no longer soft-wrap into interleaved stripes.
 - Preserve full NoteTweet text, focus tweets in deep threads, related-post labels, and follow relationships from X’s native responses.
 - Continue searches, likes, lists, and follower lists beyond page one. Skip duplicate-only feed pages and preserve the active window while appending older entries.
 - Open the list picker only while its original window and buffer are selected and the minibuffer is free. Reopening a failed home timeline retries the request.

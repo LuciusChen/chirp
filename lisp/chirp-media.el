@@ -226,6 +226,8 @@ When nil, Chirp falls back to a text placeholder for video-like media."
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "n") #'chirp-media-next)
     (define-key map (kbd "p") #'chirp-media-previous)
+    (define-key map (kbd "c") #'chirp-media-copy-image)
+    (define-key map (kbd "w") #'chirp-media-copy-image)
     (define-key map (kbd "D") #'chirp-media-download-at-point)
     (define-key map (kbd "v") #'chirp-media-play)
     (define-key map (kbd "o") #'chirp-media-browse)
@@ -241,6 +243,8 @@ When nil, Chirp falls back to a text placeholder for video-like media."
     (set-keymap-parent map image-mode-map)
     (define-key map (kbd "n") #'chirp-media-next)
     (define-key map (kbd "p") #'chirp-media-previous)
+    (define-key map (kbd "c") #'chirp-media-copy-image)
+    (define-key map (kbd "w") #'chirp-media-copy-image)
     (define-key map (kbd "D") #'chirp-media-download-at-point)
     (define-key map (kbd "v") #'chirp-media-play)
     (define-key map (kbd "o") #'chirp-media-browse)
@@ -1161,6 +1165,69 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
                      (format "Downloaded %s" (abbreviate-file-name target))
                    (format "Failed to download %s" (abbreviate-file-name target))))))))
 
+(defconst chirp-media--macos-copy-image-script
+  "ObjC.import('AppKit');
+function run(argv) {
+  var img = $.NSImage.alloc.initWithContentsOfFile(argv[0]);
+  if (!img || img.isNil()) { throw new Error('Could not load image'); }
+  var pb = $.NSPasteboard.generalPasteboard;
+  pb.clearContents;
+  if (!pb.writeObjects($.NSArray.arrayWithObject(img))) {
+    throw new Error('Could not write image to clipboard');
+  }
+}"
+  "JXA script used on macOS to copy an image file to the system clipboard.")
+
+(defun chirp-media--copy-image-file (file)
+  "Copy local image FILE to the system clipboard."
+  (let ((expanded (expand-file-name file))
+        (wl-copy (executable-find "wl-copy"))
+        (xclip (executable-find "xclip")))
+    (unless (file-readable-p expanded)
+      (user-error "Image file is not readable: %s" expanded))
+    (cond
+     ((eq system-type 'darwin)
+      (let ((status (call-process "/usr/bin/osascript" nil nil nil
+                                  "-l" "JavaScript"
+                                  "-e" chirp-media--macos-copy-image-script
+                                  "--" expanded)))
+        (unless (and (numberp status) (zerop status))
+          (user-error "Failed to copy image to macOS clipboard"))))
+     (wl-copy
+      (let ((status (with-temp-buffer
+                      (set-buffer-multibyte nil)
+                      (insert-file-contents-literally expanded)
+                      (call-process-region (point-min) (point-max)
+                                           wl-copy nil nil nil
+                                           "--type" (chirp-media--mime-type expanded)))))
+        (unless (and (numberp status) (zerop status))
+          (user-error "Failed to copy image with wl-copy"))))
+     (xclip
+      (let ((status (call-process xclip nil nil nil
+                                  "-selection" "clipboard"
+                                  "-t" (chirp-media--mime-type expanded)
+                                  "-i" expanded)))
+        (unless (and (numberp status) (zerop status))
+          (user-error "Failed to copy image with xclip"))))
+     (t
+      (user-error "No supported image clipboard tool found (requires macOS, wl-copy, or xclip)")))))
+
+(defun chirp-media-copy-image ()
+  "Copy the current photo media item to the system clipboard."
+  (interactive)
+  (let ((media (or (chirp-media-at-point)
+                   (and chirp--media-list
+                        (nth chirp--media-index chirp--media-list))
+                   (chirp-media--select-download-media))))
+    (unless (string= (plist-get media :type) "photo")
+      (user-error "Only photo media can be copied to the clipboard"))
+    (let ((file (or (chirp-media--cached-download-file media)
+                    (chirp-media--photo-file media))))
+      (unless file
+        (user-error "Image file unavailable"))
+      (chirp-media--copy-image-file file)
+      (message "Copied image to clipboard."))))
+
 (defun chirp-media-download-at-point ()
   "Download the current media item at its original or highest-quality URL."
   (interactive)
@@ -1369,8 +1436,8 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
       (let* ((total (length media-list))
              (alt (chirp-first-nonblank (plist-get media :alt)))
              (hint (if (> total 1)
-                       "n/p: switch · D: download · o: browser · q: back"
-                     "D: download · o: browser · q: back")))
+                       "n/p: switch · c: copy · D: download · o: browser · q: back"
+                     "c: copy · D: download · o: browser · q: back")))
         (message "%s (%d/%d)%s  [%s]"
                  title (1+ index) total
                  (if alt (format " — %s" (truncate-string-to-width alt 80 nil nil "…")) "")

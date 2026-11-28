@@ -735,7 +735,7 @@ Precede the line with PREFIX using PREFIX-FACE when provided."
                      (equal reply-to-id previous-id))
                 (and reply-to-handle
                      previous-handle
-                     (equal reply-to-handle previous-handle)
+                     (string-equal-ignore-case reply-to-handle previous-handle)
                      conversation-id
                      (or (equal conversation-id previous-id)
                          (equal conversation-id previous-conversation-id))))
@@ -883,15 +883,51 @@ When COMPACTP is non-nil, omit alt text and make a missing video actionable."
                    (chirp-render--thumbnail-slices image row-metrics)))
         (list :media media
               :index index
+              :width width
               :rows rows
               :padding (propertize
                         " " 'display `(space :width (,width)))))
     (let ((placeholder (chirp-render--media-placeholder-text media t)))
       (list :media media
             :index index
+            :width (* (max 1 (string-width placeholder))
+                      (max 1 (frame-char-width)))
             :rows (list (propertize placeholder
                                     'face 'chirp-media-placeholder-face))
             :padding (make-string (max 1 (string-width placeholder)) ?\s)))))
+
+(defun chirp-render--media-grid-max-width (&optional prefix)
+  "Return available pixel width for one media-grid band with PREFIX, or nil."
+  (when-let* ((window (or (get-buffer-window (current-buffer) t)
+                          (selected-window)))
+              ((window-live-p window))
+              ((display-graphic-p (window-frame window)))
+              (body-width (window-body-width window t))
+              ((> body-width 0)))
+    (let* ((char-width (max 1 (or (and (fboundp 'window-font-width)
+                                       (ignore-errors
+                                         (window-font-width window 'default)))
+                                  (frame-char-width (window-frame window)))))
+           (prefix-width (* (string-width (or prefix "")) char-width)))
+      (max 1 (- body-width prefix-width char-width)))))
+
+(defun chirp-render--partition-media-cells (cells max-width)
+  "Split CELLS into horizontal bands that fit within MAX-WIDTH pixels."
+  (if (or (null cells)
+          (not (and (numberp max-width) (> max-width 0))))
+      (and cells (list cells))
+    (let (bands current (used 0))
+      (dolist (cell cells)
+        (let ((width (max 1 (or (plist-get cell :width) 1))))
+          (when (and current (> (+ used width) max-width))
+            (push (nreverse current) bands)
+            (setq current nil
+                  used 0))
+          (push cell current)
+          (setq used (+ used width))))
+      (when current
+        (push (nreverse current) bands))
+      (nreverse bands))))
 
 (defun chirp-render--insert-media-grid
     (media-list &optional prefix prefix-face)
@@ -903,21 +939,28 @@ When COMPACTP is non-nil, omit alt text and make a missing video actionable."
                    for index from 0
                    collect (chirp-render--media-grid-cell
                             media index row-metrics)))
-         (row-count
-          (apply #'max (mapcar (lambda (cell)
-                                 (length (plist-get cell :rows)))
-                               cells))))
-    (dotimes (row row-count)
-      (chirp-render--insert-prefix prefix prefix-face)
-      (dolist (cell cells)
-        (let ((start (point)))
-          (insert (or (nth row (plist-get cell :rows))
-                      (plist-get cell :padding)))
-          (chirp-render--mark-media-region
-           start (point)
-           (plist-get cell :media) media-list (plist-get cell :index))))
-      (when (< (1+ row) row-count)
-        (insert (propertize "\n" 'line-height t))))))
+         (bands (chirp-render--partition-media-cells
+                 cells (chirp-render--media-grid-max-width prefix))))
+    (cl-loop for band in bands
+             for band-index from 0
+             for row-count = (apply #'max
+                                    (mapcar (lambda (cell)
+                                              (length (plist-get cell :rows)))
+                                            band))
+             do
+             (when (> band-index 0)
+               (insert "\n\n"))
+             (dotimes (row row-count)
+               (chirp-render--insert-prefix prefix prefix-face)
+               (dolist (cell band)
+                 (let ((start (point)))
+                   (insert (or (nth row (plist-get cell :rows))
+                               (plist-get cell :padding)))
+                   (chirp-render--mark-media-region
+                    start (point)
+                    (plist-get cell :media) media-list (plist-get cell :index))))
+               (when (< (1+ row) row-count)
+                 (insert (propertize "\n" 'line-height t)))))))
 
 (defun chirp-render--insert-media-text-cell (media media-list index &optional prefix prefix-face)
   "Insert one compact text entry for hidden MEDIA.
@@ -1084,21 +1127,27 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
 (defun chirp-render-insert-tweet-list (tweets &optional previous)
   "Insert TWEETS, continuing separators and reply context from PREVIOUS.
 
-Separators are inserted only between independent posts, never between a
-tweet and its adjacent reply."
-  (dolist (tweet tweets)
-    (if-let* ((reply-parent (chirp-render--list-reply-parent tweet previous)))
-        (chirp-render--insert-tweet
-         tweet
-         chirp-render-list-reply-prefix
-         nil
-         nil
-         nil
-         reply-parent)
-      (when previous
-        (chirp-render-insert-tweet-separator))
-      (chirp-render-insert-tweet tweet))
-    (setq previous tweet)))
+Separators are inserted only between independent posts, never inside an
+adjacent conversation chain."
+  (let ((chain (and previous (list previous))))
+    (dolist (tweet tweets)
+      (if-let* ((reply-parent
+                 (cl-some (lambda (candidate)
+                            (chirp-render--list-reply-parent tweet candidate))
+                          chain)))
+          (progn
+            (chirp-render--insert-tweet
+             tweet
+             chirp-render-list-reply-prefix
+             nil
+             nil
+             nil
+             reply-parent)
+            (push tweet chain))
+        (when chain
+          (chirp-render-insert-tweet-separator))
+        (chirp-render-insert-tweet tweet)
+        (setq chain (list tweet))))))
 
 (defun chirp-render-insert-thread-focus-tweet (tweet)
   "Insert the focus TWEET in a thread view."

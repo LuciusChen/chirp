@@ -164,7 +164,7 @@ so media commands still work, and shows alt text when X provides it.
 - Timeline, thread, and profile views now render cached avatars/thumbnails first; missing media are prefetched in the background so text appears faster.
 - Video and animated GIF thumbnails are filled in asynchronously when Chirp can use an upstream preview image or extract one with `ffmpeg`.
 - Press `RET` on a thumbnail to open the photo in a new Chirp media buffer when image display is available.
-- In image and fallback media views, `q` closes the current media buffer and `D` downloads the current media item.
+- In image and fallback media views, `c` or `w` copies the current photo to the system clipboard, `D` downloads the current media item, and `q` closes the current media buffer
 - Videos currently open externally through `mpv` when available, or the browser otherwise.
 
 If you want a larger or fixed mpv window, customize:

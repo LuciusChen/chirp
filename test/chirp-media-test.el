@@ -512,6 +512,43 @@ rerender and creates a CPU loop."
     (should (equal (chirp-media-playback-url media) "movie"))
     (should (equal (chirp-media-download-url media) "movie"))))
 
+(ert-deftest chirp-media-copy-image-copies-current-photo-and-binds-keys ()
+  "Media viewers should bind `c' and `w' to copy photos and reject videos."
+  (should (eq (lookup-key chirp-media-image-mode-map (kbd "c")) #'chirp-media-copy-image))
+  (should (eq (lookup-key chirp-media-image-mode-map (kbd "w")) #'chirp-media-copy-image))
+  (should (eq (lookup-key chirp-media-view-mode-map (kbd "c")) #'chirp-media-copy-image))
+  (should (eq (lookup-key chirp-media-view-mode-map (kbd "w")) #'chirp-media-copy-image))
+  (let ((photo-file (make-temp-file "chirp-copy-" nil ".jpg"))
+        copied-file
+        captured-args)
+    (unwind-protect
+        (progn
+          (with-temp-buffer
+            (chirp-media-view-mode)
+            (setq-local chirp--media-list
+                        '((:type "photo" :url "https://example.com/pic.jpg")
+                          (:type "video" :url "https://example.com/clip.mp4")))
+            (setq-local chirp--media-index 0)
+            (cl-letf (((symbol-function 'chirp-media--cached-download-file) (lambda (_) nil))
+                      ((symbol-function 'chirp-media--photo-file) (lambda (_) photo-file))
+                      ((symbol-function 'chirp-media--copy-image-file)
+                       (lambda (file) (setq copied-file file)))
+                      ((symbol-function 'message) #'ignore))
+              (chirp-media-copy-image)
+              (should (equal copied-file photo-file)))
+            (setq-local chirp--media-index 1)
+            (should-error (chirp-media-copy-image) :type 'user-error))
+          (let ((system-type 'darwin))
+            (cl-letf (((symbol-function 'call-process)
+                       (lambda (program &rest args)
+                         (setq captured-args (cons program args))
+                         0)))
+              (chirp-media--copy-image-file photo-file))
+            (should (equal (car captured-args) "/usr/bin/osascript"))
+            (should (equal (car (last captured-args)) (expand-file-name photo-file)))))
+      (when (file-exists-p photo-file)
+        (delete-file photo-file)))))
+
 (provide 'chirp-media-test)
 
 ;;; chirp-media-test.el ends here

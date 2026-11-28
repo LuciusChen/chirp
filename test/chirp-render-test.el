@@ -1424,6 +1424,69 @@
       (chirp--update-current-entry-overlay)
       (should-not (overlay-buffer chirp--current-entry-overlay)))))
 
+(ert-deftest chirp-render-sliced-media-grid-wraps-into-bands-within-window-width ()
+  "Wide media lists should split into gapless bands that fit within window width."
+  (let ((media-list (cl-loop for i below 5
+                             collect (list :type "photo"
+                                           :url (format "img-%d.jpg" i)))))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-thumbnail-image)
+                 (lambda (media)
+                   `(image :type png :file ,(plist-get media :url))))
+                ((symbol-function 'chirp-media-thumbnail-placeholder-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-render--thumbnail-row-metrics)
+                 (lambda (&rest _args) '(20 . 75)))
+                ((symbol-function 'chirp-render--media-grid-max-width)
+                 (lambda (&optional _prefix) 220))
+                ((symbol-function 'image-size)
+                 (lambda (&rest _args) '(100 . 40))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-media-strip media-list)))
+      (let* ((lines (split-string (buffer-string) "\n")))
+        ;; 5 images of width 100px in 220px max-width -> 3 bands (2, 2, 1),
+        ;; each 2 rows tall, separated by a blank line, ending with "\n\n".
+        (should (equal (mapcar #'length lines)
+                       '(2 2 0 2 2 0 1 1 0 0)))))))
+
+(ert-deftest chirp-render-insert-tweet-list-links-sibling-replies-without-separator ()
+  "Sibling replies to the same root in one conversation should share no separator."
+  (pcase-let* ((`(,parent ,reply1) (chirp-test--sample-adjacent-reply-tweets))
+               (reply2 '(:kind tweet
+                         :id "102"
+                         :text "Sibling reply"
+                         :reply-to-id "100"
+                         :reply-to-handle "DingYi"
+                         :conversation-id "100"
+                         :author-name "Carol"
+                         :author-handle "carol"
+                         :reply-count 0 :retweet-count 0 :like-count 0
+                         :quote-count 0 :bookmark-count 0 :view-count 0))
+               (standalone '(:kind tweet
+                             :id "200"
+                             :text "Next topic"
+                             :author-name "Bob"
+                             :author-handle "bob"
+                             :reply-count 0 :retweet-count 0 :like-count 0
+                             :quote-count 0 :bookmark-count 0 :view-count 0)))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet-list (list parent reply1 reply2 standalone))))
+      (goto-char (point-min))
+      (should (search-forward "↳ replying to @dingyi above" nil t))
+      (should (search-forward "↳ replying to @DingYi above" nil t))
+      (let ((sibling-pos (point))
+            (sep-pos (save-excursion
+                       (goto-char (point-min))
+                       (and (search-forward chirp-tweet-separator nil t)
+                            (match-beginning 0)))))
+        (should sep-pos)
+        (should (> sep-pos sibling-pos))))))
+
 (provide 'chirp-render-test)
 
 ;;; chirp-render-test.el ends here
