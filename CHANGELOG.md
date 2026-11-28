@@ -26,6 +26,7 @@ This file records user-visible Chirp changes from 2026-08-01 onward. Earlier his
 
 ### Fixed
 
+- Restore an existing WebKit X session quietly in the background after restarting Emacs, showing the sign-in page only when authentication is needed or when `M-x chirp-login` is run explicitly.
 - Keep pagination on the selected search ordering while switching between Top and Latest.
 - Keep pending likes, reposts, and bookmarks consistent across open views. Restore their displayed state together if X rejects the action.
 - Preserve reply links across page boundaries and use the explicit parent post ID when available.

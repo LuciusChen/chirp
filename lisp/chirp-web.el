@@ -32,16 +32,44 @@
   (and chirp-web--ready (fboundp 'xwidget-live-p)
        (xwidget-live-p chirp-web--widget)))
 
-(defconst chirp-web--login-script
-  "location.origin === 'https://x.com' && document.readyState !== 'loading' &&
-   (/^\\/home\\/?$/.test(location.pathname) ||
-    (!location.pathname.startsWith('/i/flow/') &&
-     document.querySelector('[data-testid=\"AppTabBar_Home_Link\"]'))) &&
-   /(?:^|;\\s*)ct0=[^;]+/.test(document.cookie) ? 'ready' : ''"
-  "Detect sign-in inside the current X document after client-side navigation.")
+(defconst chirp-web--home-url "https://x.com/home"
+  "X home page used to restore an existing WebKit session quietly.")
 
-(defun chirp-web--check-login (callback deadline)
-  "Run CALLBACK once the X home session is ready, or stop at DEADLINE."
+(defconst chirp-web--login-url
+  "https://x.com/i/flow/login?redirect_after_login=%2Fhome"
+  "X sign-in page opened for interactive authentication.")
+
+(defconst chirp-web--login-script
+  "(() => {
+  if (document.readyState === 'loading') return '';
+  if (location.origin === 'https://x.com') {
+    const path = location.pathname;
+    if (path.startsWith('/i/flow/') || path === '/login') return 'signin';
+    const hasCsrf = /(?:^|;\\s*)ct0=[^;]+/.test(document.cookie);
+    const signedIn = /(?:^|;\\s*)twid=[^;]+/.test(document.cookie) ||
+      !!document.querySelector('[data-testid=\"AppTabBar_Home_Link\"], [data-testid=\"SideNav_AccountSwitcher_Button\"]');
+    if (hasCsrf && signedIn) return 'ready';
+    if (document.readyState === 'complete' &&
+        document.querySelector('[data-testid=\"loginButton\"], a[href=\"/login\"]')) return 'signin';
+    return '';
+  }
+  return location.href && location.href !== 'about:blank' && document.readyState === 'complete'
+    ? 'signin' : '';
+})()"
+  "Detect whether the X WebKit session is ready or requires sign-in.")
+
+(defun chirp-web--reveal-login (widget reveal-state)
+  "Show WIDGET's sign-in buffer once when REVEAL-STATE is still pending."
+  (when (and reveal-state (not (cdr reveal-state)) (xwidget-live-p widget))
+    (setcdr reveal-state t)
+    (let ((buffer (xwidget-buffer widget)))
+      (unless (get-buffer-window buffer t)
+        (pop-to-buffer buffer)))
+    (message "Sign in to X here. Chirp will open when the session is ready.")))
+
+(defun chirp-web--check-login (callback deadline &optional reveal-state)
+  "Run CALLBACK once the X home session is ready, or stop at DEADLINE.
+Optional REVEAL-STATE is (REVEAL-AT . REVEALED-P) for background restore."
   (let* ((widget chirp-web--widget)
          (timer chirp-web--login-timer)
          (live (xwidget-live-p widget)))
@@ -51,18 +79,26 @@
       (setq chirp-web--login-timer nil)
       (when live (message "X sign-in timed out. Run M-x chirp-login to resume.")))
      (t
+      (when (and reveal-state (not (cdr reveal-state))
+                 (> (float-time) (car reveal-state)))
+        (chirp-web--reveal-login widget reveal-state))
       (xwidget-webkit-execute-script
        widget chirp-web--login-script
        (lambda (state)
-         (when (and (eq timer chirp-web--login-timer) (equal state "ready"))
-           (cancel-timer timer)
-           (setq chirp-web--login-timer nil chirp-web--ready (gensym "chirp-web-session-"))
-           (let* ((buffer (xwidget-buffer widget))
-                  (window (get-buffer-window buffer t)))
-             (quit-windows-on buffer)
-             (if (window-live-p window)
-                 (with-selected-window window (funcall callback))
-               (funcall callback))))))))))
+         (when (eq timer chirp-web--login-timer)
+           (cond
+            ((equal state "ready")
+             (cancel-timer timer)
+             (setq chirp-web--login-timer nil chirp-web--ready (gensym "chirp-web-session-"))
+             (let* ((buffer (xwidget-buffer widget))
+                    (window (get-buffer-window buffer t)))
+               (when (window-live-p window)
+                 (quit-windows-on buffer))
+               (if (window-live-p window)
+                   (with-selected-window window (funcall callback))
+                 (funcall callback))))
+            ((equal state "signin")
+             (chirp-web--reveal-login widget reveal-state))))))))))
 
 (defun chirp-web--confirm-kill ()
   "Ask before closing the browser buffer that holds Chirp's X session."
@@ -70,29 +106,42 @@
                 (eq (xwidget-buffer chirp-web--widget) (current-buffer))))
       (yes-or-no-p "Close Chirp’s X browser session? ")))
 
-(defun chirp-web-login (callback)
-  "Open X sign-in and call CALLBACK when the session is ready."
+(defun chirp-web-login (callback &optional interactive-p)
+  "Ensure an X WebKit session is ready and call CALLBACK.
+When INTERACTIVE-P is non-nil, show the X sign-in page immediately.
+Otherwise try restoring an existing WebKit session quietly in the
+background and show the browser buffer only if X requires sign-in."
   (unless (and (display-graphic-p) (fboundp 'xwidget-webkit-execute-script)
                (require 'xwidget nil t))
     (user-error "Open Chirp in a graphical Emacs with WebKit to sign in"))
-  (let ((login "https://x.com/i/flow/login?redirect_after_login=%2Fhome"))
+  (let ((url (if interactive-p chirp-web--login-url chirp-web--home-url))
+        (reveal-state (unless interactive-p (cons (+ (float-time) 5.0) nil))))
     (if (xwidget-live-p chirp-web--widget)
         (progn
-          (pop-to-buffer (xwidget-buffer chirp-web--widget))
-          (unless chirp-web--login-timer
-            (xwidget-webkit-goto-uri chirp-web--widget login)))
-      (xwidget-webkit-new-session login)
-      (setq chirp-web--widget (xwidget-webkit-current-session))
+          (when interactive-p
+            (pop-to-buffer (xwidget-buffer chirp-web--widget)))
+          (when (or interactive-p (not chirp-web--login-timer))
+            (xwidget-webkit-goto-uri chirp-web--widget url)))
+      (if interactive-p
+          (progn
+            (xwidget-webkit-new-session url)
+            (setq chirp-web--widget (xwidget-webkit-current-session)))
+        (save-window-excursion
+          (xwidget-webkit-new-session url)
+          (setq chirp-web--widget (xwidget-webkit-current-session))))
       (unless (xwidget-live-p chirp-web--widget)
         (user-error "WebKit could not open the X sign-in page"))
       (set-xwidget-query-on-exit-flag chirp-web--widget nil)
       (with-current-buffer (xwidget-buffer chirp-web--widget)
         (add-hook 'kill-buffer-query-functions #'chirp-web--confirm-kill nil t)))
-    (message "Sign in to X here. Chirp will open when the session is ready.")
+    (message "%s"
+             (if interactive-p
+                 "Sign in to X here. Chirp will open when the session is ready."
+               "Connecting to X..."))
     (when chirp-web--login-timer (cancel-timer chirp-web--login-timer))
     (setq chirp-web--ready nil
-          chirp-web--login-timer (run-at-time 0.5 0.75 #'chirp-web--check-login
-                                             callback (+ (float-time) 600)))))
+          chirp-web--login-timer (run-at-time 0.25 0.35 #'chirp-web--check-login
+                                             callback (+ (float-time) 600) reveal-state))))
 
 (defconst chirp-web--fetch-script
   "((id, url, method, bearer, type, data, limit) => {

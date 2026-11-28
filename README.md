@@ -4,7 +4,7 @@
 
 ## Quick Start
 
-Chirp requires GNU Emacs 29.1 or newer. In a graphical Emacs built with Xwidgets, open any Chirp view and sign in on the X page; once sign-in finishes, Chirp opens the view you asked for and keeps the WebKit session in a background buffer. Closing that session buffer asks for confirmation, and `M-x chirp-login` signs in again.
+Chirp requires GNU Emacs 29.1 or newer. In a graphical Emacs built with Xwidgets, open any Chirp view: if your WebKit session is still signed in to X, Chirp restores it quietly in the background without flashing a browser window; otherwise it opens the X sign-in page and switches to the requested view once sign-in finishes. Closing the background session buffer asks for confirmation, and `M-x chirp-login` opens the X sign-in page directly.
 
 In a terminal-only Emacs, set `TWITTER_AUTH_TOKEN` and `TWITTER_CT0` in the environment, or store `auth_token` and `ct0` entries for `x.com` in `auth-source`.
 
