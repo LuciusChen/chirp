@@ -186,36 +186,6 @@ Return a list of (compose source foreign)."
       (kill-buffer source)
       (when (file-exists-p file) (delete-file file)))))
 
-(ert-deftest chirp-compose-continues-rejected-quotes-on-x ()
-  "A rejected quote can continue on X without another write or losing its draft."
-  (pcase-let ((`(,draft . ,source) (chirp-test--make-compose-buffer "My comment")))
-    (unwind-protect
-        (with-current-buffer draft
-          (setq chirp-compose-kind 'quote chirp-compose-target-id "42"
-                chirp-compose-attachments '("/tmp/photo.jpg"))
-          (let ((posts 0) (kill-ring nil) (interprogram-cut-function nil)
-                (send (key-binding (kbd "C-c C-c"))) opened)
-            (cl-letf (((symbol-function 'chirp-backend-compose)
-                       (lambda (&rest args)
-                         (cl-incf posts)
-                         (funcall (plist-get args :errback) "X rejected this request (226)")))
-                      ((symbol-function 'chirp-web-open-post)
-                       (lambda (id external) (setq opened (list id external)))))
-              (call-interactively send)
-              (should-not opened)
-              (call-interactively send)
-              (should (= posts 1))
-              (should (equal opened '("42" nil)))
-              (let ((current-prefix-arg '(4)))
-                (call-interactively send))
-              (should (equal opened '("42" (4))))
-              (should (= posts 1))
-              (should (equal (car kill-ring) "My comment"))
-              (should (equal (chirp-compose--body-text) "My comment"))
-              (should (equal chirp-compose-attachments '("/tmp/photo.jpg"))))))
-      (kill-buffer draft)
-      (kill-buffer source))))
-
 (ert-deftest chirp-compose-send-rejects-duplicate-submit ()
   "Sending should reject a second submit while a draft is marked in flight."
   (pcase-let ((`(,compose . ,source)
@@ -377,12 +347,16 @@ Return a list of (compose source foreign)."
           (progn
             (cl-letf (((symbol-function 'chirp-backend-compose)
                        (lambda (&rest args)
-                         (setq captured-args (list (plist-get args :kind) (plist-get args :target-id) (plist-get args :text))))))
+                         (setq captured-args
+                               (list (plist-get args :kind)
+                                     (plist-get args :target-id)
+                                     (plist-get args :target-handle)
+                                     (plist-get args :text))))))
               (with-current-buffer compose
                 (goto-char (marker-position chirp-compose-body-start-marker))
                 (insert "hello quote")
                 (chirp-compose-send)))
-            (should (equal captured-args '(quote "123" "hello quote")))
+            (should (equal captured-args '(quote "123" "alice" "hello quote")))
             (should (buffer-live-p compose))
             (should (buffer-local-value 'chirp-compose-sending compose))
             (should (eq (window-buffer (selected-window)) source)))
@@ -663,14 +637,14 @@ Return a list of (compose source foreign)."
                      ("l" . chirp-toggle-like-at-point)
                      ("B" . chirp-toggle-bookmark-at-point)
                      ("T" . chirp-translate-at-point)
-                     ("y" . chirp-copy-fixupx-url-at-point)))
+                     ("y" . chirp-copy-url-at-point)))
     (let* ((suffix (transient-get-suffix 'chirp-dispatch (car binding)))
            (properties (if (integerp (car suffix)) (nth 2 suffix) (cdr suffix))))
       (should (eq (plist-get properties :command) (cdr binding)))))
   (should-error (transient-get-suffix 'chirp-dispatch "U")))
 
-(ert-deftest chirp-copy-fixupx-url-at-point-copies-rewritten-url ()
-  "Copy action should rewrite tweet URLs from x.com to fixupx.com."
+(ert-deftest chirp-copy-url-at-point-copies-canonical-url ()
+  "Copy action should copy the canonical x.com URL of the tweet at point."
   (let (captured-url last-message)
     (chirp-test--with-tweet-buffer
      '(:kind tweet
@@ -684,10 +658,10 @@ Return a list of (compose source foreign)."
                  ((symbol-function 'message)
                   (lambda (format-string &rest args)
                     (setq last-message (apply #'format format-string args)))))
-         (chirp-copy-fixupx-url-at-point)
-         (should (equal captured-url "https://fixupx.com/alice/status/123"))
+         (chirp-copy-url-at-point)
+         (should (equal captured-url "https://x.com/alice/status/123"))
          (should (equal last-message
-                        "Copied https://fixupx.com/alice/status/123")))))))
+                        "Copied https://x.com/alice/status/123")))))))
 
 (ert-deftest chirp-compose-reuses-count-until-draft-changes ()
   (pcase-let ((`(,draft . ,source) (chirp-test--make-compose-buffer "Hi")))
@@ -756,10 +730,118 @@ Return a list of (compose source foreign)."
                      ("l" . chirp-toggle-like-at-point)
                      ("B" . chirp-toggle-bookmark-at-point)
                      ("T" . chirp-translate-at-point)
-                     ("y" . chirp-copy-fixupx-url-at-point)
+                     ("y" . chirp-copy-url-at-point)
                      ("i" . chirp-notifications)))
     (should (eq (lookup-key chirp-view-mode-map (kbd (car binding)))
                 (cdr binding)))))
+
+(ert-deftest chirp-compose-quote-places-card-below-body ()
+  "Quote buffers should leave one editable blank line above the quoted card."
+  (pcase-let* ((`(,compose ,source ,foreign)
+                (chirp-test--open-compose-from-foreign-current-buffer
+                 'quote
+                 (list :kind 'tweet
+                       :id "123"
+                       :author-name "Alice"
+                       :author-handle "alice"
+                       :text "First line\nSecond line"
+                       :url "https://x.com/alice/status/123"
+                       :media '((:type "photo") (:type "photo"))))))
+    (unwind-protect
+        (with-current-buffer compose
+          (should (= (point) (point-min)))
+          (should (= (marker-position chirp-compose-body-start-marker) (point-min)))
+          (should (string-prefix-p "\n\n│ Alice @alice · 2 photos\n" (buffer-string)))
+          (should (string-match-p "C-c C-c" (chirp-compose--header-line)))
+          (should (string-match-p "│ First line\n│ Second line" (buffer-string)))
+          (should-not (string-match-p "https://x.com/alice/status/123" (buffer-string)))
+          (should-not (string-match-p "No images attached" (buffer-string)))
+          ;; Leaving line 1 blank and typing on the blank line above the card should work.
+          (forward-line 1)
+          (insert "On line 2")
+          (should (equal (chirp-compose--body-text) "On line 2"))
+          (should (string-prefix-p " 9/280" (chirp-compose--count-label)))
+          (goto-char (marker-position chirp-compose-body-end-marker))
+          (insert "!")
+          (should (equal (chirp-compose--body-text) "On line 2!")))
+      (dolist (buffer (list compose source foreign))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest chirp-compose-reply-shows-parent-card-above-editable-body ()
+  "Reply buffers should render the parent tweet card above the editable body."
+  (pcase-let* ((`(,compose ,source ,foreign)
+                (chirp-test--open-compose-from-foreign-current-buffer
+                 'reply
+                 (list :kind 'tweet
+                       :id "456"
+                       :author-name "Bob"
+                       :author-handle "bob"
+                       :text "Hello thread"
+                       :url "https://x.com/bob/status/456"))))
+    (unwind-protect
+        (with-current-buffer compose
+          (let ((body-start (marker-position chirp-compose-body-start-marker)))
+            (should (> body-start (point-min)))
+            (let ((header (buffer-substring-no-properties (point-min) body-start)))
+              (should (string-match-p "│ Bob @bob" header))
+              (should (string-match-p "↳ Replying to @bob" header)))
+            (insert "Agreed")
+            (should (equal (chirp-compose--current-body) "Agreed"))))
+      (dolist (buffer (list compose source foreign))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest chirp-compose-attachments-section-is-hidden-when-empty ()
+  "Compose buffers should show the Images section only while images are attached."
+  (pcase-let ((`(,compose . ,source) (chirp-test--make-compose-buffer ""))
+              (file (make-temp-file "chirp-attach-" nil ".png")))
+    (with-temp-file file (insert "png"))
+    (unwind-protect
+        (with-current-buffer compose
+          (chirp-compose--refresh-display)
+          (should-not (string-match-p "Images" (buffer-string)))
+          (chirp-compose--add-attachment file t)
+          (should (string-match-p "Images (1/4)" (buffer-string)))
+          (should (string-match-p "Clipboard image (PNG)" (buffer-string)))
+          (chirp-compose-remove-image)
+          (should-not (string-match-p "Images" (buffer-string))))
+      (when (buffer-live-p compose) (kill-buffer compose))
+      (when (buffer-live-p source) (kill-buffer source))
+      (when (file-exists-p file) (delete-file file)))))
+
+(ert-deftest chirp-compose-cancel-confirms-only-for-nonempty-drafts ()
+  "Cancelling an empty draft should not prompt, while non-empty drafts should confirm."
+  (pcase-let ((`(,empty . ,source-a) (chirp-test--make-compose-buffer "   "))
+              (`(,filled . ,source-b) (chirp-test--make-compose-buffer "Unsent thought")))
+    (let ((prompted nil))
+      (unwind-protect
+          (progn
+            (cl-letf (((symbol-function 'yes-or-no-p)
+                       (lambda (_prompt) (setq prompted t) nil)))
+              (with-current-buffer empty
+                (chirp-compose-cancel))
+              (should-not prompted)
+              (should-not (buffer-live-p empty))
+              (with-current-buffer filled
+                (chirp-compose-cancel))
+              (should prompted)
+              (should (buffer-live-p filled)))
+            (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_prompt) t)))
+              (with-current-buffer filled
+                (chirp-compose-cancel))
+              (should-not (buffer-live-p filled))))
+        (dolist (buf (list empty source-a filled source-b))
+          (when (buffer-live-p buf) (kill-buffer buf)))))))
+
+(ert-deftest chirp-compose-clipboard-backend-falls-back-to-osascript-on-macos ()
+  "macOS image paste should fall back to built-in osascript when pngpaste is missing."
+  (let ((system-type 'darwin))
+    (cl-letf (((symbol-function 'executable-find) (lambda (_name) nil)))
+      (let ((backend (chirp-compose--clipboard-image-backend)))
+        (should (eq (plist-get backend :kind) 'filearg))
+        (should (equal (plist-get backend :program) "/usr/bin/osascript"))
+        (should (equal (plist-get backend :extension) ".png"))))))
 
 (provide 'chirp-actions-test)
 

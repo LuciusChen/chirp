@@ -14,10 +14,11 @@
 (require 'chirp-backend)
 (require 'chirp-media)
 (require 'chirp-render)
-(require 'chirp-web)
+(require 'chirp-thread)
+(require 'chirp-x)
 
 (defvar-local chirp-timeline--session nil
-  "WebKit session that requested this timeline.")
+  "Hashed credential session identity that requested this timeline.")
 (put 'chirp-timeline--session 'permanent-local t)
 
 (defun chirp-timeline--set-kind (buffer kind)
@@ -159,6 +160,13 @@ is the tail of TWEETS starting with the last previously rendered tweet."
     (chirp-media-prefetch-tweets new-tweets buffer)
     (chirp-enrich-quoted-tweets new-tweets buffer)))
 
+(defun chirp-timeline--filter-tweets (kind tweets)
+  "Apply persistent user mute rules to TWEETS for eligible timeline KIND."
+  (if (or (memq kind '(home following))
+          (memq (car-safe kind) '(search list)))
+      (chirp-thread-filter-user-tweets tweets)
+    tweets))
+
 (cl-defun chirp-timeline--handle-feed-success
     (buffer title refresh tweets
             &key kind limit anchor-id loading-more refreshing
@@ -171,6 +179,7 @@ PREVIOUS-EXHAUSTED-P, and PREVIOUS-NEXT-CURSOR describe the old view.  ENVELOPE
 contains pagination metadata.  BACKGROUND keeps the selected window."
   (with-current-buffer buffer
     (setq-local chirp--request-token nil))
+  (setq tweets (chirp-timeline--filter-tweets kind tweets))
   (let ((next-cursor (chirp-backend-envelope-next-cursor envelope)))
     (when (and loading-more (equal next-cursor previous-next-cursor))
       (setq next-cursor nil))
@@ -202,7 +211,8 @@ contains pagination metadata.  BACKGROUND keeps the selected window."
             (chirp-set-status buffer "End of timeline · g refresh" 'info)
           (chirp-clear-status buffer))))
      (refreshing
-      (let* ((merged (chirp-timeline--merge-refreshed-tweets previous-tweets tweets))
+      (let* ((filtered-previous (chirp-timeline--filter-tweets kind previous-tweets))
+             (merged (chirp-timeline--merge-refreshed-tweets filtered-previous tweets))
              (merged-tweets (plist-get merged :tweets))
              (new-count (plist-get merged :new-count))
              (effective-next-cursor
@@ -343,15 +353,16 @@ requests a specific pagination page."
 
 (defun chirp-timeline--open-primary (kind)
   "Revisit the persistent timeline for KIND, or load it."
-  (let ((buffer (seq-find (lambda (buf)
-                            (with-current-buffer buf
-                              (and (eq chirp--timeline-kind kind)
-                                   (eq chirp-timeline--session chirp-web--ready))))
-                          (buffer-list))))
+  (let* ((session (chirp-x-session-key))
+         (buffer (seq-find (lambda (buf)
+                             (with-current-buffer buf
+                               (and (eq chirp--timeline-kind kind)
+                                    (equal chirp-timeline--session session))))
+                           (buffer-list))))
     (if (and buffer (with-current-buffer buffer (or chirp--timeline-limit chirp--request-token)))
         (chirp-display-buffer buffer)
       (setq buffer (or buffer (chirp-buffer)))
-      (with-current-buffer buffer (setq chirp-timeline--session chirp-web--ready))
+      (with-current-buffer buffer (setq chirp-timeline--session session))
       (chirp-timeline--open kind :buffer buffer))))
 
 (defun chirp-timeline-open-home ()

@@ -4,9 +4,11 @@
 
 ## Quick Start
 
-Chirp requires GNU Emacs 29.1 or newer. In a graphical Emacs built with Xwidgets, open any Chirp view: if your WebKit session is still signed in to X, Chirp restores it quietly in the background without flashing a browser window; otherwise it opens the X sign-in page and switches to the requested view once sign-in finishes. Closing the background session buffer asks for confirmation, and `M-x chirp-login` opens the X sign-in page directly.
+Chirp requires GNU Emacs 29.1 or newer with built-in libxml HTML support (and built-in SQLite for automatic browser cookie import). Authentication works identically in graphical Emacs, terminal Emacs (`emacs -nw`), and remote SSH sessions.
 
-In a terminal-only Emacs, set `TWITTER_AUTH_TOKEN` and `TWITTER_CT0` in the environment, or store `auth_token` and `ct0` entries for `x.com` in `auth-source`.
+Run `M-x chirp` (or `M-x chirp-login`): Chirp automatically imports your existing `x.com` session cookies from a local browser — checking currently running browsers and your system default browser first, filtering expired cookies, and failing over across browser profiles if a stored session is stale (Firefox, Zen, LibreWolf, Dia, Arc, Chrome, Brave, Edge, Chromium, or Vivaldi — using only Emacs's built-in SQLite plus standard OS crypto tools, with no external CLI or third-party dependencies), verifies them against X, and saves them to `~/.emacs.d/chirp/auth.json` (`0600` permissions; customizable via `chirp-x-auth-file`). On headless machines, Windows, Safari, or when no local browser session is available, `M-x chirp-login` accepts `Copy as cURL` or `Cookie` headers directly from the clipboard or masked manual entry. Use `C-u M-x chirp-login` to pick a specific browser profile, clipboard import, or manual paste, set `chirp-x-cookie-browser` to pin your default browser, set `chirp-x-query-id-overrides` if X rotates a GraphQL query ID, and run `M-x chirp-logout` to remove the saved file.
+
+You can also provide credentials through environment variables (`TWITTER_AUTH_TOKEN` and `TWITTER_CT0`) or `auth-source` (`host x.com`, users `auth_token` and `ct0`). Lookup order is environment variables, then `chirp-x-auth-file`, then `auth-source`.
 
 ### Load Chirp
 
@@ -22,6 +24,7 @@ Run `M-x chirp` to open the For You timeline.
 ```elisp
 M-x chirp
 M-x chirp-login
+M-x chirp-logout
 M-x chirp-notifications
 M-x chirp-following
 M-x chirp-bookmarks
@@ -49,7 +52,7 @@ If you switch away while `M-x chirp-list` is loading, run it again to pick from 
 - `l` / `R` / `B`: toggle like, repost, or bookmark on the tweet at point; open views preview the new count and revert together if the request fails.
 - `c` / `r` / `Q`: compose a new post, reply to the tweet at point, or quote it.
 - `T`: translate the tweet at point and display the translation underneath.
-- `y`: copy the tweet URL as a `fixupx.com` link.
+- `y`: copy the tweet URL.
 - `i`: open the account activity view.
 - `m`: open the first media item on the current tweet.
 - `D`: download the media at point, or pick one item from the current tweet (originals for photos, highest-quality variant for videos).
@@ -62,12 +65,11 @@ If you switch away while `M-x chirp-list` is loading, run it again to pick from 
 Inside the compose buffer:
 
 - `C-c C-a`: attach an image file (up to 4).
-- `C-c C-v`: paste an image from the clipboard (uses `pngpaste` on macOS and `wl-paste` on Wayland when available).
+- `C-c C-v`: paste an image from the clipboard (uses `pngpaste` or built-in macOS AppKit on macOS, `wl-paste` on Wayland, or `xclip` on X11).
 - `C-c C-d`: remove an attached image.
 - `M-TAB`: complete `@handle` mentions via your active completion frontend (with built-in completion, press `M-TAB` again if the first lookup is still loading).
 - `C-c C-c`: send the draft in the background and return to browsing; if sending fails, the draft and attachments are restored (`C-c C-o` opens your profile to check before retrying).
-- After X rejects a quote with code 226, press `C-c C-c` to open the original post in Emacs WebKit and copy your comment. Choose **Repost → Quote**, paste the comment, and review it before posting. Use `C-u C-c C-c` from any quote draft to open the original in your configured browser. The draft and attached files stay in Chirp. Add those files to the web composer before posting.
-- `C-c C-k`: cancel the draft.
+- `C-c C-k`: cancel the draft (asks for confirmation when you have entered text or attached images).
 
 Drafts longer than 280 weighted characters are sent as long-form posts automatically.
 
@@ -96,11 +98,21 @@ Tweet translation (`T` or `x T`) defaults to Chinese. Change the target language
 (setq chirp-translation-language "zh")
 ```
 
-## Thread Reply Filtering
+## Spam & Mute Filtering
 
-Chirp filters common spam replies in thread views using a case-insensitive list of literal phrases matched against reply text, expanded links, author names, and `@handles`. The focus tweet and X's `Related tweet` entries are never filtered. Nested lists match only when every fragment appears.
+Chirp filters spam replies in thread views and applies your personal mute rules across Home, Following, Search, List, and Thread views. Built-in spam defaults apply only to thread replies and automatically exempt the focus tweet, the thread author's own replies, `Related tweet` entries, your own posts, and accounts you follow. Matching inspects text, author bio, display name, handle, expanded links, and quoted tweets after stripping zero-width characters and normalizing whitespace and fullwidth ASCII.
 
-Press `S` on a reply to save a literal phrase to `~/.emacs.d/chirp/spam-rules.txt` (one entry per line, `#` comments and blank lines ignored) and refresh the view immediately. Use `C-u S` to prefill the author's display name, or run `M-x chirp-thread-edit-spam-rules` to edit the file directly. You can change the file location via `chirp-thread-spam-rules-file`.
+When replies are hidden in a thread, press `RET` or click the `── Conversation · N shown · M hidden (RET to show) ──` heading to toggle showing them with their matched rule labels.
+
+Press `S` on a post to save a rule to `~/.emacs.d/chirp/spam-rules.txt` (one rule per line; `#` comments and blank lines ignored) and refresh immediately. Use `C-u S` to prefill `@handle` for the current author, or run `M-x chirp-thread-edit-spam-rules` to edit the file directly. Supported rule forms:
+
+- `phrase`: case-insensitive literal substring
+- `@handle`: exact author handle mute
+- `host:t.me`: link hostname filter (matches exact host and subdomains)
+- `phrase1 && phrase2`: combined rule requiring every fragment
+- `/regexp/`: regular expression match
+
+You can change the file location via `chirp-thread-spam-rules-file`.
 
 ```elisp
 (setq chirp-thread-spam-keywords nil) ; Disable filtering.
@@ -163,7 +175,7 @@ Point `chirp-video-player-command` at another player or set it to `nil` to alway
 
 ## Acknowledgments
 
-The native X web API backend (`lisp/chirp-x.el` and the X GraphQL/REST adapters in `lisp/chirp-backend.el`) was adapted and ported from the [`emacs-apps/chirp`](https://github.com/emacs-apps/chirp) fork. Many thanks to its maintainers for building the native backend work that made dropping `twitter-cli` possible.
+The native X web API backend (`lisp/chirp-x.el`, the `X-Client-Transaction-Id` protocol in `lisp/chirp-x-transaction.el`, and the X GraphQL/REST adapters in `lisp/chirp-backend.el`) was adapted and ported from the [`emacs-apps/chirp`](https://github.com/emacs-apps/chirp) fork. Many thanks to its maintainers for building the native backend work that made dropping `twitter-cli` possible.
 
 ## License
 

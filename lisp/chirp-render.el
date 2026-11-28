@@ -763,10 +763,8 @@ Associate the avatar with HANDLE when provided."
     (text minimum-height window)
   "Return rendered metrics for TEXT using MINIMUM-HEIGHT in WINDOW, or nil."
   (when (and window
-             (display-graphic-p (window-frame window))
-             (fboundp 'buffer-text-pixel-size))
-    (let ((remapping (and (boundp 'face-remapping-alist)
-                          (symbol-value 'face-remapping-alist))))
+             (display-graphic-p (window-frame window)))
+    (let ((remapping face-remapping-alist))
       (with-temp-buffer
         (setq-local face-remapping-alist remapping
                     line-spacing 0
@@ -806,7 +804,6 @@ ascent percentage, or nil when final-layout measurement is unavailable."
          (minimum-height
           (max 1 (ceiling
                   (or (and window
-                           (fboundp 'window-font-height)
                            (ignore-errors
                              (window-font-height window 'default)))
                       (frame-char-height frame)))))
@@ -863,10 +860,7 @@ When COMPACTP is non-nil, omit alt text and make a missing video actionable."
                             (if compactp " open" ""))))
                  ("animated_gif" "gif")
                  (_ "image"))))
-    (if (and (not compactp)
-             alt
-             (stringp alt)
-             (not (string-empty-p alt)))
+    (if (and (not compactp) alt)
         (format "[%s: %s]" kind (chirp-render--truncate-link-card-text alt 220))
       (format "[%s]" kind))))
 
@@ -905,67 +899,141 @@ When COMPACTP is non-nil, omit alt text and make a missing video actionable."
   "Return available pixel width for one media-grid band with PREFIX, or nil."
   (when-let* ((window (or (get-buffer-window (current-buffer) t)
                           (selected-window)))
-              ((window-live-p window))
               ((display-graphic-p (window-frame window)))
               (body-width (window-body-width window t))
               ((> body-width 0)))
-    (let* ((char-width (max 1 (or (and (fboundp 'window-font-width)
-                                       (ignore-errors
-                                         (window-font-width window 'default)))
+    (let* ((char-width (max 1 (or (ignore-errors
+                                    (window-font-width window 'default))
                                   (frame-char-width (window-frame window)))))
            (prefix-width (* (string-width (or prefix "")) char-width)))
       (max 1 (- body-width prefix-width char-width)))))
 
-(defun chirp-render--partition-media-cells (cells max-width)
-  "Split CELLS into horizontal bands that fit within MAX-WIDTH pixels."
-  (if (or (null cells)
-          (not (and (numberp max-width) (> max-width 0))))
-      (and cells (list cells))
-    (let (bands current (used 0))
-      (dolist (cell cells)
-        (let ((width (max 1 (or (plist-get cell :width) 1))))
-          (when (and current (> (+ used width) max-width))
-            (push (nreverse current) bands)
-            (setq current nil
-                  used 0))
-          (push cell current)
-          (setq used (+ used width))))
-      (when current
-        (push (nreverse current) bands))
-      (nreverse bands))))
+(defconst chirp-render--media-grid-gap 6
+  "Horizontal pixel gap between adjacent media thumbnails in one row.")
+
+(defconst chirp-render--media-overflow-card-width 48
+  "Pixel width of the `+N' overflow badge card at the end of a single-row strip.")
+
+(defun chirp-render--media-row-fits-p (cells max-width)
+  "Return non-nil when all CELLS fit on one row within MAX-WIDTH pixels."
+  (or (null cells)
+      (not (and (numberp max-width) (> max-width 0)))
+      (let ((total 0))
+        (cl-loop for cell in cells
+                 for index from 0
+                 do (setq total (+ total
+                                   (if (> index 0) chirp-render--media-grid-gap 0)
+                                   (max 1 (or (plist-get cell :width) 1)))))
+        (<= total max-width))))
+
+(defun chirp-render--fit-media-single-row (cells max-width)
+  "Fit CELLS onto one horizontal row within MAX-WIDTH pixels.
+
+Return `(VISIBLE . HIDDEN-COUNT)' where VISIBLE always keeps at least the first
+cell and reserves space for an overflow `+N' card whenever items are omitted."
+  (if (chirp-render--media-row-fits-p cells max-width)
+      (cons cells 0)
+    (let* ((budget (max 1 (- max-width
+                             chirp-render--media-grid-gap
+                             chirp-render--media-overflow-card-width)))
+           (remaining cells)
+           visible
+           (used 0)
+           (keep-going t))
+      (while (and remaining keep-going)
+        (let* ((cell (car remaining))
+               (width (max 1 (or (plist-get cell :width) 1)))
+               (gap (if visible chirp-render--media-grid-gap 0)))
+          (if (or (null visible)
+                  (<= (+ used gap width) budget))
+              (progn
+                (push cell visible)
+                (setq used (+ used gap width)
+                      remaining (cdr remaining)))
+            (setq keep-going nil))))
+      (setq visible (nreverse visible))
+      (cons visible (length remaining)))))
+
+(defun chirp-render--media-overflow-cell (media index hidden-count row-count row-metrics)
+  "Return a `+HIDDEN-COUNT' overflow cell targeting MEDIA at INDEX.
+
+ROW-COUNT and ROW-METRICS align the badge card height with the visible strip."
+  (let* ((target-height (* (max 1 row-count) (car row-metrics)))
+         (badge (chirp-media-overflow-badge-image
+                 hidden-count
+                 chirp-render--media-overflow-card-width
+                 target-height)))
+    (if badge
+        (pcase-let ((`(,rows . ,width)
+                     (chirp-render--thumbnail-slices badge row-metrics)))
+          (list :media media
+                :index index
+                :width width
+                :rows rows
+                :padding (propertize " " 'display `(space :width (,width)))
+                :overflow-count hidden-count))
+      (let ((label (format "+%d" hidden-count)))
+        (list :media media
+              :index index
+              :width chirp-render--media-overflow-card-width
+              :rows (list (propertize label 'face 'chirp-media-placeholder-face))
+              :padding (make-string (length label) ?\s)
+              :overflow-count hidden-count)))))
 
 (defun chirp-render--insert-media-grid
     (media-list &optional prefix prefix-face)
-  "Insert sliced rows for MEDIA-LIST using PREFIX and PREFIX-FACE."
-  (let* ((row-metrics
-          (chirp-render--thumbnail-row-metrics prefix prefix-face))
-         (cells
-          (cl-loop for media in media-list
-                   for index from 0
-                   collect (chirp-render--media-grid-cell
-                            media index row-metrics)))
-         (bands (chirp-render--partition-media-cells
-                 cells (chirp-render--media-grid-max-width prefix))))
-    (cl-loop for band in bands
-             for band-index from 0
-             for row-count = (apply #'max
-                                    (mapcar (lambda (cell)
-                                              (length (plist-get cell :rows)))
-                                            band))
-             do
-             (when (> band-index 0)
-               (insert "\n\n"))
-             (dotimes (row row-count)
-               (chirp-render--insert-prefix prefix prefix-face)
-               (dolist (cell band)
-                 (let ((start (point)))
-                   (insert (or (nth row (plist-get cell :rows))
-                               (plist-get cell :padding)))
-                   (chirp-render--mark-media-region
-                    start (point)
-                    (plist-get cell :media) media-list (plist-get cell :index))))
-               (when (< (1+ row) row-count)
-                 (insert (propertize "\n" 'line-height t)))))))
+  "Insert one horizontal row of sliced media thumbnails for MEDIA-LIST.
+
+Precede each slice row with PREFIX using PREFIX-FACE when provided.  When more
+items exist than fit on a single row, append a clickable `+N' badge card;
+opening any item lets the user cycle through the full MEDIA-LIST."
+  (pcase-let* ((row-metrics
+                (chirp-render--thumbnail-row-metrics prefix prefix-face))
+               (cells
+                (cl-loop for media in media-list
+                         for index from 0
+                         collect (chirp-render--media-grid-cell
+                                  media index row-metrics)))
+               (`(,visible . ,hidden-count)
+                (chirp-render--fit-media-single-row
+                 cells (chirp-render--media-grid-max-width prefix)))
+               (row-count (apply #'max
+                                 (mapcar (lambda (cell)
+                                           (length (plist-get cell :rows)))
+                                         visible)))
+               (band (if (> hidden-count 0)
+                         (let ((first-hidden (length visible)))
+                           (append visible
+                                   (list (chirp-render--media-overflow-cell
+                                          (nth first-hidden media-list)
+                                          first-hidden
+                                          hidden-count
+                                          row-count
+                                          row-metrics))))
+                       visible))
+               (final-row-count (apply #'max
+                                       (mapcar (lambda (cell)
+                                                 (length (plist-get cell :rows)))
+                                               band)))
+               (gap-spacer (propertize
+                            " "
+                            'display `(space :width (,chirp-render--media-grid-gap))
+                            'line-height t)))
+    (dotimes (row final-row-count)
+      (chirp-render--insert-prefix prefix prefix-face)
+      (cl-loop for cell in band
+               for cell-index from 0
+               do
+               (when (> cell-index 0)
+                 (insert gap-spacer))
+               (let ((start (point)))
+                 (insert (or (nth row (plist-get cell :rows))
+                             (plist-get cell :padding)))
+                 (chirp-render--mark-media-region
+                  start (point)
+                  (plist-get cell :media) media-list (plist-get cell :index))))
+      (when (< (1+ row) final-row-count)
+        (insert (propertize "\n" 'line-height t))))))
 
 (defun chirp-render--insert-media-text-cell (media media-list index &optional prefix prefix-face)
   "Insert one compact text entry for hidden MEDIA.
@@ -1117,8 +1185,14 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
 (defun chirp-render-insert-tweet-separator ()
   "Insert the configured separator between tweet list entries."
   (when-let* ((line (chirp-render--tweet-separator-line)))
+    ;; Shrink the blank lines above and below the separator to 1/4 line height.
+    (when (and (> (point) (1+ (point-min)))
+               (eq (char-before (point)) ?\n)
+               (eq (char-before (1- (point))) ?\n))
+      (put-text-property (1- (point)) (point) 'display '((height 0.25))))
     (insert (propertize line 'face 'chirp-tweet-separator-face))
-    (insert "\n\n")))
+    (insert "\n")
+    (insert (propertize "\n" 'display '((height 0.25))))))
 
 (defvar-local chirp-render--reply-chain nil
   "Adjacent reply chain at the end of the last rendered tweet list.")
@@ -1140,16 +1214,37 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
   "Insert the focus TWEET in a thread view."
   (chirp-render--insert-tweet tweet nil nil nil 'full))
 
-(defun chirp-render-insert-thread-reply (tweet)
-  "Insert a reply TWEET in a thread view."
+(defun chirp-render-insert-thread-reply (tweet &optional filtered-rule)
+  "Insert a reply TWEET in a thread view.
+
+When FILTERED-RULE is non-nil, prepend a muted badge showing the matched rule."
+  (when (and (stringp filtered-rule) (not (string-empty-p filtered-rule)))
+    (insert (propertize (format "[filtered: %s]\n" filtered-rule)
+                        'face 'chirp-thread-reply-context-face)))
   (chirp-render--insert-tweet tweet nil nil t))
 
-(defun chirp-render-insert-thread-divider (count hidden)
-  "Insert a conversation heading for COUNT displayed posts and HIDDEN replies."
-  (insert (propertize (format "── Conversation · %d shown%s ──" count
-                              (if (> hidden 0) (format " · %d hidden" hidden) ""))
-                      'face 'chirp-thread-divider-face 'chirp-replies-heading t))
-  (insert "\n\n"))
+(defun chirp-render-insert-thread-divider (count hidden &optional show-hidden-p)
+  "Insert a conversation heading for COUNT displayed posts and HIDDEN replies.
+
+When SHOW-HIDDEN-P is non-nil, indicate that filtered replies are currently
+expanded."
+  (let* ((hidden-part
+          (cond
+           ((<= hidden 0) "")
+           (show-hidden-p (format " · %d filtered shown (RET to hide)" hidden))
+           (t (format " · %d hidden (RET to show)" hidden))))
+         (label (format "── Conversation · %d shown%s ──" count hidden-part))
+         (props (append (list 'face 'chirp-thread-divider-face
+                              'chirp-replies-heading t)
+                        (when (> hidden 0)
+                          (list 'pointer 'hand
+                                'mouse-face 'highlight
+                                'help-echo
+                                (if show-hidden-p
+                                    "RET or click: hide filtered replies"
+                                  "RET or click: show filtered replies"))))))
+    (insert (apply #'propertize label props))
+    (insert "\n\n")))
 
 (defun chirp-render-insert-user-summary (user)
   "Insert USER summary."

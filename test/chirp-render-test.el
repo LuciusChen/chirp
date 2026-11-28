@@ -564,11 +564,20 @@
           (chirp-render-insert-tweet-list tweets)))
       (goto-char (point-min))
       (should (search-forward chirp-tweet-separator nil t))
-      (let ((pos (match-beginning 0)))
+      (let* ((pos (match-beginning 0))
+             (sep-bol (save-excursion (goto-char pos) (line-beginning-position)))
+             (sep-eol (save-excursion (goto-char pos) (line-end-position)))
+             (above-nl (1- sep-bol))
+             (below-nl (1+ sep-eol)))
         (should (chirp-test--face-member-p
                  'chirp-tweet-separator-face
                  (get-text-property pos 'face)))
-        (should-not (get-text-property pos 'chirp-entry-item))))))
+        (should-not (get-text-property pos 'chirp-entry-item))
+        ;; Blank lines directly above and below the separator use 1/4 line height.
+        (should (eq (char-after above-nl) ?\n))
+        (should (equal (get-text-property above-nl 'display) '((height 0.25))))
+        (should (eq (char-after below-nl) ?\n))
+        (should (equal (get-text-property below-nl 'display) '((height 0.25))))))))
 
 (ert-deftest chirp-render-insert-tweet-list-indents-separator-from-left ()
   "List separators should use a stable left indent."
@@ -608,7 +617,8 @@
       (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil)))
         (let ((inhibit-read-only t))
           (chirp-render-insert-tweet-list tweets)))
-      (should-not (string-match-p "- - - -" (buffer-string))))))
+      (should-not (string-match-p "- - - -" (buffer-string)))
+      (should-not (text-property-any (point-min) (point-max) 'display '((height 0.25)))))))
 
 (ert-deftest chirp-render-insert-thread-focus-tweet-renders-full-article-body ()
   "Thread focus rendering should include the full article text."
@@ -956,6 +966,10 @@
       (should (equal (get-text-property (point) 'display)
                      '(space :width (40))))
       (should (= (get-text-property (point) 'chirp-media-index) 0))
+      (forward-char 1)
+      (should (equal (get-text-property (point) 'display)
+                     `(space :width (,chirp-render--media-grid-gap))))
+      (should-not (get-text-property (point) 'chirp-media-item))
       (forward-char 1)
       (should (eq (car-safe (car-safe (get-text-property (point) 'display)))
                   'slice))
@@ -1428,8 +1442,8 @@
       (chirp--update-current-entry-overlay)
       (should-not (overlay-buffer chirp--current-entry-overlay)))))
 
-(ert-deftest chirp-render-sliced-media-grid-wraps-into-bands-within-window-width ()
-  "Wide media lists should split into gapless bands that fit within window width."
+(ert-deftest chirp-render-sliced-media-grid-stays-single-row-with-overflow-badge ()
+  "Overflowing media lists should stay on one row with a clickable `+N' badge."
   (let ((media-list (cl-loop for i below 5
                              collect (list :type "photo"
                                            :url (format "img-%d.jpg" i)))))
@@ -1440,19 +1454,36 @@
                    `(image :type png :file ,(plist-get media :url))))
                 ((symbol-function 'chirp-media-thumbnail-placeholder-image)
                  (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-overflow-badge-image)
+                 (lambda (count width height)
+                   `(image :type svg :data ,(format "+%d" count)
+                           :width ,width :height ,height)))
                 ((symbol-function 'chirp-render--thumbnail-row-metrics)
                  (lambda (&rest _args) '(20 . 75)))
                 ((symbol-function 'chirp-render--media-grid-max-width)
-                 (lambda (&optional _prefix) 220))
+                 (lambda (&optional _prefix) 270))
                 ((symbol-function 'image-size)
-                 (lambda (&rest _args) '(100 . 40))))
+                 (lambda (image &rest _args)
+                   (if (eq (plist-get (cdr image) :type) 'svg)
+                       (cons (plist-get (cdr image) :width)
+                             (plist-get (cdr image) :height))
+                     '(100 . 40)))))
         (let ((inhibit-read-only t))
           (chirp-render-insert-media-strip media-list)))
-      (let* ((lines (split-string (buffer-string) "\n")))
-        ;; 5 images of width 100px in 220px max-width -> 3 bands (2, 2, 1),
-        ;; each 2 rows tall, separated by a blank line, ending with "\n\n".
-        (should (equal (mapcar #'length lines)
-                       '(2 2 0 2 2 0 1 1 0 0)))))))
+      (let ((lines (split-string (buffer-string) "\n")))
+        ;; 2 visible thumbnails (100px each) + 1 `+3' badge (48px) + two 6px gaps = 260px <= 270px:
+        ;; strictly ONE single 2-row band (5 chars per row: img, gap, img, gap, badge), ending with "\n\n".
+        (should (equal (mapcar #'length lines) '(5 5 0 0))))
+      (goto-char (point-min))
+      ;; First cell targets index 0 with full 5-item media list.
+      (should (= (get-text-property (point) 'chirp-media-index) 0))
+      (should (= (length (get-text-property (point) 'chirp-media-list)) 5))
+      ;; Overflow badge at column 4 targets the first hidden item (index 2) with full list.
+      (forward-char 4)
+      (should (= (get-text-property (point) 'chirp-media-index) 2))
+      (should (= (length (get-text-property (point) 'chirp-media-list)) 5))
+      (should (equal (plist-get (get-text-property (point) 'chirp-media-item) :url)
+                     "img-2.jpg")))))
 
 (ert-deftest chirp-render-insert-tweet-list-links-sibling-replies-without-separator ()
   "Sibling replies to the same root in one conversation should share no separator."

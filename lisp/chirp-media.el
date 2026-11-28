@@ -36,7 +36,7 @@
   :group 'chirp)
 
 (defcustom chirp-media-thumbnail-size 128
-  "Maximum pixel size for timeline and thread thumbnails."
+  "Target pixel height for timeline and thread thumbnails."
   :type 'integer
   :group 'chirp)
 
@@ -808,13 +808,26 @@ When FALLBACK is non-nil, call it if remote extraction fails."
               image)))
       (error nil))))
 
-(defun chirp-media--scaled-dimensions (width height max-width max-height)
-  "Return scaled WIDTH and HEIGHT constrained by MAX-WIDTH and MAX-HEIGHT."
-  (let* ((scale (min 1.0
-                     (/ (float max-width) (max 1.0 width))
-                     (/ (float max-height) (max 1.0 height)))))
-    (cons (max 1 (round (* width scale)))
-          (max 1 (round (* height scale))))))
+(defconst chirp-media--thumbnail-min-aspect 0.45
+  "Minimum width/height ratio for uniform-height thumbnails before center-crop.")
+
+(defconst chirp-media--thumbnail-max-aspect 2.5
+  "Maximum width/height ratio for uniform-height thumbnails before center-crop.")
+
+(defun chirp-media--thumbnail-dimensions (width height target-height)
+  "Return (TARGET-WIDTH . TARGET-HEIGHT) scaling WIDTH x HEIGHT to TARGET-HEIGHT.
+
+Preserve aspect ratio for normal images while clamping extreme aspect ratios to
+`[chirp-media--thumbnail-min-aspect, chirp-media--thumbnail-max-aspect]' so
+every thumbnail in a row shares the same height."
+  (let* ((w (max 1.0 (float width)))
+         (h (max 1.0 (float height)))
+         (target-h (max 1 target-height))
+         (min-w (max 1 (round (* target-h chirp-media--thumbnail-min-aspect))))
+         (max-w (max min-w (round (* target-h chirp-media--thumbnail-max-aspect))))
+         (scaled-w (round (* target-h (/ w h)))))
+    (cons (max min-w (min max-w scaled-w))
+          target-h)))
 
 (defun chirp-media--mime-type (file)
   "Return a MIME type for FILE."
@@ -851,56 +864,89 @@ When FALLBACK is non-nil, call it if remote extraction fails."
           (svg-image svg :ascent 'center))
       (error nil))))
 
-(defun chirp-media--photo-thumbnail-image (file max-width max-height)
-  "Render FILE within MAX-WIDTH and MAX-HEIGHT without runtime scaling."
+(defun chirp-media--rounded-thumbnail-svg (file target-width target-height)
+  "Return a rounded SVG embedding FILE at TARGET-WIDTH by TARGET-HEIGHT."
+  (let* ((svg (svg-create target-width target-height))
+         (radius (min 6.0 (/ (min target-width target-height) 4.0)))
+         (dark-p (eq (frame-parameter nil 'background-mode) 'dark))
+         (stroke (if dark-p "rgba(255,255,255,0.14)" "rgba(0,0,0,0.12)"))
+         (clip (svg-clip-path svg :id "thumb-clip")))
+    (dom-append-child
+     clip
+     (dom-node 'rect
+               `((x . 0)
+                 (y . 0)
+                 (width . ,target-width)
+                 (height . ,target-height)
+                 (rx . ,radius)
+                 (ry . ,radius))))
+    (svg-embed svg
+               file
+               (chirp-media--mime-type file)
+               nil
+               :x 0
+               :y 0
+               :width target-width
+               :height target-height
+               :preserveAspectRatio "xMidYMid slice"
+               :clip-path "url(#thumb-clip)")
+    (dom-append-child
+     svg
+     (dom-node 'rect
+               `((x . 0.5)
+                 (y . 0.5)
+                 (width . ,(max 1 (- target-width 1)))
+                 (height . ,(max 1 (- target-height 1)))
+                 (rx . ,radius)
+                 (ry . ,radius)
+                 (fill . "none")
+                 (stroke . ,stroke)
+                 (stroke-width . "1"))))
+    svg))
+
+(defun chirp-media--photo-thumbnail-image (file target-height)
+  "Render FILE as a uniform-height SVG thumbnail of TARGET-HEIGHT pixels."
   (when (and file
              (display-images-p))
     (condition-case nil
         (let ((base-image (create-image file)))
           (when base-image
             (pcase-let* ((`(,width . ,height) (image-size base-image t))
-                         (`(,target-width . ,target-height)
-                          (chirp-media--scaled-dimensions
-                           width height max-width max-height))
-                         (svg (svg-create target-width target-height)))
-              (svg-embed svg
-                         file
-                         (chirp-media--mime-type file)
-                         nil
-                         :x 0
-                         :y 0
-                         :width target-width
-                         :height target-height
-                         :preserveAspectRatio "xMidYMid meet")
+                         (`(,target-width . ,resolved-height)
+                          (chirp-media--thumbnail-dimensions
+                           width height target-height))
+                         (svg (chirp-media--rounded-thumbnail-svg
+                               file target-width resolved-height)))
               (svg-image svg :ascent 'center))))
       (error nil))))
 
-(defun chirp-media--video-badged-thumbnail-image (file size)
-  "Return FILE rendered as a SIZE thumbnail with a play badge."
+(defun chirp-media--video-badged-thumbnail-image (file target-height)
+  "Return FILE rendered as a TARGET-HEIGHT thumbnail with a play badge."
   (when (and file
              (display-images-p))
     (condition-case nil
-        (let* ((svg (svg-create size size))
-               (center (/ size 2.0))
-               (radius (max 10.0 (/ size 6.0)))
-               (left (- center (* radius 0.35)))
-               (top (- center (* radius 0.55)))
-               (bottom (+ center (* radius 0.55)))
-               (right (+ center (* radius 0.55))))
-          (svg-embed svg
-                     file
-                     (chirp-media--mime-type file)
-                     nil
-                     :x 0
-                     :y 0
-                     :width size
-                     :height size
-                     :preserveAspectRatio "xMidYMid slice")
+        (let* ((base-image (ignore-errors (create-image file)))
+               (dims (if base-image
+                         (pcase-let ((`(,width . ,height) (image-size base-image t)))
+                           (chirp-media--thumbnail-dimensions
+                            width height target-height))
+                       (cons target-height target-height)))
+               (target-width (car dims))
+               (resolved-height (cdr dims))
+               (svg (chirp-media--rounded-thumbnail-svg
+                     file target-width resolved-height))
+               (cx (/ target-width 2.0))
+               (cy (/ resolved-height 2.0))
+               (radius (max 10.0 (/ (min target-width resolved-height) 6.0)))
+               (left (- cx (* radius 0.35)))
+               (top (- cy (* radius 0.55)))
+               (bottom (+ cy (* radius 0.55)))
+               (right (+ cx (* radius 0.55))))
           (dom-append-child
            svg
            (dom-node 'circle
-                     `((cx . ,center)
-                       (cy . ,center)
+                     `((cx . ,cx)
+                       (cy . ,cy)
                        (r . ,radius)
                        (fill . "rgba(0,0,0,0.5)")
                        (stroke . "rgba(255,255,255,0.85)")
@@ -911,7 +957,7 @@ When FALLBACK is non-nil, call it if remote extraction fails."
                      `((points . ,(format "%s,%s %s,%s %s,%s"
                                           left top
                                           left bottom
-                                          right center))
+                                          right cy))
                        (fill . "white"))))
           (svg-image svg :ascent 'center))
       (error nil))))
@@ -994,6 +1040,44 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
      chirp-media-thumbnail-size
      (string= (plist-get media :type) "animated_gif"))))
 
+(defun chirp-media-overflow-badge-image (count width height)
+  "Return a `+COUNT' overflow card SVG of WIDTH by HEIGHT pixels, or nil."
+  (when (and (> count 0)
+             (display-images-p))
+    (condition-case nil
+        (let* ((w (max 1 width))
+               (h (max 1 height))
+               (radius (min 6.0 (/ (min w h) 4.0)))
+               (dark-p (eq (frame-parameter nil 'background-mode) 'dark))
+               (bg (if dark-p "#27303a" "#e9eef3"))
+               (stroke (if dark-p "rgba(255,255,255,0.16)" "rgba(0,0,0,0.14)"))
+               (fg (if dark-p "#e6edf3" "#24292f"))
+               (font-size (max 11 (min 16 (round (/ (min w h) 3.0)))))
+               (svg (svg-create w h)))
+          (dom-append-child
+           svg
+           (dom-node 'rect
+                     `((x . 0.5)
+                       (y . 0.5)
+                       (width . ,(max 1 (1- w)))
+                       (height . ,(max 1 (1- h)))
+                       (rx . ,radius)
+                       (ry . ,radius)
+                       (fill . ,bg)
+                       (stroke . ,stroke)
+                       (stroke-width . "1"))))
+          (svg-text svg
+                    (format "+%d" count)
+                    :x (/ w 2.0)
+                    :y (+ (/ h 2.0) (* font-size 0.35))
+                    :text-anchor "middle"
+                    :font-size (number-to-string font-size)
+                    :font-family "sans-serif"
+                    :font-weight "600"
+                    :fill fg)
+          (svg-image svg :ascent 'center))
+      (error nil))))
+
 (defun chirp-media-avatar-image (url)
   "Return a small avatar image descriptor for URL."
   (when-let* ((file (if chirp-media-render-from-cache-only
@@ -1013,12 +1097,13 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
                         (chirp-media-local-file (plist-get media :url)
                                                 "media"
                                                 "jpg"))))
-      (or (chirp-media--photo-thumbnail-image file
-                                              chirp-media-thumbnail-size
-                                              chirp-media-thumbnail-size)
-          (chirp-media--scaled-image file
-                                     chirp-media-thumbnail-size
-                                     chirp-media-thumbnail-size))))
+      (let ((max-width (max 1 (round (* chirp-media-thumbnail-size
+                                        chirp-media--thumbnail-max-aspect)))))
+        (or (chirp-media--photo-thumbnail-image file
+                                                chirp-media-thumbnail-size)
+            (chirp-media--scaled-image file
+                                       max-width
+                                       chirp-media-thumbnail-size)))))
    ((chirp-media-video-like-p media)
     (when-let* ((file (if chirp-media-render-from-cache-only
                           (or (and-let* ((preview-url (plist-get media :preview-url)))
@@ -1029,11 +1114,13 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
                                 (and (file-exists-p thumbnail-file)
                                      thumbnail-file)))
                         (chirp-media-video-thumbnail-file media))))
-      (or (chirp-media--video-badged-thumbnail-image file
-                                                     chirp-media-thumbnail-size)
-          (chirp-media--scaled-image file
-                                     chirp-media-thumbnail-size
-                                     chirp-media-thumbnail-size))))))
+      (let ((max-width (max 1 (round (* chirp-media-thumbnail-size
+                                        chirp-media--thumbnail-max-aspect)))))
+        (or (chirp-media--video-badged-thumbnail-image file
+                                                       chirp-media-thumbnail-size)
+            (chirp-media--scaled-image file
+                                       max-width
+                                       chirp-media-thumbnail-size)))))))
 
 (defun chirp-media-view-image (media)
   "Return a large image descriptor for MEDIA."
@@ -1181,8 +1268,7 @@ function run(argv) {
 (defun chirp-media--copy-image-file (file)
   "Copy local image FILE to the system clipboard."
   (let ((expanded (expand-file-name file))
-        (wl-copy (and (getenv "WAYLAND_DISPLAY") (executable-find "wl-copy")))
-        (xclip (and (getenv "DISPLAY") (executable-find "xclip"))))
+        program)
     (unless (file-readable-p expanded)
       (user-error "Image file is not readable: %s" expanded))
     (cond
@@ -1193,13 +1279,13 @@ function run(argv) {
                                   "--" expanded)))
         (unless (and (numberp status) (zerop status))
           (user-error "Failed to copy image to macOS clipboard"))))
-     (wl-copy
-      (let ((status (call-process wl-copy expanded nil nil
+     ((setq program (and (getenv "WAYLAND_DISPLAY") (executable-find "wl-copy")))
+      (let ((status (call-process program expanded nil nil
                                   "--type" (chirp-media--mime-type expanded))))
         (unless (and (numberp status) (zerop status))
           (user-error "Failed to copy image with wl-copy"))))
-     (xclip
-      (let ((status (call-process xclip nil nil nil
+     ((setq program (and (getenv "DISPLAY") (executable-find "xclip")))
+      (let ((status (call-process program nil nil nil
                                   "-selection" "clipboard"
                                   "-t" (chirp-media--mime-type expanded)
                                   "-i" expanded)))
@@ -1403,6 +1489,19 @@ function run(argv) {
                      thumbnail-file)
                 (chirp-media--extract-video-thumbnail video-file thumbnail-file)))))))
 
+(defun chirp-media--init-view-buffer (buffer media-list index title)
+  "Initialize shared media view state for MEDIA-LIST at INDEX with TITLE in BUFFER."
+  (setq-local chirp--media-list media-list)
+  (setq-local chirp--media-index index)
+  (setq-local chirp--media-title title)
+  (setq-local chirp--view-title title)
+  (setq-local chirp--timeline-kind nil)
+  (setq-local chirp--refresh-function nil)
+  (setq-local chirp--rerender-function
+              (lambda ()
+                (chirp-media-open media-list index title buffer)))
+  (setq-local header-line-format nil))
+
 (defun chirp-media--render-image-buffer (buffer media-list index title)
   "Render photo MEDIA-LIST at INDEX into BUFFER using `image-mode'."
   (let* ((media (nth index media-list))
@@ -1416,17 +1515,7 @@ function run(argv) {
           (erase-buffer)
           (insert-file-contents-literally file))
         (chirp-media-image-mode)
-        (use-local-map chirp-media-image-mode-map)
-        (setq-local chirp--media-list media-list)
-        (setq-local chirp--media-index index)
-        (setq-local chirp--media-title title)
-        (setq-local chirp--view-title title)
-        (setq-local chirp--timeline-kind nil)
-        (setq-local chirp--refresh-function nil)
-        (setq-local chirp--rerender-function
-                    (lambda ()
-                      (chirp-media-open media-list index title buffer)))
-        (setq-local header-line-format nil)
+        (chirp-media--init-view-buffer buffer media-list index title)
         (goto-char (point-min)))
       (chirp-display-buffer buffer)
       (let* ((total (length media-list))
@@ -1445,16 +1534,7 @@ function run(argv) {
          (total (length media-list)))
     (with-current-buffer buffer
       (chirp-media-view-mode)
-      (setq-local chirp--media-list media-list)
-      (setq-local chirp--media-index index)
-      (setq-local chirp--media-title title)
-      (setq-local chirp--view-title title)
-      (setq-local chirp--timeline-kind nil)
-      (setq-local chirp--refresh-function nil)
-      (setq-local chirp--rerender-function
-                  (lambda ()
-                    (chirp-media-open media-list index title buffer)))
-      (setq-local header-line-format nil)
+      (chirp-media--init-view-buffer buffer media-list index title)
       (let ((inhibit-read-only t))
         (erase-buffer)
         (insert (format "%s (%d/%d)\n\n" title (1+ index) total))

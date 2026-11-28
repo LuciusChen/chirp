@@ -16,7 +16,7 @@
 (require 'chirp-backend)
 
 (require 'chirp-x)
-(require 'chirp-web)
+(require 'chirp-render)
 (declare-function chirp "chirp" ())
 (declare-function chirp-me "chirp" ())
 
@@ -46,8 +46,17 @@ cancelled, the attachment is removed, or the send completes."
 (defvar-local chirp-compose-target-url nil
   "Target URL shown in the current Chirp compose buffer.")
 
+(defvar-local chirp-compose--target-name nil
+  "Author display name of the reply or quote target.")
+
 (defvar-local chirp-compose--target-preview nil
   "Short excerpt of the reply or quote target.")
+
+(defvar-local chirp-compose--target-media-summary nil
+  "Short summary of media attached to the reply or quote target.")
+
+(defvar-local chirp-compose--notice nil
+  "Transient warning or status notice shown in the compose header line.")
 
 (defvar-local chirp-compose-source-buffer nil
   "Source Chirp view buffer that opened the current compose buffer.")
@@ -63,9 +72,6 @@ cancelled, the attachment is removed, or the send completes."
 
 (defvar-local chirp-compose-body-end-marker nil
   "Marker at the end of the editable compose body.")
-
-(defvar-local chirp-compose--quote-rejected nil
-  "Non-nil after X explicitly rejected this quote as automated.")
 
 (defvar-local chirp-compose-sending nil
   "Non-nil while the current compose buffer is sending a draft.")
@@ -89,9 +95,15 @@ cancelled, the attachment is removed, or the send completes."
     map)
   "Keymap for `chirp-compose-mode'.")
 
+(defvar chirp-compose--target-link-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-1] #'chirp-compose-open-target)
+    map)
+  "Keymap attached to clickable target tweet headers in compose buffers.")
+
 (define-derived-mode chirp-compose-mode text-mode "Chirp-Compose"
   "Major mode for composing Chirp posts."
-  (setq-local header-line-format nil)
+  (setq-local header-line-format '(:eval (chirp-compose--header-line)))
   (add-hook 'kill-buffer-hook #'chirp-compose--cleanup-temp-attachments nil t)
   (setq-local require-final-newline nil)
   (setq-local mode-line-process
@@ -211,16 +223,12 @@ cancelled, the attachment is removed, or the send completes."
   (message "Chirp action failed: %s"
            (replace-regexp-in-string "[\r\n]+" "  " message)))
 
-(defun chirp-actions--refresh-current-view ()
-  "Refresh the current Chirp view."
-  (when chirp--refresh-function
-    (funcall chirp--refresh-function)))
-
 (defun chirp-actions--refresh-buffer (buffer)
   "Refresh BUFFER when it is a live Chirp view."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (chirp-actions--refresh-current-view))))
+      (when chirp--refresh-function
+        (funcall chirp--refresh-function)))))
 
 (defun chirp-actions--refresh-user-buffer-if-needed (buffer)
   "Refresh BUFFER after a user action when it currently shows a user entry."
@@ -267,12 +275,6 @@ When CONFIRMED, commit TARGET to STATE-KEY and adjust COUNT-KEY."
                         (chirp-adjust-count (plist-get tweet count-key) (if target 1 -1)))))
          t)))))
 
-(defun chirp-actions--bookmarks-view-p (buffer)
-  "Return non-nil when BUFFER is currently showing bookmarks."
-  (and (buffer-live-p buffer)
-       (with-current-buffer buffer
-         (string= chirp--view-title "Bookmarks"))))
-
 (defun chirp-actions--set-state (state-key command count-key state-value success-message)
   "Set STATE-KEY for the current tweet using COMMAND.
 
@@ -294,7 +296,8 @@ when the request succeeds."
                        (reason (chirp-actions--show-error (chirp-actions--format-error args reason)))
                        (t
                         (when (and (eq state-key :bookmarked-p) (not state-value)
-                                   (chirp-actions--bookmarks-view-p buffer))
+                                   (buffer-live-p buffer)
+                                   (string= (buffer-local-value 'chirp--view-title buffer) "Bookmarks"))
                           (chirp-actions--refresh-buffer buffer))
                         (message "%s" success-message))))))
         (puthash key (if state-value 'on 'off) pending)
@@ -316,16 +319,6 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
          (success-message (if next-state success-on success-off)))
     (chirp-actions--set-state state-key command count-key next-state success-message)))
 
-(defun chirp-like-at-point ()
-  "Like the tweet at point."
-  (interactive)
-  (chirp-actions--set-state :liked-p "like" :like-count t "Liked."))
-
-(defun chirp-unlike-at-point ()
-  "Unlike the tweet at point."
-  (interactive)
-  (chirp-actions--set-state :liked-p "unlike" :like-count nil "Like removed."))
-
 (defun chirp-toggle-like-at-point ()
   "Toggle like state for the tweet at point."
   (interactive)
@@ -337,16 +330,6 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
    "Liked."
    "Like removed."))
 
-(defun chirp-bookmark-at-point ()
-  "Bookmark the tweet at point."
-  (interactive)
-  (chirp-actions--set-state :bookmarked-p "bookmark" :bookmark-count t "Bookmarked."))
-
-(defun chirp-unbookmark-at-point ()
-  "Remove the current tweet from bookmarks."
-  (interactive)
-  (chirp-actions--set-state :bookmarked-p "unbookmark" :bookmark-count nil "Bookmark removed."))
-
 (defun chirp-toggle-bookmark-at-point ()
   "Toggle bookmark state for the tweet at point."
   (interactive)
@@ -357,16 +340,6 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
    :bookmark-count
    "Bookmarked."
    "Bookmark removed."))
-
-(defun chirp-retweet-at-point ()
-  "Retweet the tweet at point."
-  (interactive)
-  (chirp-actions--set-state :retweeted-p "retweet" :retweet-count t "Retweeted."))
-
-(defun chirp-unretweet-at-point ()
-  "Undo the retweet at point."
-  (interactive)
-  (chirp-actions--set-state :retweeted-p "unretweet" :retweet-count nil "Retweet removed."))
 
 (defun chirp-toggle-retweet-at-point ()
   "Toggle retweet state for the tweet at point."
@@ -436,66 +409,171 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
              (or chirp-compose-target-handle "?")))
     (_ "*chirp compose: Post*")))
 
+(defun chirp-compose-open-target ()
+  "Open the reply or quote target URL in a browser."
+  (interactive)
+  (if chirp-compose-target-url
+      (browse-url chirp-compose-target-url)
+    (user-error "No target URL for this draft")))
+
+(defun chirp-compose--header-line ()
+  "Return the header-line string for the current compose buffer."
+  (cond
+   (chirp-compose-sending
+    (propertize " Sending draft…" 'face 'mode-line-emphasis))
+   (chirp-compose--notice
+    (concat " " (propertize chirp-compose--notice 'face 'warning)))
+   (t
+    (concat
+     " "
+     (mapconcat
+      (lambda (pair)
+        (concat (propertize (car pair) 'face 'help-key-binding)
+                " "
+                (propertize (cdr pair) 'face 'shadow)))
+      '(("C-c C-c" . "send")
+        ("C-c C-k" . "cancel")
+        ("C-c C-a" . "attach")
+        ("C-c C-v" . "paste")
+        ("M-TAB" . "mention"))
+      "  ")))))
+
+(defun chirp-compose--format-target-preview (text)
+  "Normalize and bound target tweet TEXT for a compose context card."
+  (let* ((lines (cl-loop for line in (split-string (string-trim text) "\n")
+                         for cleaned = (string-trim line)
+                         unless (string-empty-p cleaned)
+                         collect cleaned))
+         (joined (string-join (seq-take lines 4) "\n"))
+         (clipped (truncate-string-to-width joined 260 nil nil "…")))
+    (if (and (> (length lines) 4)
+             (not (string-suffix-p "…" clipped)))
+        (concat clipped "…")
+      clipped)))
+
+(defun chirp-compose--target-media-summary (tweet)
+  "Return a compact media summary for TWEET, or nil."
+  (when-let* ((media (plist-get tweet :media)))
+    (let ((photos 0) (videos 0) (gifs 0))
+      (dolist (item media)
+        (pcase (plist-get item :type)
+          ("video" (setq videos (1+ videos)))
+          ("animated_gif" (setq gifs (1+ gifs)))
+          (_ (setq photos (1+ photos)))))
+      (let ((parts
+             (delq nil
+                   (list (when (> photos 0)
+                           (format "%d %s" photos (if (= photos 1) "photo" "photos")))
+                         (when (> videos 0)
+                           (format "%d %s" videos (if (= videos 1) "video" "videos")))
+                         (when (> gifs 0)
+                           (if (= gifs 1) "GIF" (format "%d GIFs" gifs)))))))
+        (when parts
+          (string-join parts ", "))))))
+
+(defun chirp-compose--target-card-string ()
+  "Return a styled read-only card for the reply or quote target, or nil."
+  (when (memq chirp-compose-kind '(reply quote))
+    (let* ((bar (propertize "│ " 'face 'chirp-quoted-tweet-block-face))
+           (name (chirp-first-nonblank chirp-compose--target-name))
+           (handle (chirp-first-nonblank chirp-compose-target-handle))
+           (heading
+            (concat
+             (when name
+               (propertize name 'face 'chirp-author-face))
+             (when (and name handle) " ")
+             (if handle
+                 (propertize (concat "@" handle) 'face 'chirp-handle-face)
+               (unless name
+                 (propertize (or chirp-compose-target-id "post")
+                             'face 'chirp-handle-face)))
+             (when chirp-compose--target-media-summary
+               (propertize (format " · %s" chirp-compose--target-media-summary)
+                           'face 'chirp-meta-face))))
+           (header-line
+            (if chirp-compose-target-url
+                (propertize heading
+                            'mouse-face 'highlight
+                            'pointer 'hand
+                            'keymap chirp-compose--target-link-map
+                            'help-echo (format "Click to open %s" chirp-compose-target-url))
+              heading))
+           (body-lines
+            (when chirp-compose--target-preview
+              (mapcar (lambda (line)
+                        (propertize (concat bar line) 'wrap-prefix bar))
+                      (split-string chirp-compose--target-preview "\n"))))
+           (card (concat (propertize (concat bar header-line) 'wrap-prefix bar)
+                         (when body-lines
+                           (concat "\n" (string-join body-lines "\n")))
+                         "\n")))
+      (add-face-text-property 0 (length card)
+                              'chirp-quoted-tweet-block-face 'append card)
+      card)))
+
 (defun chirp-compose--header-string ()
   "Return the read-only header shown above the compose body."
-  (let ((title (pcase chirp-compose-kind
-                 ('reply "Reply")
-                 ('quote "Quote")
-                 (_ "Post")))
-        (context
-         (pcase chirp-compose-kind
-           ('reply
-            (if chirp-compose-target-handle
-                (format "Replying to @%s" chirp-compose-target-handle)
-              (format "Replying to %s" chirp-compose-target-id)))
-           ('quote
-            (if chirp-compose-target-handle
-                (format "Quoting @%s" chirp-compose-target-handle)
-              (format "Quoting %s" chirp-compose-target-id)))
-           (_ "Compose a new post."))))
+  (if (eq chirp-compose-kind 'reply)
+      (let ((card (chirp-compose--target-card-string))
+            (target (if chirp-compose-target-handle
+                        (propertize (concat "@" chirp-compose-target-handle)
+                                    'face 'chirp-handle-face)
+                      (propertize (or chirp-compose-target-id "post")
+                                  'face 'chirp-meta-face))))
+        (concat (or card "")
+                "\n"
+                (propertize "↳ Replying to " 'face 'chirp-thread-reply-context-face)
+                target
+                "\n\n"))
+    ""))
+
+(defun chirp-compose--attachments-string ()
+  "Return the read-only attachment section, or nil when none are attached."
+  (when chirp-compose-attachments
     (concat
-     (propertize title 'face 'bold)
+     (propertize (format "Images (%d/4)" (length chirp-compose-attachments))
+                 'face 'bold)
+     (propertize "  ·  C-c C-d remove" 'face 'shadow)
      "\n"
-     (propertize context 'face 'shadow)
-     (when chirp-compose--target-preview
-       (concat "\n" (propertize chirp-compose--target-preview 'face 'shadow)))
-     (when chirp-compose-target-url
-       (concat "\n"
-               (propertize chirp-compose-target-url 'face 'link)))
-     "\n\n")))
+     (mapconcat
+      #'identity
+      (cl-loop for path in chirp-compose-attachments
+               for index from 1
+               for temp-p = (member path chirp-compose-temp-attachments)
+               for label = (if temp-p
+                               (format "Clipboard image (%s)"
+                                       (upcase (or (file-name-extension path) "img")))
+                             (file-name-nondirectory path))
+               collect
+               (concat (when (display-images-p)
+                         (when-let* ((image (ignore-errors
+                                              (create-image path nil nil :max-width 80 :max-height 48))))
+                           (propertize " " 'display image)))
+                       (propertize (format "  [%d] %s" index label)
+                                   'help-echo (abbreviate-file-name path))))
+      "\n")
+     "\n")))
 
 (defun chirp-compose--footer-string ()
   "Return the read-only footer shown after the compose body."
-  (let ((attachments
-         (if chirp-compose-attachments
-             (mapconcat
-              #'identity
-              (cl-loop for path in chirp-compose-attachments
-                       for index from 1
-                       collect
-                       (concat (when (display-images-p)
-                                 (when-let* ((image (ignore-errors
-                                                      (create-image path nil nil :max-width 80 :max-height 48))))
-                                   (propertize " " 'display image)))
-                               (format "  [%d] %s" index (abbreviate-file-name path))))
-              "\n")
-           (propertize "  No images attached." 'face 'shadow))))
-    (concat
-     "\n\n"
-     (propertize "Images" 'face 'bold)
-     "\n"
-     attachments
-     "\n\n"
-     (propertize
-      "C-c C-a attach   C-c C-v paste   C-c C-d remove   C-c C-c send   C-c C-k cancel\nM-TAB mention   C-c C-o my posts"
-      'face 'shadow))))
+  (let ((sections
+         (delq nil
+               (list (chirp-compose--attachments-string)
+                     (when (eq chirp-compose-kind 'quote)
+                       (chirp-compose--target-card-string))))))
+    (if sections
+        (concat "\n" (string-join sections "\n"))
+      "")))
 
 (defun chirp-compose--locked-string (text)
-  "Return TEXT propertized as read-only compose chrome."
-  (propertize text
-              'read-only t
-              'rear-nonsticky '(read-only field)
-              'field 'chirp-compose-info))
+  "Return a copy of TEXT marked as read-only compose chrome."
+  (let ((locked (copy-sequence text)))
+    (add-text-properties 0 (length locked)
+                         '(read-only t
+                           rear-nonsticky t
+                           field chirp-compose-info)
+                         locked)
+    locked))
 
 (defun chirp-compose--current-body ()
   "Return the current editable compose body."
@@ -507,7 +585,7 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
     ""))
 
 (defun chirp-compose--refresh-display ()
-  "Refresh compose overlays for the current buffer."
+  "Refresh compose chrome around the editable draft body."
   (let* ((body (chirp-compose--current-body))
          (modified (buffer-modified-p))
          (body-end nil)
@@ -515,13 +593,20 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
                                 (>= (point) (marker-position chirp-compose-body-start-marker)))
                            (- (point) (marker-position chirp-compose-body-start-marker))
                          0))
+         (header (chirp-compose--header-string))
+         (footer (chirp-compose--footer-string))
          (inhibit-read-only t))
+    (when (and (not (string-empty-p footer))
+               (not (string-suffix-p "\n" body)))
+      (setq body (concat body "\n")))
     (erase-buffer)
-    (insert (chirp-compose--locked-string (chirp-compose--header-string)))
+    (unless (string-empty-p header)
+      (insert (chirp-compose--locked-string header)))
     (setq-local chirp-compose-body-start-marker (copy-marker (point)))
     (insert body)
     (setq body-end (point))
-    (insert (chirp-compose--locked-string (chirp-compose--footer-string)))
+    (unless (string-empty-p footer)
+      (insert (chirp-compose--locked-string footer)))
     (setq-local chirp-compose-body-end-marker (copy-marker body-end t))
     (goto-char (+ (marker-position chirp-compose-body-start-marker)
                   (min point-offset (length body))))
@@ -554,32 +639,56 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
   (cl-find-if #'chirp-compose--mime-extension
               types))
 
+(defconst chirp-compose--macos-paste-image-script
+  "ObjC.import('AppKit');
+function run(argv) {
+  var pb = $.NSPasteboard.generalPasteboard;
+  var img = $.NSImage.alloc.initWithPasteboard(pb);
+  if (!img || img.isNil()) { throw new Error('No clipboard image'); }
+  var tiff = img.TIFFRepresentation;
+  if (!tiff || tiff.isNil()) { throw new Error('No image data'); }
+  var rep = $.NSBitmapImageRep.imageRepWithData(tiff);
+  if (!rep || rep.isNil()) { throw new Error('Could not decode image'); }
+  var png = rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $());
+  if (!png || png.isNil() || !png.writeToFileAtomically(argv[0], true)) {
+    throw new Error('Could not write image');
+  }
+}"
+  "JXA script used on macOS to save a clipboard image as PNG.")
+
 (defun chirp-compose--clipboard-image-backend ()
   "Return a plist describing how to paste an image from the clipboard."
-  (let ((wl-paste (executable-find "wl-paste"))
-        (pngpaste (executable-find "pngpaste"))
-        (xclip (executable-find "xclip")))
-    (or
-     (when wl-paste
-       (when-let* ((mime-type (chirp-compose--first-image-type
-                               (chirp-compose--process-lines wl-paste "--list-types"))))
-         (list :kind 'stdout
-               :program wl-paste
-               :args (list "--no-newline" "--type" mime-type)
-               :extension (chirp-compose--mime-extension mime-type))))
-     (when pngpaste
-       (list :kind 'filearg
-             :program pngpaste
-             :args nil
-             :extension ".png"))
-     (when xclip
-       (when-let* ((mime-type (chirp-compose--first-image-type
-                               (chirp-compose--process-lines
-                                xclip "-selection" "clipboard" "-t" "TARGETS" "-o"))))
-         (list :kind 'stdout
-               :program xclip
-               :args (list "-selection" "clipboard" "-t" mime-type "-o")
-               :extension (chirp-compose--mime-extension mime-type)))))))
+  (let (program)
+    (cond
+     ((eq system-type 'darwin)
+      (if (setq program (executable-find "pngpaste"))
+          (list :kind 'filearg
+                :program program
+                :args nil
+                :extension ".png")
+        (list :kind 'filearg
+              :program "/usr/bin/osascript"
+              :args (list "-l" "JavaScript"
+                          "-e" chirp-compose--macos-paste-image-script
+                          "--")
+              :extension ".png")))
+     ((setq program (and (getenv "WAYLAND_DISPLAY")
+                         (executable-find "wl-paste")))
+      (when-let* ((mime-type (chirp-compose--first-image-type
+                              (chirp-compose--process-lines program "--list-types"))))
+        (list :kind 'stdout
+              :program program
+              :args (list "--no-newline" "--type" mime-type)
+              :extension (chirp-compose--mime-extension mime-type))))
+     ((setq program (and (getenv "DISPLAY")
+                         (executable-find "xclip")))
+      (when-let* ((mime-type (chirp-compose--first-image-type
+                              (chirp-compose--process-lines
+                               program "-selection" "clipboard" "-t" "TARGETS" "-o"))))
+        (list :kind 'stdout
+              :program program
+              :args (list "-selection" "clipboard" "-t" mime-type "-o")
+              :extension (chirp-compose--mime-extension mime-type)))))))
 
 (defun chirp-compose--write-command-output-to-file (program args file)
   "Write PROGRAM ARGS output to FILE, returning non-nil on success."
@@ -717,59 +826,37 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
         (user-error "Text cannot be empty")
       text)))
 
-(defun chirp-compose--continue-quote (external)
-  "Copy this quote draft and open the original post on X.
-When EXTERNAL is non-nil, use the configured browser."
-  (unless (and (eq chirp-compose-kind 'quote)
-               (stringp chirp-compose-target-id)
-               (string-match-p "\\`[0-9]+\\'" chirp-compose-target-id))
-    (user-error "This command needs a quote draft with an original post"))
-  (let ((text (string-trim (chirp-compose--current-body)))
-        (files chirp-compose-attachments))
-    (chirp-web-open-post chirp-compose-target-id external)
-    (unless (string-empty-p text) (kill-new text))
-    (message "On the original post choose Repost → Quote%s%s"
-             (if (string-empty-p text) "" ", then paste your comment")
-             (if files
-                 (concat ". Attach: " (mapconcat #'abbreviate-file-name files ", "))
-               ""))))
-
-(cl-defun chirp-compose-send (&optional on-x)
-  "Send this draft, or open a quote in the configured browser with ON-X.
-After X rejects a quote with code 226, continue it on X in WebKit when
-available.  Interactively, ON-X is the prefix argument."
-  (interactive "P")
+(defun chirp-compose-send ()
+  "Send this draft and release its attachments after confirmed success."
+  (interactive)
   (when chirp-compose-sending (user-error "Draft is already sending"))
-  (when (or on-x chirp-compose--quote-rejected)
-    (cl-return-from chirp-compose-send (chirp-compose--continue-quote on-x)))
   (let ((draft (current-buffer))
         (source chirp-compose-source-buffer)
         (kind chirp-compose-kind)
         (target chirp-compose-target-id)
+        (target-handle chirp-compose-target-handle)
         (attachments chirp-compose-attachments)
         (text (chirp-compose--body-text)))
-    (setq chirp-compose-sending t buffer-read-only t)
+    (setq chirp-compose-sending t
+          chirp-compose--notice nil
+          buffer-read-only t)
     (chirp-compose--hide draft source)
     (message "Sending draft...")
     (cl-labels ((restore (reason)
                   (when (buffer-live-p draft)
                     (with-current-buffer draft
-                      (setq chirp-compose--quote-rejected
-                            (and (eq kind 'quote) (string-suffix-p "(226)" reason)
-                                 (not (string-prefix-p "X write outcome is unknown" reason))))
-                      (setq chirp-compose-sending nil buffer-read-only nil)
-                      (setq-local header-line-format
-                                  (cond
-                                      (chirp-compose--quote-rejected
-                                       "X rejected the quote (226) · C-c C-c to continue on X")
-                                      ((string-match-p "outcome is unknown" reason)
-                                       "Check your posts with C-c C-o before retrying")
-                                      (t "Draft retained · C-c C-c to send"))))
+                      (setq chirp-compose-sending nil
+                            buffer-read-only nil
+                            chirp-compose--notice
+                            (if (string-match-p "outcome is unknown" reason)
+                                "Check your posts with C-c C-o before retrying"
+                              "Draft retained · C-c C-c retry · C-c C-k cancel")))
                     (display-buffer draft))
                   (chirp-actions--show-error reason)))
       (condition-case err
           (chirp-backend-compose
-           :kind kind :text text :target-id target :attachments attachments
+           :kind kind :text text :target-id target :target-handle target-handle
+           :attachments attachments
            :callback (lambda (_data _envelope)
                        (chirp-backend-clear-cache)
                        (when (buffer-live-p draft)
@@ -784,8 +871,7 @@ available.  Interactively, ON-X is the prefix argument."
   "Return a live window showing BUFFER other than EXCEPT-WINDOW, or nil."
   (cl-find-if
    (lambda (window)
-     (and (window-live-p window)
-          (not (eq window except-window))
+     (and (not (eq window except-window))
           (eq (window-buffer window) buffer)))
    (window-list nil 'no-minibuf)))
 
@@ -796,7 +882,7 @@ available.  Interactively, ON-X is the prefix argument."
           (restore (and (buffer-live-p restore-buffer)
                         (not (eq buffer restore-buffer))
                         restore-buffer)))
-      (when (window-live-p window)
+      (when window
         (let ((other-restore-window
                (and restore
                     (chirp-compose--other-window-showing-buffer
@@ -819,10 +905,13 @@ available.  Interactively, ON-X is the prefix argument."
   "Cancel the current draft."
   (interactive)
   (when chirp-compose-sending (user-error "Draft is still sending"))
-  (let ((draft (current-buffer)))
-    (chirp-compose--hide draft chirp-compose-source-buffer)
-    (with-current-buffer draft (set-buffer-modified-p nil))
-    (kill-buffer draft)))
+  (when (or (and (string-blank-p (chirp-compose--current-body))
+                 (null chirp-compose-attachments))
+            (yes-or-no-p "Discard this draft? "))
+    (let ((draft (current-buffer)))
+      (chirp-compose--hide draft chirp-compose-source-buffer)
+      (with-current-buffer draft (set-buffer-modified-p nil))
+      (kill-buffer draft))))
 
 (defun chirp-compose--view-buffer-p (buffer)
   "Return non-nil when BUFFER is a live Chirp view buffer."
@@ -856,10 +945,14 @@ When TWEET is non-nil, use it as the reply or quote target."
       (setq-local chirp-compose-kind kind)
       (setq-local chirp-compose-target-id (plist-get tweet :id))
       (setq-local chirp-compose-target-handle (plist-get tweet :author-handle))
-      (setq-local chirp-compose-target-url (plist-get tweet :url)
-                  chirp-compose--target-preview
+      (setq-local chirp-compose-target-url (plist-get tweet :url))
+      (setq-local chirp-compose--target-name (plist-get tweet :author-name))
+      (setq-local chirp-compose--target-preview
                   (when-let* ((body (plist-get tweet :text)))
-                    (truncate-string-to-width (string-join (split-string body) " ") 100 nil nil "…")))
+                    (chirp-compose--format-target-preview body)))
+      (setq-local chirp-compose--target-media-summary
+                  (chirp-compose--target-media-summary tweet))
+      (setq-local chirp-compose--notice nil)
       (setq-local chirp-compose-source-buffer source)
       (setq-local chirp-compose-attachments nil)
       (setq-local chirp-compose-temp-attachments nil)
@@ -897,10 +990,10 @@ When TWEET is non-nil, use it as the reply or quote target."
   (interactive)
   (chirp-compose-open 'quote (chirp-actions--tweet-at-point)))
 
-(defun chirp-copy-fixupx-url-at-point ()
-  "Copy the current tweet URL as a fixupx.com link."
+(defun chirp-copy-url-at-point ()
+  "Copy the canonical URL of the current tweet."
   (interactive)
-  (if-let* ((url (chirp-tweet-fixupx-url (chirp-actions--tweet-at-point))))
+  (if-let* ((url (car (chirp-tweet-candidate-urls (chirp-actions--tweet-at-point)))))
       (progn
         (kill-new url)
         (message "Copied %s" url))
@@ -974,7 +1067,7 @@ When TWEET is non-nil, use it as the reply or quote target."
    ["Other"
     ("d" "Delete" chirp-delete-at-point)
     ("T" "Translate" chirp-translate-at-point)
-    ("y" "Copy fixupx" chirp-copy-fixupx-url-at-point)
+    ("y" "Copy URL" chirp-copy-url-at-point)
     ("o" "Browser" chirp-browse-at-point)]])
 
 (provide 'chirp-actions)

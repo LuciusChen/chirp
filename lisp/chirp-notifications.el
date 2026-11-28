@@ -11,7 +11,6 @@
 
 (require 'seq)
 (require 'chirp-render)
-(require 'chirp-web)
 (require 'chirp-x)
 (require 'chirp-core)
 (require 'chirp-backend)
@@ -182,7 +181,7 @@
     (user-error "Enable chirp-notifications-mode first"))
   (when (and chirp-notifications-mode
              (not chirp-notifications--checking)
-             (chirp-x-session))
+             (chirp-x-credentials))
     (setq chirp-notifications--checking t)
     (chirp-backend-notifications
      #'chirp-notifications--handle-success

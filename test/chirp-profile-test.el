@@ -344,7 +344,8 @@
 (ert-deftest chirp-me-opens-the-authenticated-profile ()
   "The public Chirp entry point should resolve and open the current profile."
   (let (opened-handle)
-    (cl-letf (((symbol-function 'chirp-web-ready-p) (lambda () t))
+    (cl-letf (((symbol-function 'chirp-x-credentials)
+               (lambda () '(:auth-token "a" :ct0 "c" :bearer-token "b")))
               ((symbol-function 'chirp-backend-whoami)
                (lambda (callback &optional _errback)
                  (funcall callback '(:kind user :handle "alice") nil)))

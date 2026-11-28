@@ -541,10 +541,11 @@ ERRBACK handles failures.  FETCHER is called with success and error callbacks."
            return (format "%s" identifier)))
 
 (defun chirp-backend--compose-variables
-    (kind text target-id media-ids note-tweet-p)
+    (kind text target-id media-ids note-tweet-p &optional target-handle)
   "Build X create variables for KIND, TEXT, TARGET-ID, and MEDIA-IDS.
 
-When NOTE-TWEET-P is non-nil, include the long-form-only variables."
+When NOTE-TWEET-P is non-nil, include the long-form-only variables.  Optional
+TARGET-HANDLE formats quote attachment URLs with the author's handle."
   (let ((variables
          `(("tweet_text" . ,text)
            ("media" .
@@ -565,9 +566,13 @@ When NOTE-TWEET-P is non-nil, include the long-form-only variables."
                 ("exclude_reply_user_ids" . [])))
              variables))
       ('quote
-       (push `("attachment_url" . ,(format "https://x.com/i/status/%s"
-                                           target-id))
-             variables)))
+       (let ((handle (and (stringp target-handle)
+                          (let ((clean (string-remove-prefix "@" (string-trim target-handle))))
+                            (and (string-match-p "\\`[A-Za-z0-9_]+\\'" clean)
+                                 clean)))))
+         (push `("attachment_url" . ,(format "https://x.com/%s/status/%s"
+                                             (or handle "i") target-id))
+               variables))))
     (when note-tweet-p
       (push '("disallowed_reply_options" . nil) variables))
     variables))
@@ -587,13 +592,14 @@ ERRBACK receives the first failure.  MEDIA-IDS carries recursive state."
      :errback errback)))
 
 (cl-defun chirp-backend-compose
-    (&key kind text target-id attachments callback errback)
+    (&key kind text target-id target-handle attachments callback errback)
   "Publish a KIND draft containing TEXT and ATTACHMENTS through X.
 
 KIND is `post', `reply', or `quote'.  TARGET-ID is required for replies and
-quotes.  CALLBACK receives a plist containing the created tweet ID and the raw
-GraphQL envelope.  ERRBACK receives upload or create failures.  Create and
-upload mutations are never retried automatically."
+quotes; optional TARGET-HANDLE sets the author path on quote URLs.  CALLBACK
+receives a plist containing the created tweet ID and the raw GraphQL envelope.
+ERRBACK receives upload or create failures.  Create and upload mutations are
+never retried automatically."
   (unless (functionp callback)
     (error "Compose callback is not callable"))
   (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
@@ -628,7 +634,7 @@ upload mutations are never retried automatically."
                     (variables
                      (chirp-backend--compose-variables
                       kind text (and target-id (format "%s" target-id))
-                      media-ids note-tweet-p)))
+                      media-ids note-tweet-p target-handle)))
                (chirp-x-graphql-request
                 (chirp-backend--operation operation-key)
                 variables
@@ -1041,21 +1047,36 @@ ERRBACK receives request failures."
                         "X did not return a translation")))))
        :errback error-fn)))))
 
+(defun chirp-backend--viewer-request (callback errback &optional credentials)
+  "Fetch the authenticated Viewer profile and pass it to CALLBACK or ERRBACK.
+
+Optional CREDENTIALS overrides `chirp-x-credentials'."
+  (chirp-x-graphql-request
+   (chirp-backend--operation 'viewer) nil
+   (lambda (payload)
+     (let ((user (chirp-normalize-user
+                  (chirp-get-in
+                   payload '("data" "viewer" "user_results" "result")))))
+       (if user
+           (funcall callback user nil)
+         (funcall (or errback #'message)
+                  "X did not return the authenticated profile"))))
+   :errback errback
+   :credentials credentials))
+
+(defun chirp-backend-verify-credentials (credentials callback &optional errback)
+  "Verify CREDENTIALS against X's Viewer endpoint.
+
+CALLBACK receives the normalized user plist and nil envelope; ERRBACK receives
+a human-readable error message."
+  (chirp-backend--viewer-request callback errback credentials))
+
 (defun chirp-backend-whoami (callback &optional errback)
   "Fetch the authenticated user profile and call CALLBACK, or ERRBACK on failure."
   (chirp-backend--cached-read
    '(:whoami)
    (lambda (success error)
-     (chirp-x-graphql-request
-      (chirp-backend--operation 'viewer) nil
-      (lambda (payload)
-        (let ((user (chirp-normalize-user
-                     (chirp-get-in
-                      payload '("data" "viewer" "user_results" "result")))))
-          (if user
-              (funcall success user nil)
-            (funcall error "X did not return the authenticated profile"))))
-      :errback error))
+     (chirp-backend--viewer-request success error))
    callback
    errback))
 

@@ -31,7 +31,7 @@
 (declare-function chirp-toggle-like-at-point "chirp-actions" ())
 (declare-function chirp-toggle-bookmark-at-point "chirp-actions" ())
 (declare-function chirp-translate-at-point "chirp-actions" ())
-(declare-function chirp-copy-fixupx-url-at-point "chirp-actions" ())
+(declare-function chirp-copy-url-at-point "chirp-actions" ())
 (declare-function chirp-toggle-follow-user-at-point "chirp-actions" ())
 (declare-function chirp-notifications "chirp" ())
 (declare-function chirp-toggle-home-following "chirp-timeline" ())
@@ -42,8 +42,6 @@
 (declare-function chirp-media-open-at-point "chirp-media" ())
 (declare-function chirp-media-download-at-point "chirp-media" ())
 (declare-function chirp-media-prefetch-tweet "chirp-media" (tweet buffer))
-(declare-function chirp-media-image-mode "chirp-media" ())
-(declare-function chirp-media-view-mode "chirp-media" ())
 
 (defgroup chirp nil
   "Browse X/Twitter from Emacs."
@@ -172,6 +170,9 @@ commands still work, and displays alt text when X provides it."
 (defvar-local chirp--profile-switch-mode-function nil
   "Function used to switch the current profile buffer to another subview.")
 
+(defvar-local chirp--toggle-hidden-replies-function nil
+  "Function used to toggle filtered replies in the current thread buffer.")
+
 (defvar-local chirp--status-text nil
   "Persistent status text shown for the current Chirp buffer.")
 
@@ -200,6 +201,7 @@ commands still work, and displays alt text when X provides it."
 (put 'chirp--profile-view-mode 'permanent-local t)
 (put 'chirp--profile-view-modes 'permanent-local t)
 (put 'chirp--profile-switch-mode-function 'permanent-local t)
+(put 'chirp--toggle-hidden-replies-function 'permanent-local t)
 (put 'chirp--status-text 'permanent-local t)
 (put 'chirp--status-kind 'permanent-local t)
 (put 'chirp--status-start-time 'permanent-local t)
@@ -244,7 +246,7 @@ commands still work, and displays alt text when X provides it."
     (define-key map (kbd "l") #'chirp-toggle-like-at-point)
     (define-key map (kbd "B") #'chirp-toggle-bookmark-at-point)
     (define-key map (kbd "T") #'chirp-translate-at-point)
-    (define-key map (kbd "y") #'chirp-copy-fixupx-url-at-point)
+    (define-key map (kbd "y") #'chirp-copy-url-at-point)
     (define-key map (kbd "i") #'chirp-notifications)
     (define-key map (kbd "m") #'chirp-open-primary-media)
     (define-key map (kbd "D") #'chirp-media-download-at-point)
@@ -286,12 +288,6 @@ commands still work, and displays alt text when X provides it."
   (add-hook 'post-command-hook #'chirp--update-current-entry-overlay nil t)
   (visual-line-mode 1))
 
-(defun chirp--status-face (kind)
-  "Return a mode-line face for status KIND."
-  (pcase kind
-    ('error 'error)
-    (_ 'mode-line-emphasis)))
-
 (defun chirp--mode-line-status-string ()
   "Return the mode-line string for the current Chirp status."
   (when (and chirp--status-text
@@ -302,7 +298,9 @@ commands still work, and displays alt text when X provides it."
            (text (if (eq chirp--status-kind 'loading)
                      (format " · %s %.1fs" chirp--status-text elapsed)
                    (concat " · " chirp--status-text))))
-      (propertize text 'face (chirp--status-face chirp--status-kind)))))
+      (propertize text 'face (if (eq chirp--status-kind 'error)
+                                 'error
+                               'mode-line-emphasis)))))
 
 (defun chirp--ensure-status-timer (buffer)
   "Ensure BUFFER has a status refresh timer."
@@ -351,24 +349,15 @@ commands still work, and displays alt text when X provides it."
         (setq-local chirp--status-timer nil)
         (force-mode-line-update)))))
 
-(defun chirp--base-buffer-stem ()
-  "Return the display stem used for Chirp buffer names."
-  (let ((name chirp-buffer-name))
-    (if (string-match "\\`\\*\\(.*?\\)\\*\\'" name)
-        (match-string 1 name)
-      name)))
-
-(defun chirp--format-buffer-name (&optional title)
-  "Return a display buffer name for TITLE."
-  (if (and (stringp title)
-           (not (string-empty-p title)))
-      (format "*%s: %s*" (chirp--base-buffer-stem) title)
-    chirp-buffer-name))
-
 (defun chirp--apply-buffer-name (buffer &optional title)
   "Rename BUFFER to match TITLE and return BUFFER."
-  (with-current-buffer buffer
-    (let ((new-name (chirp--format-buffer-name title)))
+  (let* ((stem (if (string-match "\\`\\*\\(.*?\\)\\*\\'" chirp-buffer-name)
+                   (match-string 1 chirp-buffer-name)
+                 chirp-buffer-name))
+         (new-name (if (and (stringp title) (not (string-empty-p title)))
+                       (format "*%s: %s*" stem title)
+                     chirp-buffer-name)))
+    (with-current-buffer buffer
       (unless (string= (buffer-name buffer) new-name)
         (rename-buffer new-name t))))
   buffer)
@@ -631,15 +620,13 @@ Optional PREFETCH loads media for each new item in BUFFER."
 (defun chirp-buffer-window (&optional buffer)
   "Return the interactive window showing BUFFER, or nil."
   (let ((target (or buffer (current-buffer))))
-    (or (and (window-live-p (selected-window))
-             (eq (window-buffer (selected-window)) target)
+    (or (and (eq (window-buffer (selected-window)) target)
              (selected-window))
         (get-buffer-window target t))))
 
 (defun chirp-capture-window-state (&optional buffer)
   "Return the current window state for BUFFER, or nil when not visible."
-  (when-let* ((window (chirp-buffer-window buffer))
-              ((window-live-p window)))
+  (when-let* ((window (chirp-buffer-window buffer)))
     (with-current-buffer (window-buffer window)
       (list :window window
             :point-anchor (save-excursion
@@ -789,6 +776,9 @@ Optional PREFETCH loads media for each new item in BUFFER."
      ((and profile-view-mode
            (functionp chirp--profile-switch-mode-function))
       (funcall chirp--profile-switch-mode-function profile-view-mode))
+     ((and (chirp--text-property-at-point 'chirp-replies-heading)
+           (functionp chirp--toggle-hidden-replies-function))
+      (funcall chirp--toggle-hidden-replies-function))
      (profile-action
       (pcase profile-action
         ('toggle-follow (chirp-toggle-follow-user-at-point))
@@ -1000,14 +990,6 @@ Optional PREFETCH loads media for each new item in BUFFER."
       (when handle
         (push (format "https://x.com/%s/status/%s" handle id) urls)))
     (delete-dups (delq nil urls))))
-
-(defun chirp-tweet-fixupx-url (tweet)
-  "Return a fixupx.com URL for TWEET, or nil when unavailable."
-  (when-let* ((url (car (chirp-tweet-candidate-urls tweet))))
-    (replace-regexp-in-string
-     "\\`https?://\\(?:www\\.\\)?\\(?:x\\.com\\|twitter\\.com\\)"
-     "https://fixupx.com"
-     url)))
 
 (defun chirp-tweet-preview-text (tweet &optional max-length)
   "Return a short one-paragraph preview for TWEET.
@@ -1901,6 +1883,9 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
             :author-name (plist-get author-user :name)
             :author-handle author-handle
             :author-avatar-url (plist-get author-user :avatar-url)
+            :author-bio (plist-get author-user :bio)
+            :author-following-p (plist-get author-user :viewer-following-p)
+            :author-self-p (plist-get author-user :self-p)
             :quoted-tweet quoted-tweet
             :article-title article-title
             :article-text article-text

@@ -19,7 +19,7 @@
 (require 'url-util)
 (require 'auth-source)
 (require 'chirp-core)
-(require 'chirp-web)
+(require 'chirp-x-transaction)
 
 (defgroup chirp-x nil
   "X web API transport for Chirp."
@@ -51,6 +51,17 @@
 (defconst chirp-x--write-response-limit (* 4 1024 1024)
   "Maximum accepted response body size for one authenticated X write.")
 
+(defconst chirp-x--auth-schema-version 1
+  "Schema version written to `chirp-x-auth-file'.")
+
+(defcustom chirp-x-auth-file
+  (locate-user-emacs-file "chirp/auth.json")
+  "Private file storing Chirp's X session cookies.
+
+`chirp-login' creates this file with owner-only permissions."
+  :type 'file
+  :group 'chirp-x)
+
 (defcustom chirp-x-bearer-token
   (concat "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
           "%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA")
@@ -60,6 +71,37 @@ Set `CHIRP_X_BEARER_TOKEN' to override this value when X rotates its web
 client token.  This is not an account credential."
   :type 'string
   :group 'chirp-x)
+
+(defcustom chirp-x-user-agent
+  (concat "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
+  "Browser User-Agent header sent with X web API requests."
+  :type 'string
+  :group 'chirp-x)
+
+(defcustom chirp-x-query-id-overrides nil
+  "Persisted GraphQL query IDs overriding Chirp's built-in operation IDs.
+
+Each entry has the form `(OPERATION-NAME . QUERY-ID)', for example
+`((\"CreateTweet\" . \"...\"))'."
+  :type '(alist :key-type (string :tag "Operation")
+                :value-type (string :tag "Query ID"))
+  :group 'chirp-x)
+
+(defun chirp-x--make-uuid ()
+  "Return a fresh UUID-shaped X client identifier."
+  (let ((digest (secure-hash 'sha256
+                             (format "%S:%s:%s:%s"
+                                     (current-time) (emacs-pid)
+                                     (random most-positive-fixnum) (user-uid)))))
+    (concat (substring digest 0 8) "-"
+            (substring digest 8 12) "-4"
+            (substring digest 13 16) "-8"
+            (substring digest 17 20) "-"
+            (substring digest 20 32))))
+
+(defvar chirp-x--client-uuid (chirp-x--make-uuid)
+  "Process-local client UUID sent with X web API requests.")
 
 (defun chirp-x--nonblank-string (value)
   "Return VALUE when it is a nonblank string, otherwise nil."
@@ -75,27 +117,140 @@ client token.  This is not an account credential."
   "Return non-nil when AUTH-TOKEN and CT0 are safe X cookie values."
   (and (chirp-x--nonblank-string auth-token)
        (chirp-x--nonblank-string ct0)
-       (not (string-match-p "[;\r\n]" auth-token))
-       (not (string-match-p "[;\r\n]" ct0))))
+       (not (string-match-p "[^[:ascii:]]\\|[[:cntrl:];]" auth-token))
+       (not (string-match-p "[^[:ascii:]]\\|[[:cntrl:];]" ct0))))
 
+(defun chirp-x-parse-cookie-input (input)
+  "Extract (AUTH-TOKEN . CT0) from a Cookie header or cURL command INPUT."
+  (when (stringp input)
+    (let* ((normalized
+            (replace-regexp-in-string
+             "\\^[\"^&%]"
+             (lambda (match) (substring match 1))
+             (replace-regexp-in-string "[\\\\^]\r?\n[ \t]*" " " input)))
+           (cleaned (string-trim
+                     (replace-regexp-in-string "\\`[Cc]ookie:[ \t]*" "" normalized)))
+           (auth (and (string-match
+                       "\\(?:\\`\\|[; \t'\",]\\)auth_token=\\([^;'\" \t\r\n\\\\^]+\\)"
+                       cleaned)
+                      (string-trim (match-string 1 cleaned))))
+           (ct0 (or (and (string-match
+                          "\\(?:\\`\\|[; \t'\",]\\)ct0=\\([^;'\" \t\r\n\\\\^]+\\)"
+                          cleaned)
+                         (string-trim (match-string 1 cleaned)))
+                    (let ((case-fold-search t))
+                      (and (string-match
+                            "x-csrf-token:[ \t]*\\([^;'\" \t\r\n\\\\^]+\\)"
+                            cleaned)
+                           (string-trim (match-string 1 cleaned)))))))
+      (when (and auth ct0 (chirp-x--session-cookie-values-valid-p auth ct0))
+        (cons auth ct0)))))
+
+(defun chirp-x-make-credentials (auth-token ct0)
+  "Return a validated credential plist for AUTH-TOKEN and CT0."
+  (unless (chirp-x--session-cookie-values-valid-p auth-token ct0)
+    (user-error "Invalid X session cookies"))
+  (list :auth-token auth-token
+        :ct0 ct0
+        :bearer-token (or (chirp-x--environment-value "CHIRP_X_BEARER_TOKEN")
+                          chirp-x-bearer-token)))
+
+(defun chirp-x--read-auth-file ()
+  "Return (AUTH-TOKEN . CT0) from `chirp-x-auth-file', or nil when unavailable."
+  (when (and (stringp chirp-x-auth-file)
+             (file-readable-p chirp-x-auth-file))
+    (condition-case nil
+        (let* ((payload
+                (with-temp-buffer
+                  (insert-file-contents-literally chirp-x-auth-file)
+                  (json-parse-string (buffer-string)
+                                     :object-type 'alist
+                                     :array-type 'list
+                                     :null-object nil
+                                     :false-object nil)))
+               (auth (and (listp payload)
+                          (equal (alist-get 'schema payload)
+                                 chirp-x--auth-schema-version)
+                          (alist-get 'auth_token payload)))
+               (ct0 (and (listp payload)
+                         (alist-get 'ct0 payload))))
+          (when (chirp-x--session-cookie-values-valid-p auth ct0)
+            (cons auth ct0)))
+      (error nil))))
+
+(defun chirp-x-save-credentials (auth-token ct0)
+  "Validate and atomically write AUTH-TOKEN and CT0 to `chirp-x-auth-file'."
+  (unless (chirp-x--session-cookie-values-valid-p auth-token ct0)
+    (user-error "Invalid X session cookies"))
+  (let* ((file (expand-file-name chirp-x-auth-file))
+         (directory (file-name-directory file))
+         temporary)
+    (make-directory directory t)
+    (unwind-protect
+        (progn
+          (setq temporary
+                (make-temp-file (expand-file-name ".chirp-auth-" directory)
+                                nil ".json"))
+          (unless (eq system-type 'windows-nt)
+            (set-file-modes temporary #o600))
+          (let ((coding-system-for-write 'utf-8-unix))
+            (with-temp-file temporary
+              (insert
+               (json-encode `((schema . ,chirp-x--auth-schema-version)
+                              (auth_token . ,auth-token)
+                              (ct0 . ,ct0))))
+              (insert "\n")))
+          (rename-file temporary file t)
+          (setq temporary nil))
+      (when temporary
+        (ignore-errors (delete-file temporary))))
+    (chirp-x-transaction-clear-cache)
+    file))
+
+(defun chirp-x-clear-credentials ()
+  "Remove `chirp-x-auth-file' when present and clear cached transaction state."
+  (let ((file (and (stringp chirp-x-auth-file)
+                   (expand-file-name chirp-x-auth-file))))
+    (when (and file (file-exists-p file))
+      (delete-file file)))
+  (chirp-x-transaction-clear-cache))
 
 (defun chirp-x-credentials ()
-  "Return configured X credentials, or nil for WebKit sign-in."
-  (let ((terminal (not (display-graphic-p))))
-    (when-let* ((auth (or (chirp-x--environment-value "TWITTER_AUTH_TOKEN")
-                          (and terminal (auth-source-pick-first-password
-                                         :host "x.com" :user "auth_token"))))
-                (csrf (or (chirp-x--environment-value "TWITTER_CT0")
-                          (and terminal (auth-source-pick-first-password
-                                         :host "x.com" :user "ct0"))))
-                ((chirp-x--session-cookie-values-valid-p auth csrf)))
-      (list :auth-token auth :ct0 csrf
+  "Return configured X credentials across GUI and terminal Emacs, or nil.
+
+Lookup order is environment variables (`TWITTER_AUTH_TOKEN' and `TWITTER_CT0'),
+`chirp-x-auth-file', and finally `auth-source' entries for `x.com'."
+  (let* ((pair
+          (or (let ((auth (chirp-x--environment-value "TWITTER_AUTH_TOKEN"))
+                    (ct0 (chirp-x--environment-value "TWITTER_CT0")))
+                (and auth ct0 (cons auth ct0)))
+              (chirp-x--read-auth-file)
+              (let ((auth (auth-source-pick-first-password
+                           :host "x.com" :user "auth_token"))
+                    (ct0 (auth-source-pick-first-password
+                          :host "x.com" :user "ct0")))
+                (and auth ct0 (cons auth ct0))))))
+    (when (and pair (chirp-x--session-cookie-values-valid-p (car pair) (cdr pair)))
+      (list :auth-token (car pair)
+            :ct0 (cdr pair)
             :bearer-token (or (chirp-x--environment-value "CHIRP_X_BEARER_TOKEN")
                               chirp-x-bearer-token)))))
 
-(defun chirp-x-session ()
-  "Return `webkit' or configured credentials for the current display."
-  (if (chirp-web-ready-p) 'webkit (chirp-x-credentials)))
+(defun chirp-x-session-key ()
+  "Return a hashed identity for the active X credentials, or nil."
+  (when-let* ((creds (chirp-x-credentials)))
+    (secure-hash 'sha256
+                 (concat (plist-get creds :auth-token)
+                         "\0"
+                         (plist-get creds :ct0)))))
+
+(defun chirp-x--operation-query-id (operation)
+  "Return the effective GraphQL query ID for OPERATION."
+  (let ((name (plist-get operation :name)))
+    (or (and (stringp name)
+             (chirp-x--nonblank-string
+              (cdr (assoc name chirp-x-query-id-overrides))))
+        (plist-get operation :query-id))))
 
 (defun chirp-x--operation-method (operation)
   "Return the validated HTTP method selected by OPERATION."
@@ -218,8 +373,10 @@ FEATURES and FIELD-TOGGLES are included when non-nil."
   (cons (encode-coding-string name 'us-ascii)
         (encode-coding-string value 'us-ascii)))
 
-(defun chirp-x--headers (credentials &optional content-type)
-  "Return authenticated X headers from CREDENTIALS and CONTENT-TYPE."
+(defun chirp-x--headers (credentials &optional content-type transaction-id)
+  "Return authenticated X headers for CREDENTIALS.
+
+Optional CONTENT-TYPE and TRANSACTION-ID add their corresponding headers."
   (mapcar
    (lambda (header)
      (chirp-x--ascii-header (car header) (cdr header)))
@@ -230,24 +387,35 @@ FEATURES and FIELD-TOGGLES are included when non-nil."
                            (plist-get credentials :auth-token)
                            (plist-get credentials :ct0)))
       ("X-Csrf-Token" . ,(plist-get credentials :ct0))
+      ("X-Client-UUID" . ,chirp-x--client-uuid)
       ("X-Twitter-Active-User" . "yes")
       ("X-Twitter-Auth-Type" . "OAuth2Session")
       ("X-Twitter-Client-Language" . "en")
       ("Origin" . "https://x.com")
       ("Referer" . "https://x.com/")
-      ("Accept" . "*/*"))
+      ("Accept-Language" . "en-US,en;q=0.9"))
     (when content-type
-      `(("Content-Type" . ,content-type))))))
+      `(("Content-Type" . ,content-type)))
+    (when transaction-id
+      `(("X-Client-Transaction-Id" . ,transaction-id))))))
 
 (defun chirp-x--response-body (limit)
   "Return the current HTTP response body when no larger than LIMIT bytes."
   (let* ((header-end (and (boundp 'url-http-end-of-headers)
                           url-http-end-of-headers))
+         (header-pos
+          (max (point-min)
+               (cond
+                ((markerp header-end) (marker-position header-end))
+                ((integerp header-end) header-end)
+                (t (point-min)))))
+         ;; url.el leaves `url-http-end-of-headers' on the LF terminating the
+         ;; blank header line rather than on the first response-body byte.
          (start
-          (cond
-           ((markerp header-end) (marker-position header-end))
-           ((integerp header-end) header-end)
-           (t (point-min))))
+          (if (and (< header-pos (point-max))
+                   (eq (char-after header-pos) ?\n))
+              (1+ header-pos)
+            header-pos))
          (end (point-max))
          (bytes (- (position-bytes end) (position-bytes start))))
     (when (> bytes limit)
@@ -342,12 +510,11 @@ FEATURES and FIELD-TOGGLES are included when non-nil."
    "X write outcome is unknown; the request may have succeeded. "
    "Check X before trying again. " message))
 
-(defun chirp-x--decode-response (request-status &optional allow-empty method web-session)
+(defun chirp-x--decode-response (request-status &optional allow-empty method)
   "Decode the current X response buffer for REQUEST-STATUS.
 
 When ALLOW-EMPTY is non-nil, accept an empty successful response as an empty
 object.  METHOD identifies writes whose transport outcome can be uncertain.
-WEB-SESSION identifies the browser login that sent this request.
 Return either `(:success PAYLOAD)' or `(:error MESSAGE)'."
   (let* ((http-status (chirp-x--response-status request-status))
          (body (chirp-x--response-body
@@ -364,17 +531,18 @@ Return either `(:success PAYLOAD)' or `(:error MESSAGE)'."
                                    :null-object nil
                                    :false-object nil)
               (error nil)))))
+    (when (seq-some (lambda (item) (eq (chirp-get item "code") 226))
+                    (chirp-x--graphql-errors payload))
+      (chirp-x-transaction-clear-cache))
     (cond
      ((or (eq http-status 401)
           (and (memq http-status '(200 403))
                (seq-some (lambda (item) (memq (chirp-get item "code") '(32 89 353)))
                          (chirp-x--graphql-errors payload))))
-      (when (and web-session (eq web-session chirp-web--ready))
-        (setq chirp-web--ready nil))
+      (chirp-x-transaction-clear-cache)
       (list :error (concat (chirp-x--failure-message
                             (unless (eq http-status 200) http-status) payload request-status)
-                           (if web-session ". Sign in with M-x chirp-login"
-                             ". Update your X session credentials in the environment or auth-source"))))
+                           ". Run M-x chirp-login or update your X session credentials")))
      ((or (not http-status)
           (< http-status 200)
           (>= http-status 300))
@@ -399,92 +567,135 @@ Return either `(:success PAYLOAD)' or `(:error MESSAGE)'."
      (t (list :success payload)))))
 
 
-(cl-defun chirp-x--request (url method callback &key data content-type errback allow-empty query-p)
+(defun chirp-x--sanitize-error (message)
+  "Redact sensitive HTTP headers if MESSAGE includes a raw request dump."
+  (if (not (stringp message))
+      "X request failed"
+    (let ((case-fold-search t))
+      (if (string-match-p "\\`Multibyte text in HTTP request:" message)
+          "X request encoding error"
+        (replace-regexp-in-string
+         "^\\(Authorization\\|Cookie\\|X-Csrf-Token\\):[^\r\n]*"
+         "\\1: <redacted>"
+         message)))))
+
+(cl-defun chirp-x--request
+    (url method callback &key data content-type transaction-id errback allow-empty query-p credentials)
   "Request URL with METHOD and deliver decoded JSON to CALLBACK.
-DATA and CONTENT-TYPE specify the body.  ERRBACK receives errors.
-ALLOW-EMPTY accepts a successful response without a body.
-QUERY-P identifies read-only POST operations."
+DATA and CONTENT-TYPE specify the body.  TRANSACTION-ID supplies the signed
+`X-Client-Transaction-Id' header for GraphQL writes.  ERRBACK receives errors.
+ALLOW-EMPTY accepts a successful response without a body.  QUERY-P identifies
+read-only POST operations.  CREDENTIALS overrides `chirp-x-credentials'."
   (unless (chirp-x--trusted-url-p url) (error "Invalid X request URL"))
-  (let* ((session (chirp-x-session))
-         (web-session (and (eq session 'webkit) chirp-web--ready))
-         (verb (upcase (symbol-name method)))
+  (let* ((creds (or credentials (chirp-x-credentials)))
+         ;; Keep method and header bindings strictly unibyte so `url-http-create-request'
+         ;; never promotes raw UTF-8 or binary request bytes into multibyte text.
+         (verb (pcase method
+                 ('get "GET")
+                 ('post "POST")
+                 (_ (error "X HTTP method is invalid: %S" method))))
          (bytes (if (and data (multibyte-string-p data))
                     (encode-coding-string data 'utf-8) data)))
-    (unless session
-      (user-error (if (display-graphic-p) "Sign in with M-x chirp-login"
-                    "Configure your X session credentials in the environment or auth-source")))
-    (cl-labels ((deliver (status)
-                  (let ((result (condition-case err
-                                    (chirp-x--decode-response
-                                     status allow-empty (unless query-p method) web-session)
-                                  (error (list :error (error-message-string err))))))
-                    (if (eq (car result) :success)
-                        (funcall callback (cadr result))
-                      (funcall (or errback #'message) (cadr result))))))
-      (if (listp session)
-          (let* ((url-request-method verb)
-                 (url-request-extra-headers (chirp-x--headers session content-type))
-                 (url-request-data bytes)
-                 (url-max-redirections 0)
-                 (url-http-attempt-keepalives (and (eq method 'get) url-http-attempt-keepalives))
-                 timer
-                 finished
-                 (buffer (url-retrieve
-                          url (lambda (status)
-                                (let ((response (current-buffer)))
-                                  (unless finished
-                                    (setq finished t)
-                                    (when timer (cancel-timer timer))
-                                    (unwind-protect (deliver status) (kill-buffer response)))))
-                          ;; INHIBIT-COOKIES skips url.el's cookie jar for both request and response.
-                          nil t t)))
-            (when (and (not finished) (buffer-live-p buffer))
-              (with-current-buffer buffer (setq-local url-max-redirections 0))
-              (setq timer
-                    (run-at-time
-                     65 nil
-                     (lambda ()
-                       (setq finished t)
-                       (when (buffer-live-p buffer)
-                         (when-let* ((process (get-buffer-process buffer))) (delete-process process))
-                         (kill-buffer buffer))
-                       (funcall (or errback #'message)
-                                (if (and (eq method 'post) (not query-p))
-                                    (chirp-x-unknown-write-outcome "X request timed out")
-                                  "X request timed out"))))))
-            buffer)
-        (chirp-web-request
-         url verb
-         (lambda (status body &optional headers)
-           (with-temp-buffer
-             (when headers (insert headers "\n"))
-             (setq-local url-http-response-status (and (> status 0) status)
-                         url-http-end-of-headers (point-marker))
-             (insert body)
-             (deliver (and (zerop status) (list :error (list 'error body))))))
-         :bearer (or (chirp-x--environment-value "CHIRP_X_BEARER_TOKEN")
-                     chirp-x-bearer-token)
-         :type content-type :data bytes :response-headers chirp-x--limit-headers
-         :limit (if (and (eq method 'post) (not query-p))
-                    chirp-x--write-response-limit chirp-x--read-response-limit))))))
+    (unless creds
+      (user-error "Sign in with M-x chirp-login or configure X session credentials"))
+    (let* ((url-request-method verb)
+           (url-user-agent (encode-coding-string chirp-x-user-agent 'us-ascii))
+           (url-privacy-level nil)
+           (url-mime-accept-string "*/*")
+           (url-mime-charset-string nil)
+           (url-mime-language-string nil)
+           (url-extensions-header nil)
+           (url-request-extra-headers (chirp-x--headers creds content-type transaction-id))
+           (url-request-data bytes)
+           (url-max-redirections 0)
+           (url-http-attempt-keepalives (and (eq method 'get) url-http-attempt-keepalives))
+           timer
+           finished
+           (buffer (url-retrieve
+                    url (lambda (status)
+                          (let ((response (current-buffer)))
+                            (unless finished
+                              (setq finished t)
+                              (when timer (cancel-timer timer))
+                              (let ((result
+                                     (unwind-protect
+                                         (condition-case err
+                                             (chirp-x--decode-response
+                                              status allow-empty (unless query-p method))
+                                           (error (list :error (chirp-x--sanitize-error
+                                                                (error-message-string err)))))
+                                       (when (buffer-live-p response)
+                                         (kill-buffer response)))))
+                                (if (eq (car result) :success)
+                                    (funcall callback (cadr result))
+                                  (funcall (or errback #'message) (cadr result)))))))
+                    ;; INHIBIT-COOKIES skips url.el's cookie jar for both request and response.
+                    nil t t)))
+      (when (and (not finished) (buffer-live-p buffer))
+        (with-current-buffer buffer (setq-local url-max-redirections 0))
+        (setq timer
+              (run-at-time
+               65 nil
+               (lambda ()
+                 (setq finished t)
+                 (when (buffer-live-p buffer)
+                   (when-let* ((process (get-buffer-process buffer))) (delete-process process))
+                   (kill-buffer buffer))
+                 (funcall (or errback #'message)
+                          (if (and (eq method 'post) (not query-p))
+                              (chirp-x-unknown-write-outcome "X request timed out")
+                            "X request timed out"))))))
+      buffer)))
 
-(cl-defun chirp-x-graphql-request (operation variables callback &key errback)
+(cl-defun chirp-x-graphql-request (operation variables callback &key errback credentials)
   "Issue OPERATION with VARIABLES and deliver the result to CALLBACK.
-ERRBACK receives a single error message."
+
+ERRBACK receives a single error message.  Optional CREDENTIALS overrides
+`chirp-x-credentials'.  GraphQL write operations prepare and attach a fresh
+`X-Client-Transaction-Id' header before dispatching."
   (condition-case err
       (let* ((variables (or variables (make-hash-table :test #'equal)))
              (method (chirp-x--operation-method operation))
-             (id (plist-get operation :query-id))
+             (query-p (plist-get operation :query))
+             (write-p (and (eq method 'post) (not query-p)))
+             (id (chirp-x--operation-query-id operation))
              (features (chirp-x--operation-features operation))
              (fields (chirp-x--operation-field-toggles operation))
              (url (chirp-x--graphql-url id (plist-get operation :name) method
-                                        variables features fields)))
-        (chirp-x--request url method callback :errback errback
-                          :query-p (plist-get operation :query)
-                          :content-type (and (eq method 'post) "application/json")
-                          :data (and (eq method 'post)
-                                     (chirp-x--graphql-post-body id variables features fields))))
-    (error (funcall (or errback #'message) (error-message-string err)))))
+                                        variables features fields))
+             (content-type (and (eq method 'post) "application/json"))
+             (body (and (eq method 'post)
+                        (chirp-x--graphql-post-body id variables features fields)))
+             (error-fn (or errback #'message)))
+        (if write-p
+            (let ((creds (or credentials (chirp-x-credentials))))
+              (unless creds
+                (user-error "Sign in with M-x chirp-login or configure X session credentials"))
+              (chirp-x-transaction-prepare
+               creds chirp-x-user-agent
+               (lambda (material)
+                 (condition-case sign-err
+                     (let ((tx-id (chirp-x-transaction-id
+                                   material "POST"
+                                   (url-filename (url-generic-parse-url url)))))
+                       (chirp-x--request url method callback
+                                         :errback error-fn
+                                         :query-p nil
+                                         :content-type content-type
+                                         :data body
+                                         :transaction-id tx-id
+                                         :credentials creds))
+                   (error (funcall error-fn (chirp-x--sanitize-error
+                                             (error-message-string sign-err))))))
+               error-fn))
+          (chirp-x--request url method callback
+                            :errback error-fn
+                            :query-p query-p
+                            :content-type content-type
+                            :data body
+                            :credentials credentials)))
+    (error (funcall (or errback #'message)
+                    (chirp-x--sanitize-error (error-message-string err))))))
 
 (cl-defun chirp-x-api-request
     (service path callback &key (method 'get) query form errback)
@@ -512,7 +723,7 @@ readable error string."
              :content-type (and form "application/x-www-form-urlencoded")
              :errback error-fn)))
       (error
-       (funcall error-fn (error-message-string err))
+       (funcall error-fn (chirp-x--sanitize-error (error-message-string err)))
        nil))))
 
 (defun chirp-x--upload-media-type (file)
@@ -719,7 +930,7 @@ mutation is retried automatically."
                  :content-type "application/x-www-form-urlencoded"
                  :errback #'fail)))))
       (error
-       (funcall error-fn (error-message-string err))
+       (funcall error-fn (chirp-x--sanitize-error (error-message-string err)))
        nil))))
 
 (provide 'chirp-x)
