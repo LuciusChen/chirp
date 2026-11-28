@@ -191,7 +191,7 @@ When ACTIVE is non-nil, prefer the action-specific face for LABEL."
         (_ 'chirp-active-metric-face))
     'chirp-meta-face))
 
-(defun chirp-render--mark-entry (start end entry)
+(defun chirp-render-mark-entry (start end entry)
   "Mark the region from START to END as ENTRY."
   (when (< start end)
     (add-text-properties
@@ -200,20 +200,8 @@ When ACTIVE is non-nil, prefer the action-specific face for LABEL."
                         chirp-entry-url
                         ,(or (plist-get entry :url)
                              (plist-get entry :profile-url))
-                        pointer hand
-                        help-echo "RET: open  m: media  A: author  o: browser"
                         rear-nonsticky t))
     (put-text-property start (1+ start) 'chirp-entry-start t)))
-
-(defun chirp-render--mark-subentry (start end entry)
-  "Mark the region from START to END as nested ENTRY."
-  (when (< start end)
-    (add-text-properties
-     start end
-     `(chirp-subentry-item ,entry
-                           chirp-subentry-url ,(plist-get entry :url)
-                           pointer hand
-                           help-echo "RET: open quoted tweet  o: browser"))))
 
 (defun chirp-render--mark-url-region (start end url)
   "Mark the region from START to END as opening URL in a browser."
@@ -222,10 +210,10 @@ When ACTIVE is non-nil, prefer the action-specific face for LABEL."
              (not (string-empty-p url)))
     (add-text-properties
      start end
-     `(chirp-subentry-url ,url
-                          mouse-face highlight
-                          pointer hand
-                          help-echo "o: browser"))))
+     `(chirp-link-url ,url
+                      mouse-face highlight
+                      pointer hand
+                      help-echo "RET, Mouse-1 or o: open in browser"))))
 
 (defun chirp-render--mark-author-region (start end handle)
   "Mark the region from START to END as the avatar region for HANDLE."
@@ -277,20 +265,18 @@ When ACTIVE is non-nil, prefer the action-specific face for LABEL."
 (defun chirp-render--mark-tweet-action-region (start end action)
   "Mark the region from START to END as tweet ACTION."
   (when (< start end)
-    (add-text-properties
-     start end
-     `(chirp-tweet-action ,action
-                          keymap ,chirp--tweet-action-map
-                          mouse-face highlight
-                          pointer hand
-                          help-echo
-                          ,(pcase action
-                             ('reply "Mouse-1: reply to this tweet")
-                             ('retweet "Mouse-1: toggle repost/retweet")
-                             ('like "Mouse-1: toggle like")
-                             ('bookmark "Mouse-1: toggle bookmark")
-                             (_ (error "Unknown tweet action: %S" action)))
-                          rear-nonsticky t))))
+    (let ((count (get-text-property (1- end) 'help-echo))
+          (hint (pcase action
+                  ('quote "quote this tweet")
+                  ('reply "reply to this tweet")
+                  ('retweet "toggle repost/retweet")
+                  ('like "toggle like")
+                  ('bookmark "toggle bookmark"))))
+      (add-text-properties
+       start end
+       (list 'chirp-tweet-action action 'mouse-face 'highlight 'pointer 'hand
+             'help-echo (concat "Mouse-1: " hint (and count (concat " · " count)))
+             'rear-nonsticky t)))))
 
 (defun chirp-render--profile-follow-action-label (user)
   "Return the primary follow button label for USER, or nil."
@@ -365,11 +351,11 @@ When ACTIVE is non-nil, emphasize the metric."
             ('retweet
              (if (fboundp 'nerd-icons-faicon)
                  (nerd-icons-faicon "nf-fa-retweet" :face face)
-               "RT"))
+               (if active "RTed" "RT")))
             ('like
              (if (fboundp 'nerd-icons-faicon)
                  (nerd-icons-faicon "nf-fa-heart" :face face)
-               "Likes"))
+               (if active "Liked" "Likes")))
             ('quote
              (if (fboundp 'nerd-icons-mdicon)
                  (nerd-icons-mdicon "nf-md-format_quote_open" :face face)
@@ -377,7 +363,7 @@ When ACTIVE is non-nil, emphasize the metric."
             ('bookmark
              (if (fboundp 'nerd-icons-mdicon)
                  (nerd-icons-mdicon "nf-md-bookmark" :face face)
-               "Bookmarks"))
+               (if active "Saved" "Bookmarks")))
             ('view
              (if (fboundp 'nerd-icons-mdicon)
                  (nerd-icons-mdicon "nf-md-eye" :face face)
@@ -395,14 +381,45 @@ When ACTIVE is non-nil, emphasize the metric."
     (insert (chirp-render--metric-string label value active))
     (cons start (point))))
 
+(defun chirp-render-timestamp (stamp)
+  "Format STAMP in local time, with the full timestamp on hover."
+  (condition-case nil
+      (let* ((time (if (stringp stamp) (date-to-time stamp) stamp))
+             (age (max 0 (- (float-time) (float-time time))))
+             (label (cond ((< age 60) "now")
+                          ((< age 3600) (format "%dm" (floor age 60)))
+                          ((< age 86400) (format "%dh" (floor age 3600)))
+                          (t (format-time-string
+                              (if (equal (format-time-string "%Y" time) (format-time-string "%Y"))
+                                  "%b %-d" "%Y-%m-%d") time)))))
+        (propertize label 'face 'chirp-meta-face 'help-echo
+                    (format-time-string "%Y-%m-%d %H:%M:%S %Z" time)))
+    (error (propertize stamp 'face 'chirp-meta-face))))
+
 (defun chirp-render--insert-filled-text (text &optional prefix prefix-face)
   "Insert TEXT and let Emacs wrap it visually in the current window.
 
 Precede each line with PREFIX using PREFIX-FACE when provided."
-  (dolist (line (split-string (chirp-clean-text text) "\n" nil))
+  (dolist (line (split-string text "\n" nil))
     (chirp-render--insert-prefix prefix prefix-face)
     (let ((start (point)))
       (insert line)
+      (save-excursion
+        (let ((end (point)))
+          (goto-char start)
+          (let ((case-fold-search nil))
+            (while (re-search-forward
+                    (rx (or line-start (not (in "A-Za-z0-9_@#/")))
+                        (group (or (seq "@" (+ (in "A-Za-z0-9_")))
+                                   (seq "#" (+ (or alnum "_"))))))
+                    end t)
+              (let* ((tag (match-string-no-properties 1))
+                     (mention (= (aref tag 0) ?@)))
+                (add-text-properties
+                 (match-beginning 1) (match-end 1)
+                 (list (if mention 'chirp-mention 'chirp-hashtag) tag
+                       'face 'chirp-handle-face 'pointer 'hand 'mouse-face 'highlight
+                       'help-echo (if mention "Open profile" "Search hashtag"))))))))
       (insert "\n")
       (chirp-render--apply-wrap-prefix start (point) prefix prefix-face))))
 
@@ -410,7 +427,7 @@ Precede each line with PREFIX using PREFIX-FACE when provided."
   "Insert TEXT using FACE, optionally preceded by PREFIX.
 
 Apply PREFIX-FACE to that prefix when provided."
-  (dolist (line (split-string (chirp-clean-text text) "\n" nil))
+  (dolist (line (split-string text "\n" nil))
     (chirp-render--insert-prefix prefix prefix-face)
     (let ((start (point)))
       (if (string-empty-p line)
@@ -470,6 +487,41 @@ using PREFIX-FACE when provided."
                (not (string= preview title)))
       (chirp-render--insert-face-text preview 'chirp-article-summary-face prefix prefix-face))))
 
+(defun chirp-render--insert-article-text (text prefix prefix-face)
+  "Render article TEXT with PREFIX and PREFIX-FACE on each line."
+  (let (code)
+    (dolist (line (split-string text "\n"))
+      (if (string-prefix-p "```" line)
+          (setq code (not code))
+        (let ((face (cond (code 'fixed-pitch)
+                          ((string-match "^#+ +\\(.*\\)" line)
+                           (setq line (match-string 1 line)) 'chirp-article-title-face)
+                          ((string-prefix-p "> " line)
+                           (setq line (concat "│ " (substring line 2))) 'shadow))))
+          (chirp-render--insert-prefix prefix prefix-face)
+          (let ((start (point)) (pos 0))
+            (unless code
+              (while (string-match
+                      (rx "[" (group (+ (or (seq "\\" nonl) (not (in "]\\\n"))))) "]("
+                          (group (or "https://" "http://")
+                                 (+ (or (seq "\\" nonl) (not (in " )\\\n"))))) ")")
+                      line pos)
+                (let ((label (match-string 1 line)) (url (match-string 2 line))
+                      (beg (match-beginning 0)) (end (match-end 0)))
+                  (insert (substring line pos beg))
+                  (let ((from (point)))
+                    (insert (propertize
+                             (replace-regexp-in-string (rx "\\" (group (in "[]\\"))) "\\1" label)
+                             'face 'link))
+                    (chirp-render--mark-url-region
+                     from (point)
+                     (replace-regexp-in-string (rx "\\" (group (in ")\\"))) "\\1" url)))
+                  (setq pos end))))
+            (insert (substring line pos))
+            (when face (add-face-text-property start (point) face))
+            (chirp-render--apply-wrap-prefix start (point) prefix prefix-face)
+            (insert "\n")))))))
+
 (defun chirp-render--insert-article-body (tweet &optional prefix prefix-face)
   "Insert the full article content for TWEET.
 
@@ -483,7 +535,7 @@ Precede each line with PREFIX using PREFIX-FACE when provided."
     (dolist (segment (chirp-article-segments (plist-get tweet :article-text)))
       (pcase (plist-get segment :type)
         ('text
-         (chirp-render--insert-filled-text (plist-get segment :text) prefix prefix-face)
+         (chirp-render--insert-article-text (plist-get segment :text) prefix prefix-face)
          (insert "\n"))
         ('image
          (chirp-render-insert-media-strip (list (plist-get segment :media))
@@ -535,7 +587,7 @@ Precede the action with PREFIX using PREFIX-FACE when provided."
        start (point)
        `(chirp-expand-tweet-id ,tweet-id
                                mouse-face highlight
-                               pointer hand
+                          pointer hand
                                help-echo "RET: show full content"))
       (insert "\n")
       (chirp-render--apply-wrap-prefix start (point) prefix prefix-face))))
@@ -606,7 +658,7 @@ quoted-tweet face is used for the nested block."
   (ignore prefix-face)
   (when-let* ((quoted (plist-get tweet :quoted-tweet)))
     (let* ((start (point))
-           (quoted-prefix (concat (or prefix "") "   "))
+           (quoted-prefix (concat prefix "│ "))
            (quoted-prefix-face 'chirp-quoted-tweet-block-face)
            (handle (plist-get quoted :author-handle))
            (name (plist-get quoted :author-name))
@@ -619,10 +671,10 @@ quoted-tweet face is used for the nested block."
                     (format "Quoted %s" name))
                    (t
                     "Quoted tweet"))))
-      (chirp-render--insert-prefix prefix quoted-prefix-face)
       (let ((line-start (point)))
         (chirp-render--insert-prefix quoted-prefix quoted-prefix-face)
-        (insert (propertize label
+        (insert (propertize label 'pointer 'hand 'mouse-face 'highlight
+                            'help-echo "Open quoted post"
                             'face '(chirp-quoted-tweet-face
                                     chirp-quoted-tweet-block-face)))
         (insert "\n")
@@ -640,7 +692,7 @@ quoted-tweet face is used for the nested block."
                                        quoted-prefix-face)
       (chirp-render--insert-link-cards quoted quoted-prefix quoted-prefix-face)
       (add-face-text-property start (point) 'chirp-quoted-tweet-block-face 'append)
-      (chirp-render--mark-subentry start (point) quoted))))
+      (put-text-property start (point) 'chirp-subentry-item quoted))))
 
 (defun chirp-render--insert-list-reply-context (tweet reply-parent &optional prefix prefix-face)
   "Insert a lightweight reply context line for TWEET above REPLY-PARENT.
@@ -934,7 +986,7 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
       (chirp-render--mark-author-region author-start (point) handle))
     (when created-at
       (insert "  ")
-      (insert (propertize created-at 'face 'chirp-meta-face)))
+      (insert (chirp-render-timestamp created-at)))
     (insert "\n")
     (when (and show-reply-context
                (plist-get tweet :reply-to-handle))
@@ -984,7 +1036,8 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
                  (plist-get tweet :liked-p)))
           action-regions)
     (insert "   ")
-    (chirp-render--insert-metric 'quote (plist-get tweet :quote-count))
+    (push (cons 'quote (chirp-render--insert-metric 'quote (plist-get tweet :quote-count)))
+          action-regions)
     (insert "   ")
     (push (cons 'bookmark
                 (chirp-render--insert-metric
@@ -996,7 +1049,7 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
     (chirp-render--insert-metric 'view (plist-get tweet :view-count))
     (insert "\n")
     (insert "\n")
-    (chirp-render--mark-entry start (point) tweet)
+    (chirp-render-mark-entry start (point) tweet)
     (dolist (action-region action-regions)
       (pcase-let ((`(,action ,region-start . ,region-end) action-region))
         (chirp-render--mark-tweet-action-region
@@ -1044,9 +1097,11 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
   "Insert a reply TWEET in a thread view."
   (chirp-render--insert-tweet tweet nil nil t))
 
-(defun chirp-render-insert-thread-divider ()
-  "Insert a subtle divider between the focus tweet and replies."
-  (insert (propertize (make-string 36 ?-) 'face 'chirp-thread-divider-face))
+(defun chirp-render-insert-thread-divider (count hidden)
+  "Insert a conversation heading for COUNT displayed posts and HIDDEN replies."
+  (insert (propertize (format "── Conversation · %d shown%s ──" count
+                              (if (> hidden 0) (format " · %d hidden" hidden) ""))
+                      'face 'chirp-thread-divider-face 'chirp-replies-heading t))
   (insert "\n\n"))
 
 (defun chirp-render-insert-user-summary (user)
@@ -1054,11 +1109,11 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
   (let ((start (point)))
     (chirp-render--insert-avatar (plist-get user :avatar-url)
                                  (plist-get user :handle))
-    (insert (propertize (or (plist-get user :name) "Unknown")
-                        'face 'chirp-author-face))
-    (when-let* ((handle (plist-get user :handle)))
-      (insert " ")
-      (insert (propertize (format "@%s" handle) 'face 'chirp-handle-face)))
+    (let ((author-start (point)))
+      (insert (propertize (or (plist-get user :name) "Unknown") 'face 'chirp-author-face))
+      (when-let* ((handle (plist-get user :handle)))
+        (insert " " (propertize (format "@%s" handle) 'face 'chirp-handle-face))
+        (chirp-render--mark-author-region author-start (point) handle)))
     (insert "\n")
     (when-let* ((bio (plist-get user :bio)))
       (unless (string-empty-p bio)
@@ -1091,20 +1146,17 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
        followers-start (point) 'followers (plist-get user :handle)))
     (insert "\n")
     (when-let* ((joined (plist-get user :joined)))
-      (insert (propertize (format "Joined %s" joined) 'face 'chirp-meta-face))
+      (insert (propertize (format "Joined %s" (condition-case nil
+                                              (format-time-string "%b %Y" (date-to-time joined))
+                                            (error joined))) 'face 'chirp-meta-face))
       (insert "\n"))
     (when-let* ((url (plist-get user :profile-url)))
-      (insert (propertize url 'face 'link))
+      (let ((start (point)))
+        (insert (propertize url 'face 'link))
+        (chirp-render--mark-url-region start (point) url))
       (insert "\n"))
     (insert "\n")
-    (chirp-render--mark-entry start (point) user)))
-
-(defun chirp-render-insert-user-list (users)
-  "Insert a sequence of USERS."
-  (if users
-      (dolist (user users)
-        (chirp-render-insert-user-summary user))
-    (chirp-render-insert-empty "No users returned.")))
+    (chirp-render-mark-entry start (point) user)))
 
 (provide 'chirp-render)
 

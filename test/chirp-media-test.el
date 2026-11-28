@@ -502,6 +502,16 @@ rerender and creates a CPU loop."
     (should (equal copied-target "/tmp/chirp-photo.jpg"))
     (should (equal final-message "Downloaded /tmp/chirp-photo.jpg"))))
 
+(ert-deftest chirp-media-video-cover-and-playback-stay-distinct ()
+  (let* ((chirp-video-playback-max-bitrate 1000)
+         (media (chirp-normalize-media-item
+                 '((type . "video") (media_url_https . "cover.jpg")
+                   (video_info . ((variants . (((url . "hls") (content_type . "application/x-mpegURL"))
+                                               ((url . "movie") (content_type . "video/mp4") (bitrate . 5000))))))))))
+    (should (equal (plist-get media :preview-url) "cover.jpg"))
+    (should (equal (chirp-media-playback-url media) "movie"))
+    (should (equal (chirp-media-download-url media) "movie"))))
+
 (provide 'chirp-media-test)
 
 ;;; chirp-media-test.el ends here

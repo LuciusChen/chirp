@@ -394,7 +394,7 @@ Use FALLBACK-EXT when URL has no recognizable extension."
   (let ((callbacks (prog1 (gethash url chirp-media--link-card-pending)
                      (remhash url chirp-media--link-card-pending))))
     (setq chirp-media--link-card-active (max 0 (1- chirp-media--link-card-active)))
-    (puthash url (or card chirp-media--link-card-fetch-failed)
+    (chirp-cache-put url (or card chirp-media--link-card-fetch-failed)
              chirp-media-link-card-cache)
     (dolist (callback callbacks)
       (when callback
@@ -478,25 +478,24 @@ Use FALLBACK-EXT when URL has no recognizable extension."
     (let* ((job (pop chirp-media--prefetch-queue))
            (url (plist-get job :url))
            (path (plist-get job :path))
+           (partial (make-temp-file (concat path ".part-")))
            (buffer (generate-new-buffer " *chirp-prefetch*")))
       (setq chirp-media--prefetch-active (1+ chirp-media--prefetch-active))
       (make-process
        :name "chirp-prefetch"
        :buffer buffer
        :command (list chirp-media-prefetch-command
-                      "-L" "-f" "-sS"
-                      "-o" path
+                      "-L" "-f" "-sS" "--max-time" "30"
+                      "-o" partial
                       url)
        :noquery t
        :sentinel
        (lambda (process _event)
          (when (memq (process-status process) '(exit signal))
            (let ((ok (and (zerop (process-exit-status process))
-                          (file-exists-p path))))
-             (unless ok
-               (ignore-errors
-                 (when (file-exists-p path)
-                   (delete-file path))))
+                          (file-exists-p partial))))
+             (if ok (rename-file partial path t)
+               (when (file-exists-p partial) (delete-file partial)))
              (when (buffer-live-p (process-buffer process))
                (kill-buffer (process-buffer process)))
              (chirp-media--prefetch-finish path ok))))))))
@@ -547,19 +546,17 @@ Use FALLBACK-EXT when URL has no recognizable extension."
 
 (defun chirp-media--extract-meta-content (html key)
   "Return content for HTML meta KEY, or nil."
-  (let ((case-fold-search t)
-        (quoted-key (regexp-quote key)))
-    (chirp-media--normalize-link-card-field
-     (or (and (string-match
-               (format "<meta[^>]+\\(?:property\\|name\\|itemprop\\)=['\"]%s['\"][^>]+content=['\"]\\([^\"']+\\)['\"]"
-                       quoted-key)
-               html)
-              (match-string 1 html))
-         (and (string-match
-               (format "<meta[^>]+content=['\"]\\([^\"']+\\)['\"][^>]+\\(?:property\\|name\\|itemprop\\)=['\"]%s['\"]"
-                       quoted-key)
-               html)
-              (match-string 1 html))))))
+  (let ((case-fold-search t) (pos 0))
+    (catch 'value
+      (while (string-match "<meta\\b[^>]*>" html pos)
+        (let ((tag (match-string 0 html)))
+          (setq pos (match-end 0))
+          (when (and (string-match-p
+                      (format "\\b\\(?:property\\|name\\|itemprop\\)\\s-*=\\s-*['\"]%s['\"]"
+                              (regexp-quote key)) tag)
+                     (string-match "\\bcontent\\s-*=\\s-*\\(?:\"\\([^\"]*\\)\"\\|'\\([^']*\\)'\\)" tag))
+            (throw 'value (chirp-media--normalize-link-card-field
+                           (or (match-string 1 tag) (match-string 2 tag))))))))))
 
 (defun chirp-media--extract-html-title (html)
   "Return the HTML <title> from HTML, or nil."
@@ -627,7 +624,7 @@ Use FALLBACK-EXT when URL has no recognizable extension."
       (cond
        ((eq cached chirp-media--link-card-fetch-failed)
         nil)
-       ((listp cached)
+       ((consp cached)
         (when-let* ((image-url (plist-get cached :image-url)))
           (when chirp-show-tweet-media
             (chirp-media-prefetch-file image-url "media" "jpg"
@@ -1048,25 +1045,9 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
   (interactive)
   (if-let* ((media (or (chirp-media-at-point)
                        (nth chirp--media-index chirp--media-list)))
-            (url (plist-get media :url)))
+            (url (chirp-media-playback-url media)))
       (browse-url url)
     (user-error "No media URL available")))
-
-(defun chirp-media--highest-bitrate-variant-url (media)
-  "Return the highest bitrate variant URL for MEDIA, or nil."
-  (when-let* ((variants
-               (cl-remove-if-not
-                (lambda (variant)
-                  (let ((url (plist-get variant :url)))
-                    (and (stringp url)
-                         (not (string-empty-p url)))))
-                (copy-sequence (plist-get media :variants)))))
-    (let ((sorted
-           (sort variants
-                 (lambda (left right)
-                   (> (chirp-media--variant-bitrate left)
-                      (chirp-media--variant-bitrate right))))))
-      (plist-get (car sorted) :url))))
 
 (defun chirp-media-download-url (media)
   "Return the best download URL for MEDIA."
@@ -1074,8 +1055,8 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
     ("photo"
      (chirp-media--photo-original-url (plist-get media :url)))
     ((or "video" "animated_gif")
-     (or (chirp-media--highest-bitrate-variant-url media)
-         (plist-get media :url)))
+     (let ((chirp-video-playback-max-bitrate nil))
+       (chirp-media-playback-url media)))
     (_
      (plist-get media :url))))
 
@@ -1233,35 +1214,27 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
      (t 0))))
 
 (defun chirp-media-playback-url (media)
-  "Return the preferred playback URL for video-like MEDIA."
-  (if-let* (((chirp-media-video-like-p media))
-            (variants
-             (cl-remove-if-not
-              (lambda (variant)
-                (let ((url (plist-get variant :url)))
-                  (and (stringp url)
-                       (not (string-empty-p url)))))
-              (copy-sequence (plist-get media :variants)))))
-      (let* ((sorted
-             (sort variants
-                    (lambda (left right)
-                      (< (chirp-media--variant-bitrate left)
-                         (chirp-media--variant-bitrate right)))))
-             (capped
-              (and chirp-video-playback-max-bitrate
-                   (cl-remove-if
-                    (lambda (variant)
-                      (> (chirp-media--variant-bitrate variant)
-                         chirp-video-playback-max-bitrate))
-                    sorted)))
-             (selected
-              (if chirp-video-playback-max-bitrate
-                  (or (car (last capped))
-                      (car sorted))
-                (car (last sorted)))))
-        (or (plist-get selected :url)
-            (plist-get media :url)))
-    (plist-get media :url)))
+  "Return the preferred playable URL for MEDIA."
+  (if (not (chirp-media-video-like-p media))
+      (plist-get media :url)
+    (let* ((variants (plist-get media :variants))
+           (mp4 (seq-filter
+                 (lambda (item)
+                   (or (equal (plist-get item :content-type) "video/mp4")
+                       (string-match-p "\\.mp4\\(?:[?#]\\|\\'\\)" (or (plist-get item :url) ""))))
+                 variants))
+           (sorted (sort (copy-sequence (or mp4 variants))
+                         (lambda (a b) (> (chirp-media--variant-bitrate a)
+                                          (chirp-media--variant-bitrate b)))))
+           (best (if chirp-video-playback-max-bitrate
+                     (or (seq-find (lambda (item) (<= (chirp-media--variant-bitrate item)
+                                                      chirp-video-playback-max-bitrate))
+                                   sorted)
+                         (car (last sorted)))
+                   (car sorted))))
+      (or (plist-get best :url)
+          (unless (equal (plist-get media :url) (plist-get media :preview-url))
+            (plist-get media :url))))))
 
 (defun chirp-media--play-external (media)
   "Open video-like MEDIA in the configured external player."
@@ -1311,7 +1284,8 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
 
 (defun chirp-media--video-file (media)
   "Return a local file path for video-like MEDIA."
-  (chirp-media-local-file (plist-get media :url) "media" "mp4"))
+  (when-let* ((url (chirp-media-playback-url media)))
+    (chirp-media-local-file url "media" "mp4")))
 
 (defun chirp-media--video-thumbnail-file (media)
   "Return the cached thumbnail path for video-like MEDIA."

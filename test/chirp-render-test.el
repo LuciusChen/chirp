@@ -388,8 +388,8 @@
       (let ((position (match-beginning 0)))
         (should (eq (get-text-property position 'face) 'chirp-link-face))
         (should (eq (get-text-property position 'mouse-face) 'highlight))
-        (should (equal (get-text-property position 'chirp-subentry-url)
-                       "https://example.com/article"))))))
+        (goto-char position)
+        (should (equal (chirp-entry-url-at-point) "https://example.com/article"))))))
 
 (ert-deftest chirp-render-insert-tweet-renders-multiple-note-tweet-links ()
   "Tweet rendering should show multiple expanded links extracted from note entities."
@@ -621,7 +621,7 @@
           (chirp-render-insert-thread-focus-tweet tweet)))
       (let ((rendered (buffer-string)))
         (should (string-match-p "Longform title" rendered))
-        (should (string-match-p "First paragraph with \\[details\\]" rendered))
+        (should (string-match-p "First paragraph with details" rendered))
         (should (string-match-p "Second paragraph\\." rendered))))))
 
 (ert-deftest chirp-render-insert-thread-focus-tweet-renders-article-images ()
@@ -710,7 +710,6 @@
                         (get-text-property (point) 'mouse-face)
                         (get-text-property (point) 'pointer)
                         (get-text-property (point) 'help-echo)
-                        (get-text-property (point) 'keymap)
                         (get-text-property (point) 'chirp-entry-item))
                   actions))
           (goto-char
@@ -719,35 +718,27 @@
                (point-max))))
         (setq actions (nreverse actions))
         (should (equal (mapcar #'car actions)
-                       '(reply retweet like bookmark)))
+                       '(reply retweet like quote bookmark)))
         (dolist (action-data actions)
           (pcase-let ((`(,action ,position ,face ,mouse-face ,pointer ,help
-                                  ,keymap ,entry)
+                                  ,entry)
                        action-data))
             (should (eq face
                         (pcase action
-                          ('reply 'chirp-meta-face)
+                          ((or 'reply 'quote) 'chirp-meta-face)
                           ('retweet 'chirp-retweeted-metric-face)
                           ('like 'chirp-liked-metric-face)
                           ('bookmark 'chirp-bookmarked-metric-face))))
             (should (eq mouse-face 'highlight))
             (should (eq pointer 'hand))
             (should (string-match-p "\\`Mouse-1:" help))
-            (should (keymapp keymap))
-            (should (eq (lookup-key keymap [mouse-1])
-                        #'chirp--dispatch-mouse-action))
             (goto-char position)
             (should (eq (key-binding (kbd "RET"))
                         #'chirp-open-at-point))
             (should (equal entry tweet))))
-        (dolist (metric `((quote . ,(chirp-render--metric-string 'quote 4))
-                          (view . ,(chirp-render--metric-string 'view 6))))
-          (goto-char (point-min))
-          (search-forward (cdr metric))
-          (let ((position (1- (point))))
-            (should-not (get-text-property position 'chirp-tweet-action))
-            (should-not (get-text-property position 'keymap))
-            (should-not (get-text-property position 'mouse-face))))
+        (goto-char (point-min))
+        (search-forward (chirp-render--metric-string 'view 6))
+        (should-not (get-text-property (1- (point)) 'chirp-tweet-action))
         (should buffer-read-only)))))
 
 (ert-deftest chirp-render-insert-tweet-renders-quoted-tweet-preview ()
@@ -765,6 +756,10 @@
         (should-not (string-match-p "https://x\\.com/bob/status/456" rendered)))
       (goto-char (point-min))
       (search-forward "Quoted @bob (Bob)")
+      (should (eq (get-text-property (1- (point)) 'pointer) 'hand))
+      (search-forward "Quoted body")
+      (should-not (get-text-property (point) 'pointer))
+      (should (equal (chirp-entry-url-at-point) "https://x.com/bob/status/456"))
       (should (equal (plist-get (chirp-entry-at-point) :id) "456")))))
 
 (ert-deftest chirp-render-insert-thread-reply-labels-related-tweet ()
@@ -828,7 +823,7 @@
                'chirp-quoted-tweet-block-face
                (get-text-property (match-beginning 0) 'face)))
       (goto-char (point-min))
-      (search-forward "   Quoted body text")
+      (search-forward "│ Quoted body text")
       (should (chirp-test--face-member-p
                'chirp-quoted-tweet-block-face
                (get-text-property (match-beginning 0) 'face))))))
@@ -848,7 +843,7 @@
                (pos (- (point) (length needle)))
                (wrap-prefix (get-text-property pos 'wrap-prefix)))
           (should (stringp wrap-prefix))
-        (should (string-match-p "^   " wrap-prefix))))))
+        (should (string-match-p "^│ " wrap-prefix))))))
 
 (ert-deftest chirp-render-thumbnail-slices-cover-an-integer-pixel-canvas ()
   "Thumbnail slices should cover a copied one-to-one pixel canvas exactly."
@@ -891,7 +886,7 @@
       (let ((quoted-prefix-lines 0)
             (slices (chirp-test--slice-displays)))
         (dolist (line (split-string (buffer-string) "\n"))
-          (when (string-prefix-p "   " line)
+          (when (string-prefix-p "│ " line)
             (setq quoted-prefix-lines (1+ quoted-prefix-lines))))
         (should (eq line-spacing 0))
         (should (>= quoted-prefix-lines 5))
@@ -1304,6 +1299,39 @@
                '(:id "123"
                  :text "Read this"
                  :article-text "Full article body."))))
+
+(ert-deftest chirp-render-click-targets-respect-text-and-handle-boundaries ()
+  (with-temp-buffer
+    (chirp-render-insert-tweet
+     '(:kind tweet :id "123" :text "感谢@alice分享 #中文 mail@host.test" :like-count 999950))
+    (goto-char (point-min))
+    (search-forward "感谢")
+    (should-not (get-text-property (- (point) 2) 'pointer))
+    (should (equal (get-text-property (point) 'chirp-mention) "@alice"))
+    (search-forward "alice")
+    (should-not (get-text-property (point) 'pointer))
+    (search-forward "中文")
+    (should (equal (get-text-property (1- (point)) 'chirp-hashtag) "#中文"))
+    (search-forward "@host")
+    (should-not (get-text-property (1- (point)) 'chirp-mention))
+    (search-forward "1M")
+    (should (string-match-p "999950" (get-text-property (1- (point)) 'help-echo)))))
+
+(ert-deftest chirp-render-article-link-round-trips-punctuation ()
+  (let* ((label "ref [a] \\ path")
+         (url "https://example.org/(one)?q=%29")
+         (block `((text . ,label)
+                  (entityRanges . (((offset . 0) (length . ,(length label)) (key . 0))))))
+         (entities `(("0" (type . "LINK") (data (url . ,url)))))
+         (body (chirp--article-render-text-block block entities))
+         (tweet (chirp-normalize-tweet
+                 `((id . "99") (articleText . ,body) (articleTitle . "A &amp;amp; B")))))
+    (with-temp-buffer
+      (chirp-render-insert-thread-focus-tweet tweet)
+      (goto-char (point-min))
+      (search-forward "A &amp; B")
+      (search-forward label)
+      (should (equal (get-text-property (1- (point)) 'chirp-link-url) url)))))
 
 (provide 'chirp-render-test)
 

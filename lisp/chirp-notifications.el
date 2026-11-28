@@ -10,6 +10,9 @@
 ;;; Code:
 
 (require 'seq)
+(require 'chirp-render)
+(require 'chirp-web)
+(require 'chirp-x)
 (require 'chirp-core)
 (require 'chirp-backend)
 
@@ -136,6 +139,31 @@
   (when chirp-notifications-mode
     (message "Chirp notification check failed: %s" message)))
 
+(defun chirp-notifications--insert-row (item)
+  "Insert one activity ITEM with its timestamp and optional tweet link."
+  (let ((start (point))
+        (id (chirp-get item "tweetId")))
+    (insert (propertize (chirp-notifications--kind-label item) 'face 'bold)
+            "  " (chirp-notifications--body item))
+    (when id
+      (add-text-properties start (point) '(mouse-face highlight pointer hand
+                                          help-echo "Open linked post")))
+    (when-let* ((ms (chirp-get item "timestampMs")))
+      (insert "  " (chirp-render-timestamp
+                    (cons (if (stringp ms) (string-to-number ms) ms) 1000))))
+    (insert "\n")
+    (chirp-render-mark-entry start (point) (list :kind 'activity :id (chirp-get item "id") :tweet-id id))))
+
+(defun chirp-notifications-open (&optional buffer)
+  "Show recent X activity in BUFFER."
+  (let ((view (or buffer (chirp-buffer))))
+    (chirp-open-paged-list
+     view "Activity" (lambda () (chirp-notifications-open view))
+     (lambda (ok fail cursor)
+       (chirp-backend-notifications ok fail chirp-notifications-max-results cursor))
+     (lambda (item) (chirp-get item "id"))
+     #'chirp-notifications--insert-row "No recent activity.")))
+
 (defun chirp-notifications-check ()
   "Check once for new account activity."
   (interactive)
@@ -143,7 +171,8 @@
              (called-interactively-p 'interactive))
     (user-error "Enable chirp-notifications-mode first"))
   (when (and chirp-notifications-mode
-             (not chirp-notifications--checking))
+             (not chirp-notifications--checking)
+             (chirp-x-session))
     (setq chirp-notifications--checking t)
     (chirp-backend-notifications
      #'chirp-notifications--handle-success

@@ -8,9 +8,9 @@ Use Chirp to follow timelines, search and inspect posts, move from a post to its
 
 ## Quick Start
 
-Chirp requires GNU Emacs 29.1 or newer. Configure your X session in Emacs auth-source using host `x.com` with users `auth_token` and `ct0`, or set `TWITTER_AUTH_TOKEN` and `TWITTER_CT0` for the Emacs process.
+Chirp requires GNU Emacs 29.1 or newer. Open a Chirp view in a graphical Emacs with Xwidgets and sign in on the X page. Chirp keeps the signed-in WebKit session in a background buffer and uses the cookies supplied by X. Closing the session buffer asks for confirmation. Use `M-x chirp-login` to sign in again.
 
-For auth-source, the two entries in your encrypted authinfo file have the form `machine x.com login auth_token password VALUE` and `machine x.com login ct0 password VALUE`. Use values from the same X session.
+For a terminal-only installation, Chirp also accepts `TWITTER_AUTH_TOKEN` and `TWITTER_CT0` in the Emacs environment, or the corresponding `auth_token` and `ct0` password entries for `x.com` in auth-source.
 
 ### Load Chirp
 
@@ -19,9 +19,13 @@ For auth-source, the two entries in your encrypted authinfo file have the form `
 (require 'chirp)
 ```
 
-Run `M-x chirp` (or `M-x chirp-home`) to open the For You timeline in a dedicated buffer.
+Run `M-x chirp` to open the For You timeline in a dedicated buffer.
 
 ## Notifications
+
+If you switch away while `M-x chirp-list` loads, run it again to choose from the cached lists.
+
+Open `M-x chirp-notifications` to browse dated activity. Use `n` and `p` to move between events, `RET` anywhere on a linked event (including its timestamp) to open its post, and `N` for older activity.
 
 To receive account activity notifications, enable the global mode:
 
@@ -50,7 +54,9 @@ Tweet translation defaults to Chinese. Customize the target language with:
 ## Entry Points
 
 ```elisp
-M-x chirp-home
+M-x chirp
+M-x chirp-login
+M-x chirp-notifications
 M-x chirp-following
 M-x chirp-bookmarks
 M-x chirp-likes
@@ -67,12 +73,14 @@ M-x chirp-profile-following-users
 
 - `g`: refresh; on Home and Following, Chirp keeps the current timeline visible and merges newer posts at the top
 - `TAB`: switch between Home and Following on those timelines; in profile buffers, cycle `Posts`, `Replies`, `Highlights`, `Media`, and `Likes` when available
-- `n` / `p`: next or previous entry; at the last entry of Home, Following, Bookmarks, or a thread, `n` loads the next available page
-- `N`: load the next available page in Home, Following, Bookmarks, or a thread
+- `n` / `p`: next or previous entry; at the last entry of a paginated view, `n` loads the next available page
+- `N`: append older entries in timelines, searches, lists, profiles, threads, and follower lists. Chirp shows any posts remaining from the current response first, then continues from X’s bottom cursor. If a page request fails, press `N` to retry.
 - `q`: close the current Chirp window; on For You and Following, keep the timeline buffer alive so you can switch back later
 - When Home or Following has no more older posts, Chirp says so instead of leaving the last loading message in place
 - `RET`: expand an article when point is on `Show more`; otherwise open the current tweet or profile, or open large media when point is on a thumbnail
-- `Mouse-1` on a tweet's reply, repost/retweet, like, or bookmark metric opens or toggles that action for the clicked tweet
+- `/` searches X. Click a handle or hashtag to open its profile or search. Click a link, thumbnail, or profile tab to open it.
+- Click ordinary post text, including quoted text, to place point. Click a quote heading to open the quoted post. Click a handle to open its profile or a hashtag to search.
+- `Mouse-1` on a tweet's reply, repost/retweet, like, quote, or bookmark metric opens or toggles that action for the clicked tweet
 - In profile summaries, `RET` on `Followers` or `Following` opens that user list
 - In profile buffers, `RET` on the subview strip switches between available profile timelines
 - `m`: open the first media item for the current tweet
@@ -88,14 +96,13 @@ Inside the compose buffer:
 - `C-c C-a`: attach an image file (up to 4)
 - `C-c C-v`: paste one image from the clipboard
 - `C-c C-d`: remove an attached image
-- `M-TAB`: complete a user handle after typing an `@` prefix (also available
-  to completion-at-point frontends such as Corfu)
+- `M-TAB`: complete a user handle after typing an `@` prefix. Suggestions appear through your completion frontend. With built-in completion, press `M-TAB` again if the first lookup is still loading.
 - `C-c C-c`: return to browsing while sending. A failed send restores the editable draft and its attachments. Use `C-c C-o` to check your posts before retrying
 - `C-c C-k`: cancel the draft
 
 Chirp selects the long-form operation for drafts exceeding the standard weighted length.
 
-Tweet metrics also reflect the current local state: liked tweets show `Liked`, bookmarked tweets show `Saved`, and retweeted tweets show `RTed`. The visible reply, repost/retweet, like, and bookmark metrics also provide mouse-1 action controls.
+Tweet metrics also reflect the current local state: with text metrics, liked tweets show `Liked`, bookmarked tweets show `Saved`, and retweeted tweets show `RTed`. The visible reply, repost/retweet, like, quote, and bookmark metrics also provide mouse-1 action controls.
 Every tweet returned by the Likes view is shown with its like state active, even when X omits the per-item `favorited` field.
 Clipboard image paste uses `wl-paste` on Wayland and `pngpaste` on macOS when available.
 

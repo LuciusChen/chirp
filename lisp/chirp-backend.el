@@ -11,6 +11,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'subr-x)
 (require 'ucs-normalize)
 (require 'chirp-core)
@@ -97,13 +98,8 @@
   "Field toggles documented for HomeTimeline operations.")
 
 (defconst chirp-backend--note-tweet-features
-  (append
-   '(("longform_notetweets_creation_enabled" . t)
-     ("longform_notetweets_richtext_consumption_enabled" . t)
-     ("articles_preview_enabled" . t)
-     ("tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled"
-      . t))
-   chirp-backend--tweet-features)
+  (append '(("longform_notetweets_creation_enabled" . t) ("longform_notetweets_richtext_consumption_enabled" . t))
+          chirp-backend--tweet-features)
   "Feature switches required by CreateNoteTweet.")
 
 (defconst chirp-backend--user-features
@@ -167,8 +163,7 @@
      :field-toggles (("withArticleRichContentState" . t)))
     (article
      :query-id "GZsN2Pc4knAoit6pXa4HSA" :name "TweetResultByRestId"
-     :features ,(cons '("articles_preview_enabled" . t)
-                      chirp-backend--tweet-features)
+     :features ,chirp-backend--tweet-features
      :field-toggles (("withArticleRichContentState" . t)
                      ("withArticlePlainText" . t)))
     (create-tweet
@@ -198,10 +193,18 @@
     ("data" "user" "result" "timeline_v2" "timeline"))
   "Alternative paths to an X user timeline object.")
 
+(defcustom chirp-backend-query-ids nil
+  "Optional overrides for X operation IDs, keyed by operation symbol."
+  :type '(alist :key-type symbol :value-type string)
+  :group 'chirp)
+
 (defun chirp-backend--operation (key)
   "Return the persisted X operation identified by KEY."
-  (or (cdr (assq key chirp-backend--operations))
-      (error "Unknown X operation: %S" key)))
+  (let ((operation (or (cdr (assq key chirp-backend--operations))
+                       (error "Unknown X operation: %S" key))))
+    (if-let* ((id (alist-get key chirp-backend-query-ids)))
+        (plist-put (copy-sequence operation) :query-id id)
+      operation)))
 
 (defcustom chirp-backend-read-cache-ttl 15
   "Seconds to keep successful thread/profile/article reads in memory.
@@ -278,7 +281,7 @@ When zero or negative, the in-memory read cache is disabled."
   "Return the cache key for HANDLE following users."
   (list :following-users (chirp-backend--normalize-handle handle)))
 
-(defun chirp-backend--list-id-from-target (target)
+(defun chirp-backend-list-id (target)
   "Return a likely list id extracted from TARGET, or TARGET as-is."
   (let ((text (string-trim (format "%s" target))))
     (if (string-match "/lists?/\\([0-9]+\\)" text)
@@ -365,12 +368,12 @@ ERRBACK handles failures.  FETCHER is called with success and error callbacks."
                (let ((requesters (prog1 (gethash key chirp-backend--pending-read-requests)
                                    (remhash key chirp-backend--pending-read-requests))))
                  (when (> chirp-backend-read-cache-ttl 0)
-                   (puthash key
-                            (list :value (chirp-backend--clone-data value)
-                                  :envelope (chirp-backend--clone-data envelope)
-                                  :expires-at (+ (float-time)
-                                                 chirp-backend-read-cache-ttl))
-                            chirp-backend--read-cache))
+                   (chirp-cache-put key
+                                    (list :value (chirp-backend--clone-data value)
+                                          :envelope (chirp-backend--clone-data envelope)
+                                          :expires-at (+ (float-time)
+                                                         chirp-backend-read-cache-ttl))
+                                    chirp-backend--read-cache))
                  (chirp-backend--dispatch-read-success requesters value envelope)))
              (lambda (message)
                (let ((requesters (prog1 (gethash key chirp-backend--pending-read-requests)
@@ -502,7 +505,7 @@ ERRBACK handles failures.  FETCHER is called with success and error callbacks."
             (push (cons start end) spans)))))
     (nreverse spans)))
 
-(defun chirp-backend--tweet-weighted-length (text)
+(defun chirp-backend-tweet-weighted-length (text)
   "Return the X weighted length used to select a create operation for TEXT."
   (let* ((normalized (ucs-normalize-NFC-string text))
          (cursor 0)
@@ -612,7 +615,7 @@ upload mutations are never retried automatically."
            attachments
            (lambda (media-ids)
              (let* ((note-tweet-p
-                     (> (chirp-backend--tweet-weighted-length text)
+                     (> (chirp-backend-tweet-weighted-length text)
                         chirp-backend--standard-tweet-weight-limit))
                     (operation-key
                      (if note-tweet-p 'create-note-tweet 'create-tweet))
@@ -627,11 +630,8 @@ upload mutations are never retried automatically."
                   (if-let* ((tweet-id
                              (chirp-backend--created-tweet-id payload)))
                       (funcall callback (list :id tweet-id) payload)
-                    (funcall error-fn
-                             (format "X did not return a created tweet ID (%s)"
-                                     (plist-get
-                                      (chirp-backend--operation operation-key)
-                                      :name)))))
+                    (funcall error-fn (chirp-x-unknown-write-outcome
+                                       "X did not return a created tweet ID"))))
                 :errback error-fn)))
            error-fn))
       (error
@@ -639,7 +639,7 @@ upload mutations are never retried automatically."
        nil))))
 
 (defun chirp-backend--mutation-request (args)
-  "Return a direct X mutation request for legacy action ARGS, or nil."
+  "Return a direct X mutation request for action ARGS, or nil."
   (pcase (car args)
     ("like"
      (list :operation 'favorite
@@ -664,7 +664,7 @@ upload mutations are never retried automatically."
            :variables `(("tweet_id" . ,(cadr args)))))
     ("delete"
      (list :operation 'delete-tweet
-           :variables `(("tweet_id" . ,(car (last args)))
+           :variables `(("tweet_id" . ,(cadr args))
                         ("dark_request" . :json-false))))))
 
 (defun chirp-backend--relationship-request
@@ -698,16 +698,6 @@ ERRBACK receives request failures."
 ERRBACK receives a single human-readable string."
   (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
     (pcase (car args)
-      ((or "post" "reply" "quote")
-       (let* ((kind (intern (car args)))
-              (parts (if (eq kind 'post) (cdr args) (cddr args))))
-         (chirp-backend-compose
-          :kind kind :target-id (unless (eq kind 'post) (cadr args))
-          :text (car parts) :attachments (cl-loop for (_flag file) on (cdr parts)
-                                                  by #'cddr collect file)
-          :callback (lambda (result payload)
-                      (funcall callback (list (cons "id" (plist-get result :id))) payload))
-          :errback error-fn)))
       ((or "follow" "unfollow")
        (chirp-backend--relationship-request
         (car args) (cadr args) callback error-fn))
@@ -734,12 +724,11 @@ ERRBACK receives a single human-readable string."
       (error "Timeline result limit must be a positive integer: %S" limit))
     limit))
 
-(defun chirp-backend--timeline-tweet (result promoted-p)
-  "Return the raw tweet in RESULT, marked when PROMOTED-P is non-nil."
+(defun chirp-backend--timeline-tweet (result promoted-p &optional related-p)
+  "Return the raw tweet in RESULT, tagged for PROMOTED-P or RELATED-P."
   (let ((tweet (or (chirp-get result "tweet") result)))
-    (when (and promoted-p (chirp-object-p tweet))
-      (setq tweet (copy-tree tweet))
-      (push '("isPromoted" . t) tweet))
+    (when (and tweet related-p) (push '("timelineContext" . "related") tweet))
+    (when (and tweet promoted-p) (push '("isPromoted" . t) tweet))
     tweet))
 
 (defun chirp-backend--timeline-entry-tweets (entry)
@@ -748,13 +737,14 @@ ERRBACK receives a single human-readable string."
          (item-content (or (chirp-get content "itemContent")
                            (chirp-get-in entry '("item" "itemContent"))))
          (entry-id (chirp-get entry "entryId"))
+         (related (string-prefix-p "tweetdetailrelatedtweets-" (or entry-id "")))
          (promoted-p (or (chirp-get item-content "promotedMetadata")
                          (and (stringp entry-id)
                               (string-prefix-p "promoted-" entry-id))))
          tweets)
     (when-let* ((result (chirp-get-in item-content
                                       '("tweet_results" "result"))))
-      (push (chirp-backend--timeline-tweet result promoted-p) tweets))
+      (push (chirp-backend--timeline-tweet result promoted-p related) tweets))
     (dolist (nested (chirp-get content "items"))
       (when-let* ((nested-content (chirp-get-in nested
                                                 '("item" "itemContent")))
@@ -765,88 +755,86 @@ ERRBACK receives a single human-readable string."
                (or (chirp-get nested-content "promotedMetadata")
                    (let ((nested-id (chirp-get nested "entryId")))
                      (and (stringp nested-id)
-                          (string-prefix-p "promoted-" nested-id)))))
+                          (string-prefix-p "promoted-" nested-id))))
+               related)
               tweets)))
     (nreverse tweets)))
 
 (defun chirp-backend--timeline-entries (instructions)
-  "Return flat timeline entries and module items from INSTRUCTIONS."
+  "Return entries from add, replace and module updates in INSTRUCTIONS."
   (cl-loop for instruction in instructions
            append (or (chirp-get instruction "entries")
-                      (chirp-get instruction "moduleItems")
+                      (when-let* ((items (chirp-get instruction "moduleItems")))
+                        (list (list (cons "entryId" (chirp-get instruction "moduleEntryId"))
+                                    (list "content" (cons "items" items)))))
                       (when-let* ((entry (chirp-get instruction "entry")))
-                        (list entry))
-                      '())))
+                        (list entry)))))
 
 (defun chirp-backend--timeline-next-cursor (entries)
-  "Return the bottom continuation cursor carried by timeline ENTRIES."
-  (cl-loop for entry in entries
-           for content = (chirp-get entry "content")
-           when (equal (chirp-get content "cursorType") "Bottom")
-           return (chirp-get content "value")))
+  "Return the bottom cursor or a continuation for collapsed replies in ENTRIES."
+  (let (more)
+    (catch 'bottom
+      (dolist (entry entries)
+        (let* ((content (chirp-get entry "content"))
+               (items (cons content
+                            (mapcar (lambda (node) (chirp-get-in node '("item" "itemContent")))
+                                    (chirp-get content "items")))))
+          (dolist (item items)
+            (pcase (chirp-get item "cursorType")
+              ("Bottom" (throw 'bottom (chirp-get item "value")))
+              ((or "ShowMore" "ShowMoreThreads")
+               (unless more (setq more (chirp-get item "value"))))))))
+      more)))
 
-(defun chirp-backend--timeline-page (payload paths limit label &optional last-id input-cursor)
-  "Normalize timeline PAYLOAD found at PATHS to LIMIT items.
-
-LABEL names the timeline in errors.  Return a cons of normalized tweets and a
-Chirp pagination envelope.  LAST-ID resumes within the page at INPUT-CURSOR."
+(defun chirp-backend--timeline-page (payload paths label)
+  "Return normalized tweets paired with the bottom cursor from PAYLOAD.
+PATHS locates the timeline.  LABEL names it in errors."
   (let* ((timeline
           (cl-loop for path in paths
                    for value = (chirp-get-in payload path)
                    when (and value (chirp-object-p value))
                    return value))
          (instructions (and timeline (chirp-get timeline "instructions"))))
-    (unless (and timeline (listp instructions))
+    (unless (and (assoc-string "instructions" timeline) (listp instructions))
       (error "X did not return %s" label))
-    (let* ((entries (chirp-backend--timeline-entries instructions))
-           (raw-tweets (cl-mapcan #'chirp-backend--timeline-entry-tweets
-                                  entries))
-           (tweets (chirp-collect-top-level-tweets raw-tweets))
-           (remaining (if last-id
-                          (cdr (or (cl-member last-id tweets :key
-                                              (lambda (item) (plist-get item :id))
-                                              :test #'equal)
-                                   (user-error "X page changed; refresh the timeline")))
-                        tweets))
-           (page (seq-take remaining limit))
-           (cursor (if (> (length remaining) limit)
-                       (format "chirp:page:%s:%s"
-                               (plist-get (car (last page)) :id)
-                               (or input-cursor ""))
-                     (chirp-backend--timeline-next-cursor entries)))
-           (envelope (and cursor
-                          `(("pagination" . (("nextCursor" . ,cursor)))))))
-      (cons page envelope))))
+    (let ((entries (chirp-backend--timeline-entries instructions)))
+      (cons (chirp-collect-top-level-tweets
+             (cl-mapcan #'chirp-backend--timeline-entry-tweets entries))
+            (chirp-backend--timeline-next-cursor entries)))))
 
 (cl-defun chirp-backend--request-timeline
-    (operation-key variables paths limit callback &key errback label)
+    (operation-key variables paths limit callback &key errback label focus-id)
   "Request OPERATION-KEY and adapt its timeline at PATHS.
-
-VARIABLES are sent to X, LIMIT caps normalized tweets, and CALLBACK receives
-tweets plus a pagination envelope.  ERRBACK handles failures.  LABEL names the
-timeline in errors."
-  (let* ((operation (chirp-backend--operation operation-key))
-         (error-fn (or errback (lambda (message) (message "%s" message))))
-         (timeline-label (or label (plist-get operation :name)))
-         (input-cursor (cdr (assoc "cursor" variables)))
-         last-id)
-    (when (and input-cursor (string-match "\\`chirp:page:\\([0-9]+\\):" input-cursor))
-      (setq last-id (match-string 1 input-cursor)
-            input-cursor (substring input-cursor (match-end 0))
-            variables (assoc-delete-all "cursor" variables #'equal))
-      (unless (string-empty-p input-cursor)
-        (push (cons "cursor" input-cursor) variables)))
-    (chirp-x-graphql-request
-     operation variables
-     (lambda (payload)
-       (condition-case err
-           (pcase-let ((`(,tweets . ,envelope)
-                        (chirp-backend--timeline-page
-                         payload paths limit timeline-label last-id input-cursor)))
-             (funcall callback tweets envelope))
-         (error
-          (funcall error-fn (error-message-string err)))))
-     :errback error-fn)))
+VARIABLES specify the request.  LIMIT caps the tweets passed to CALLBACK.
+The continuation holds any unconsumed tweets and the remote bottom cursor.
+ERRBACK receives errors.  LABEL names the timeline in errors.  When supplied,
+FOCUS-ID identifies the post that must appear first on this page."
+  (let* ((cursor (cdr (assoc "cursor" variables)))
+         (error-fn (or errback #'message)))
+    (cl-flet ((deliver (tweets remote)
+                (let* ((rest (nthcdr limit tweets))
+                       (next (if rest (list :remaining rest :remote remote) remote)))
+                  (funcall callback (if rest (seq-take tweets limit) tweets)
+                           (and next `(("pagination" . (("nextCursor" . ,next)))))))))
+      (if (consp cursor)
+          (deliver (plist-get cursor :remaining) (plist-get cursor :remote))
+        (let ((operation (chirp-backend--operation operation-key)))
+          (chirp-x-graphql-request
+           operation variables
+           (lambda (payload)
+             (condition-case err
+                 (pcase-let ((`(,tweets . ,next)
+                              (chirp-backend--timeline-page
+                               payload paths (or label (plist-get operation :name)))))
+                   (when focus-id
+                     (if-let* ((focus (seq-find (lambda (tweet)
+                                                  (chirp-backend--tweet-matches-id-p tweet focus-id))
+                                                tweets)))
+                         (setq tweets (cons focus (delq focus tweets)))
+                       (error "X did not return tweet %s in its thread" focus-id)))
+                   (deliver tweets (unless (equal next cursor) next)))
+               (error (funcall error-fn (error-message-string err)))))
+           :errback error-fn))))))
 
 (defun chirp-backend-feed
     (callback &optional following errback max-results cursor)
@@ -904,24 +892,24 @@ pagination."
               (when timestamp `(("timestampMs" . ,timestamp)))
               (when tweet-id `(("tweetId" . ,tweet-id)))))))
 
-(defun chirp-backend-notifications (callback &optional errback max-results)
+(defun chirp-backend-notifications (callback &optional errback max-results cursor)
   "Fetch account activity notifications and call CALLBACK.
-
-ERRBACK handles failures and MAX-RESULTS limits the response."
+ERRBACK handles failures, MAX-RESULTS limits the page, and CURSOR continues it."
   (let ((limit (chirp-backend--timeline-limit max-results))
         (error-fn (or errback (lambda (message) (message "%s" message)))))
     (chirp-x-graphql-request
      (chirp-backend--operation 'notifications)
      `(("timeline_type" . "All")
-       ("count" . ,limit))
+       ("count" . ,limit)
+       ,@(when cursor `(("cursor" . ,cursor))))
      (lambda (payload)
        (if-let* ((timeline
                   (chirp-get-in
                    payload
                    '("data" "viewer_v2" "user_results" "result"
                      "notification_timeline" "timeline")))
-                 (instructions (chirp-get timeline "instructions")))
-           (let* ((entries (chirp-backend--timeline-entries instructions))
+                 (instructions (assoc-string "instructions" timeline)))
+           (let* ((entries (chirp-backend--timeline-entries (cdr instructions)))
                   (notifications
                    (delq nil (mapcar #'chirp-backend--normalize-notification
                                      entries)))
@@ -950,12 +938,13 @@ MAX-RESULTS bounds the page size and CURSOR continues a previous page."
        ("data" "bookmark_timeline_v2" "timeline"))
      limit callback :errback errback :label "the bookmarks timeline")))
 
-(defun chirp-backend-search (query callback &optional errback)
-  "Search for QUERY and call CALLBACK, or ERRBACK on failure."
-  (let ((limit (chirp-backend--timeline-limit nil)))
+(defun chirp-backend-search (query callback &optional errback max-results cursor)
+  "Search for QUERY and call CALLBACK, or ERRBACK on failure.
+MAX-RESULTS sets the page size and CURSOR selects the next page."
+  (let ((limit (chirp-backend--timeline-limit max-results)))
     (chirp-backend--request-timeline
      'search
-     `(("count" . ,limit)
+     `(,@(when cursor (list (cons "cursor" cursor))) ("count" . ,limit)
        ("rawQuery" . ,query)
        ("querySource" . "typed_query")
        ("product" . "Top"))
@@ -1011,10 +1000,10 @@ ERRBACK receives request failures."
       (funcall error-fn "Tweet translation requires an ISO language code"))
      (t
       (chirp-x-api-request
-       'legacy
+       'web
        (format
         (concat
-         "strato/column/None/tweetId=%s,destinationLanguage=Some(%s),"
+         "1.1/strato/column/None/tweetId=%s,destinationLanguage=Some(%s),"
          "translationSource=Some(Google),feature=None,timeout=None,"
          "onlyCached=None/translation/service/translateTweet")
         tweet-id language)
@@ -1028,7 +1017,7 @@ ERRBACK receives request failures."
                `(("id" . ,(or (chirp-first-nonblank
                                (chirp-get payload "id_str" "id"))
                               tweet-id))
-                 ("translation" . ,translation))
+                 ("translation" . ,(chirp-clean-text translation)))
                (cl-loop for key in '("sourceLanguage"
                                      "localizedSourceLanguage"
                                      "destinationLanguage"
@@ -1062,17 +1051,18 @@ ERRBACK receives request failures."
    callback
    errback))
 
-(defun chirp-backend-likes (handle callback &optional errback)
-  "Fetch liked tweets for HANDLE and call CALLBACK, or ERRBACK on failure."
+(defun chirp-backend-likes (handle callback &optional errback max-results cursor)
+  "Fetch liked tweets for HANDLE and call CALLBACK, or ERRBACK on failure.
+MAX-RESULTS sets the page size and CURSOR selects the next page."
   (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
     (chirp-backend-user
      handle
      (lambda (user _envelope)
        (if-let* ((user-id (plist-get user :id)))
-           (let ((limit (chirp-backend--timeline-limit nil)))
+           (let ((limit (chirp-backend--timeline-limit max-results)))
              (chirp-backend--request-timeline
               'likes
-              `(("userId" . ,user-id)
+              `(,@(when cursor (list (cons "cursor" cursor))) ("userId" . ,user-id)
                 ("count" . ,limit)
                 ("includePromotedContent" . :json-false)
                 ("withClientEventToken" . :json-false)
@@ -1169,25 +1159,23 @@ CURSOR, PAGE, and ACCUMULATED carry private pagination state."
       (lambda (user _envelope)
         (if-let* ((user-id (plist-get user :id)))
             (let ((remaining 3)
-                  owned subscribed member finished)
+                  owned subscribed member failures)
               (cl-labels
                   ((complete (source items)
-                     (unless finished
-                       (pcase source
-                         ('owned (setq owned items))
-                         ('subscribed (setq subscribed items))
-                         ('member (setq member items)))
-                       (setq remaining (1- remaining))
-                       (when (zerop remaining)
-                         (setq finished t)
+                     (pcase source
+                       ('owned (setq owned items))
+                       ('subscribed (setq subscribed items))
+                       ('member (setq member items)))
+                     (when (zerop (cl-decf remaining))
+                       (if (= (length failures) 3)
+                           (funcall error (car failures))
+                         (when failures (message "Some X lists could not be loaded: %s" (car failures)))
                          (funcall success
-                                  (chirp-backend--merge-list-collections
-                                   owned subscribed member)
+                                  (chirp-backend--merge-list-collections owned subscribed member)
                                   nil))))
-                   (fail (message)
-                     (unless finished
-                       (setq finished t)
-                       (funcall error message))))
+                   (fail (reason)
+                     (push reason failures)
+                     (complete nil nil)))
                 (chirp-backend--request-list-collection
                  "ownerships" "owned" user-id
                  (lambda (items) (complete 'owned items)) #'fail)
@@ -1202,12 +1190,13 @@ CURSOR, PAGE, and ACCUMULATED carry private pagination state."
    callback
    errback))
 
-(defun chirp-backend-list (list-target callback &optional errback)
-  "Fetch LIST-TARGET timeline data and call CALLBACK, or ERRBACK on failure."
-  (let ((limit (chirp-backend--timeline-limit nil)))
+(defun chirp-backend-list (list-target callback &optional errback max-results cursor)
+  "Fetch LIST-TARGET timeline data and call CALLBACK, or ERRBACK on failure.
+MAX-RESULTS sets the page size and CURSOR selects the next page."
+  (let ((limit (chirp-backend--timeline-limit max-results)))
     (chirp-backend--request-timeline
      'list
-     `(("listId" . ,(chirp-backend--list-id-from-target list-target))
+     `(,@(when cursor (list (cons "cursor" cursor))) ("listId" . ,(chirp-backend-list-id list-target))
        ("count" . ,limit))
      '(("data" "list" "tweets_timeline" "timeline"))
      limit callback :errback errback :label "the list timeline")))
@@ -1215,9 +1204,7 @@ CURSOR, PAGE, and ACCUMULATED carry private pagination state."
 (defun chirp-backend--tweet-matches-id-p (tweet tweet-id)
   "Return non-nil when TWEET or its raw wrapper identifies TWEET-ID."
   (or (equal (plist-get tweet :id) tweet-id)
-      (equal (chirp-first-nonblank
-              (chirp-get (plist-get tweet :raw) "rest_id" "id_str" "id"))
-             tweet-id)))
+      (equal (plist-get tweet :wrapper-id) tweet-id)))
 
 (defun chirp-backend-thread (tweet-or-url callback &optional errback cursor)
   "Fetch TWEET-OR-URL for CALLBACK, reporting failures to ERRBACK.
@@ -1245,19 +1232,7 @@ CURSOR continues a previously fetched thread."
                     ("withVoice" . :json-false))
                   '(("data" "tweetResult" "result" "timeline")
                     ("data" "threaded_conversation_with_injections_v2"))
-                  limit
-                  (lambda (tweets envelope)
-                    (if cursor (funcall success tweets envelope)
-                      (if-let* ((focus (cl-find-if
-                                        (lambda (tweet)
-                                          (chirp-backend--tweet-matches-id-p
-                                           tweet tweet-id))
-                                        tweets)))
-                          (funcall success
-                                   (cons focus (cl-remove focus tweets :test #'eq))
-                                   envelope)
-                        (funcall error
-                                 (format "X did not return tweet %s in its thread" tweet-id)))))
+                  limit success :focus-id (unless cursor tweet-id)
                   :errback error :label "the tweet conversation")))
              callback
              errback)))
@@ -1435,21 +1410,21 @@ pagination."
     nil))
 
 (defun chirp-backend--user-collection
-    (kind cache-key handle callback &optional errback)
+    (kind cache-key handle callback &optional errback cursor)
   "Fetch user collection KIND through CACHE-KEY for HANDLE.
 
 CALLBACK receives normalized users and an optional pagination envelope.
-ERRBACK receives transport or response failures."
+ERRBACK receives failures.  CURSOR selects the next page."
   (chirp-backend--cached-read
-   cache-key
+   (if cursor (cons cursor cache-key) cache-key)
    (lambda (success error)
      (chirp-backend-user
       handle
       (lambda (user _envelope)
         (if-let* ((user-id (plist-get user :id)))
             (chirp-x-api-request
-             'legacy
-             (format "%s/list.json"
+             'web
+             (format "1.1/%s/list.json"
                      (pcase kind
                        ('followers "followers")
                        ('following "friends")
@@ -1461,11 +1436,11 @@ ERRBACK receives transport or response failures."
                                          "next_cursor_str" "next_cursor")))
                  (funcall
                   success users
-                  (and cursor
+                  (and cursor (not (equal (format "%s" cursor) "0"))
                        `(("pagination" . (("nextCursor" . ,cursor))))))))
              :query `(("user_id" . ,user-id)
                       ("count" . ,chirp-default-max-results)
-                      ("cursor" . "-1")
+                      ("cursor" . ,(or cursor "-1"))
                       ("skip_status" . "true")
                       ("include_user_entities" . "false"))
              :errback error)
@@ -1474,32 +1449,17 @@ ERRBACK receives transport or response failures."
    callback
    errback))
 
-(defun chirp-backend-followers (handle callback &optional errback)
-  "Fetch followers for HANDLE and call CALLBACK, or ERRBACK on failure."
+(defun chirp-backend-followers (handle callback &optional errback cursor)
+  "Fetch followers for HANDLE at CURSOR, calling CALLBACK or ERRBACK."
   (chirp-backend--user-collection
    'followers (chirp-backend--followers-cache-key handle)
-   handle callback errback))
+   handle callback errback cursor))
 
-(defun chirp-backend-following-users (handle callback &optional errback)
-  "Fetch accounts followed by HANDLE and call CALLBACK, or ERRBACK on failure."
+(defun chirp-backend-following-users (handle callback &optional errback cursor)
+  "Fetch accounts followed by HANDLE at CURSOR, calling CALLBACK or ERRBACK."
   (chirp-backend--user-collection
    'following (chirp-backend--following-users-cache-key handle)
-   handle callback errback))
-
-(defun chirp-backend--await (start)
-  "Wait for a bounded native lookup initiated by START."
-  (let (done result failure (deadline (+ (float-time) 30)))
-    (funcall start (lambda (value _envelope) (setq result value done t))
-             (lambda (reason) (setq failure reason done t)))
-    (while (and (not done) (< (float-time) deadline))
-      (accept-process-output nil 0.05))
-    (unless done (user-error "X lookup timed out"))
-    (when failure (user-error "%s" failure))
-    result))
-
-(defun chirp-backend-lists-sync ()
-  "Return the list picker candidates."
-  (chirp-backend--await #'chirp-backend-lists))
+   handle callback errback cursor))
 
 (provide 'chirp-backend)
 

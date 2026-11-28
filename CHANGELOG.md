@@ -5,14 +5,21 @@ history remains available in Git.
 
 ## Unreleased
 
-- Move X access into Emacs. Configure the X session in auth-source or the environment.
+- Chirp now connects to X directly. Open `M-x chirp` in a graphical Emacs with Xwidgets, sign in to X, and Chirp uses that session. The `twitter-cli` dependency has been removed.
+
+### Breaking Changes
+
+- Rename the home command from `chirp-home` to `chirp`. Update any key bindings that use the old name.
 
 ### Added
 
+- Browse dated account activity with `M-x chirp-notifications` and load older events with `N`. Use `/` to search. Clicking text places point, while handles, hashtags, links, and media open their targets.
+- Show compact local timestamps, article headings and links, visible and filtered conversation counts, and a visible margin for quoted posts.
+- Show the weighted length, reply context and attachment previews while composing.
 - Load additional pages of bookmarks and replies in thread views with `N` or by moving past the last entry.
 - Inline tweet translation from the actions menu with `T`.
 - Native desktop notifications for account activity.
-- User-handle completion while composing posts.
+- Complete user handles while composing posts. Suggestions arrive asynchronously through the active completion frontend.
 - Gapless row-sliced image and video/GIF cover thumbnails.
 - Configurable case-insensitive filtering of reply content and author nicknames/handles, with conservative Chinese-first literal and all-fragment defaults collected from real public reply spam.
 - Highlighted context labels for related tweets and reply-target handles in thread views.
@@ -22,13 +29,17 @@ history remains available in Git.
 
 ### Fixed
 
+- Preserve full NoteTweet text, focus tweets in deep threads, related-post labels, and follow relationships from X’s native responses.
+- Continue searches, likes, lists, and follower lists beyond page one. Skip duplicate-only feed pages and preserve the active window while appending older entries.
+- Open the list picker only while its original window and buffer are selected and the minibuffer is free. Reopening a failed home timeline retries the request.
+- Keep a new sign-in active when an old request reports expired credentials. The background X session no longer prompts when quitting Emacs.
+- Keep usable results when X returns partial data and time out stalled requests.
+- Open playable video variants, validate image size before reading, and use the target file size for symlinked attachments.
+- Keep the rest of an oversized timeline page locally so loading older posts still works when X reorders the feed. Refreshing Home or Following preserves the continuation for the posts already on screen.
 - Append new entries in Home, Following and Bookmarks without redrawing earlier pages or repeating media prefetch for those entries.
-
 - Keep the compose draft and its attachments after a failed send. Use `C-c C-o` to check your posts before retrying.
-- Fetch mention suggestions asynchronously and preserve the current view on a failed refresh.
-
-- Mention completion no longer moves point back to the `@` character.
+- Preserve the current view on a failed refresh.
 - Tweet and media permalinks no longer appear as trailing links, while genuine external links highlight on hover.
-- Publishing failures no longer trigger automatic post, reply, or quote retries; structured non-retryable errors such as X code `344` now reach the user directly.
+- When a post, reply, or quote fails, report whether X rejected it or the outcome is unknown. Chirp never retries publishing automatically.
 - Likes views now show every returned tweet with its like state active.
 - Reply filtering now recognizes collected affiliate, dating, and drug-spam nickname templates, including the shared `返佣` marker and the combined `FoxLink` + `银狐` signature.

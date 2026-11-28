@@ -234,7 +234,7 @@ Use RULES instead of `chirp-thread-spam-keywords' when it is non-nil."
     (list tweet-or-url)))
 
 (defun chirp-thread--article-fetch-needed-p (tweet)
-  "Return non-nil when TWEET should be enriched via `twitter article'."
+  "Return non-nil when TWEET needs its full article content."
   (and (plist-get tweet :id)
        (not (chirp-first-nonblank (plist-get tweet :article-text)))
        (or (chirp-first-nonblank (plist-get tweet :article-title))
@@ -251,24 +251,36 @@ Use RULES instead of `chirp-thread-spam-keywords' when it is non-nil."
     tweets))
 
 (defun chirp-thread--render-view
-    (buffer title refresh ordered &optional anchor-id display-p)
+    (buffer title refresh ordered &optional anchor-id display-p tail hidden)
   "Render ORDERED thread tweets into BUFFER.
 
 TITLE and REFRESH are the usual buffer metadata.  When ANCHOR-ID is non-nil,
-restore point to that entry after rendering."
+restore point to that entry.  DISPLAY-P shows the buffer.  When TAIL is
+non-nil, append replies after its first entry.  HIDDEN counts filtered replies."
   (let ((focus (car ordered))
         (replies (cdr ordered)))
-    (chirp-render-into-buffer
-     buffer title refresh
-     (lambda ()
-       (if focus
-           (progn
-             (chirp-render-insert-thread-focus-tweet focus)
-             (when replies
-               (chirp-render-insert-thread-divider)
-               (dolist (tweet replies)
-                 (chirp-render-insert-thread-reply tweet))))
-         (chirp-render-insert-empty "No thread data returned."))))
+    (if tail
+        (with-current-buffer buffer
+          (let ((inhibit-read-only t))
+            (save-excursion
+              (if-let* ((heading (text-property-any (point-min) (point-max) 'chirp-replies-heading t)))
+                  (progn (goto-char heading)
+                         (delete-region heading (line-beginning-position 3)))
+                (goto-char (point-max)))
+              (chirp-render-insert-thread-divider (length replies) (or hidden 0))
+              (goto-char (point-max))
+              (dolist (tweet (cdr tail)) (chirp-render-insert-thread-reply tweet)))))
+      (chirp-render-into-buffer
+       buffer title refresh
+       (lambda ()
+         (if focus
+             (progn
+               (chirp-render-insert-thread-focus-tweet focus)
+               (when (or replies (> (or hidden 0) 0))
+                 (chirp-render-insert-thread-divider (length replies) (or hidden 0))
+                 (dolist (tweet replies)
+                   (chirp-render-insert-thread-reply tweet))))
+           (chirp-render-insert-empty "No thread data returned.")))))
     (with-current-buffer buffer
       (or (and anchor-id
                (chirp-restore-point-anchor anchor-id))
@@ -292,6 +304,8 @@ restore point to that entry after rendering."
                       (chirp-backend-invalidate-article focus-id))
                     (chirp-thread-open request-target focus-id buffer)))
          (saved-ordered nil)
+         (all-tweets nil)
+         (shown nil)
          (next-cursor nil)
          (loading-more nil)
          (ready nil)
@@ -299,9 +313,11 @@ restore point to that entry after rendering."
          (article-requested-p nil)
          (token nil))
     (cl-labels
-        ((render-current (&optional anchor-id display-p)
+        ((render-current (&optional anchor-id display-p tail)
            (chirp-thread--render-view
-            buffer title refresh saved-ordered anchor-id display-p)
+            buffer title refresh saved-ordered anchor-id (and display-p (not shown))
+            tail (max 0 (- (length all-tweets) (length saved-ordered))))
+           (when display-p (setq shown t))
            (with-current-buffer buffer
              (setq-local chirp--timeline-next-cursor next-cursor
                          chirp--timeline-exhausted-p (and ready (not next-cursor))
@@ -320,18 +336,23 @@ restore point to that entry after rendering."
               request-target
               (lambda (tweets envelope)
                 (when (chirp-request-current-p buffer token)
-                  (let ((cursor (chirp-backend-envelope-next-cursor envelope)))
+                  (let* ((cursor (chirp-backend-envelope-next-cursor envelope))
+                         (old-count (length saved-ordered)))
                     (setq next-cursor (unless (equal cursor next-cursor) cursor)
                           loading-more nil
-                          saved-ordered
-                          (chirp-thread--filter-spam-replies
-                           (chirp-append-unique-tweets saved-ordered tweets))))
-                  (present-current anchor-id)
-                  (chirp-clear-status buffer)))
+                          all-tweets (chirp-append-unique-tweets all-tweets tweets)
+                          saved-ordered (chirp-thread--filter-spam-replies all-tweets))
+                    (apply-prefetched-article)
+                    (let ((tail (and (> old-count 0) (nthcdr (1- old-count) saved-ordered))))
+                      (render-current anchor-id nil tail)
+                      (chirp-media-prefetch-tweets (cdr tail) buffer)
+                      (chirp-enrich-quoted-tweets (cdr tail) buffer)))
+                  (if next-cursor (chirp-clear-status buffer)
+                    (chirp-set-status buffer "End of thread" 'info))))
               (lambda (reason)
                 (when (chirp-request-current-p buffer token)
                   (setq loading-more nil)
-                  (chirp-set-status buffer reason 'error)))
+                  (chirp-set-status buffer (concat reason " · N retry") 'error)))
               next-cursor)))
          (prefetch-current ()
            (chirp-media-prefetch-tweets saved-ordered buffer)
@@ -364,34 +385,33 @@ restore point to that entry after rendering."
               (lambda (_message)
                 (when (chirp-request-current-p buffer token)
                   (chirp-clear-status buffer)))))))
-    (setq token (chirp-begin-background-request buffer title))
-    (chirp-set-status buffer "Loading thread...")
-    (when-let* ((seed (chirp-thread--seed-tweets tweet-or-url focus-id)))
-      (setq saved-ordered seed)
-      (present-current nil t))
-    (when (and (listp tweet-or-url)
-               (plist-get tweet-or-url :id))
-      (maybe-request-article tweet-or-url))
-    (chirp-backend-thread
-     request-target
-     (lambda (tweets envelope)
-       (when (chirp-request-current-p buffer token)
-         (setq ready t
-               next-cursor (chirp-backend-envelope-next-cursor envelope)
-               saved-ordered
-               (chirp-thread--filter-spam-replies
-                (chirp-thread--reorder tweets focus-id)))
-         (apply-prefetched-article)
-         (present-current nil t)
-         (if-let* ((focus (car saved-ordered)))
-             (progn
-               (maybe-request-article focus)
-               (unless article-requested-p
-                 (chirp-clear-status buffer)))
-           (chirp-clear-status buffer))))
-     (lambda (message)
-       (when (chirp-request-current-p buffer token)
-         (chirp-show-error buffer title refresh message)))))))
+      (setq token (chirp-begin-background-request buffer title))
+      (chirp-set-status buffer "Loading thread...")
+      (when-let* ((seed (chirp-thread--seed-tweets tweet-or-url focus-id)))
+        (setq saved-ordered seed)
+        (present-current nil t))
+      (when (and (listp tweet-or-url)
+                 (plist-get tweet-or-url :id))
+        (maybe-request-article tweet-or-url))
+      (chirp-backend-thread
+       request-target
+       (lambda (tweets envelope)
+         (when (chirp-request-current-p buffer token)
+           (setq ready t
+                 next-cursor (chirp-backend-envelope-next-cursor envelope)
+                 all-tweets (chirp-thread--reorder tweets focus-id)
+                 saved-ordered (chirp-thread--filter-spam-replies all-tweets))
+           (apply-prefetched-article)
+           (present-current nil t)
+           (if-let* ((focus (car saved-ordered)))
+               (progn
+                 (maybe-request-article focus)
+                 (unless article-requested-p
+                   (chirp-clear-status buffer)))
+             (chirp-clear-status buffer))))
+       (lambda (message)
+         (when (chirp-request-current-p buffer token)
+           (chirp-show-error buffer title refresh message)))))))
 
 (provide 'chirp-thread)
 

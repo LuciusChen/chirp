@@ -45,7 +45,7 @@
 
 (defun chirp-profile--paginated-mode-p (mode)
   "Return non-nil when profile MODE supports cursor-based pagination."
-  (memq mode '(posts replies highlights media)))
+  (memq mode '(posts replies highlights media likes)))
 
 (defun chirp-profile--title (handle mode)
   "Return a title for HANDLE profile subview MODE."
@@ -72,57 +72,49 @@
                      ('followers #'chirp-backend-followers)
                      ('following #'chirp-backend-following-users)
                      (_ (error "Unknown profile list kind: %S" kind)))))
-    (let ((token (chirp-begin-background-request buffer title)))
-      (funcall fetch-fn
-               clean-handle
-               (lambda (users _envelope)
-                 (when (chirp-request-current-p buffer token)
-                   (chirp-render-into-buffer
-                    buffer title refresh
-                    (lambda ()
-                      (chirp-render-insert-user-list users)))
-                   (with-current-buffer buffer
-                     (setq-local chirp--entry-wrap-navigation nil)
-                     (setq-local chirp--profile-handle nil))
-                   (chirp-clear-status buffer)
-                   (chirp-display-buffer buffer)
-                   (dolist (user users)
-                     (chirp-media-prefetch-user user buffer))))
-               (lambda (message)
-                 (when (chirp-request-current-p buffer token)
-                   (chirp-show-error buffer title refresh message)))))))
+    (chirp-open-paged-list
+     buffer title refresh (apply-partially fetch-fn clean-handle)
+     (lambda (user) (or (plist-get user :id) (plist-get user :handle)))
+     #'chirp-render-insert-user-summary "No users returned." #'chirp-media-prefetch-user)))
 
 (cl-defun chirp-profile--render
     (buffer title refresh user tweets current-mode modes
-            &key anchor-id display-p timeline-ready next-cursor status-message)
+            &key anchor-id display-p timeline-ready next-cursor status-message append-after)
   "Render USER and TWEETS into BUFFER with TITLE and REFRESH metadata.
 
 CURRENT-MODE selects one of MODES.  ANCHOR-ID restores point, and DISPLAY-P
 shows the buffer.  TIMELINE-READY controls the empty state.  NEXT-CURSOR and
-STATUS-MESSAGE record pagination and loading status."
-  (chirp-render-into-buffer
-   buffer title refresh
-   (lambda ()
-     (chirp-render-insert-user-summary user)
-     (chirp-render-insert-profile-view-strip
-      current-mode
-      modes)
-      (cond
-      (tweets
-       (chirp-render-insert-tweet-list tweets))
-      (status-message
-       (insert (propertize status-message 'face 'shadow))
-       (insert "\n"))
-      (timeline-ready
-       (chirp-render-insert-empty
-        (format "No %s returned."
-                (downcase (chirp-profile--mode-label current-mode)))))
-      (t
-       (insert (propertize
-                (format "Loading %s..."
-                        (downcase (chirp-profile--mode-label current-mode)))
-                'face 'shadow))
-       (insert "\n")))))
+STATUS-MESSAGE record pagination and loading status.  APPEND-AFTER is
+the tail starting with the last previously displayed tweet."
+  (if append-after
+      (with-current-buffer buffer
+        (let ((inhibit-read-only t))
+          (save-excursion
+            (goto-char (point-max))
+            (chirp-render-insert-tweet-list (cdr append-after) (car append-after)))))
+    (chirp-render-into-buffer
+     buffer title refresh
+     (lambda ()
+       (chirp-render-insert-user-summary user)
+       (chirp-render-insert-profile-view-strip
+        current-mode
+        modes)
+       (cond
+        (tweets
+         (chirp-render-insert-tweet-list tweets))
+        (status-message
+         (insert (propertize status-message 'face 'shadow))
+         (insert "\n"))
+        (timeline-ready
+         (chirp-render-insert-empty
+          (format "No %s returned."
+                  (downcase (chirp-profile--mode-label current-mode)))))
+        (t
+         (insert (propertize
+                  (format "Loading %s..."
+                          (downcase (chirp-profile--mode-label current-mode)))
+                  'face 'shadow))
+         (insert "\n"))))))
   (with-current-buffer buffer
     (setq-local chirp-profile--user user)
     (setq-local chirp-profile--tweets tweets)
@@ -141,28 +133,12 @@ STATUS-MESSAGE record pagination and loading status."
     (setq-local chirp--timeline-exhausted-p (and timeline-ready (not next-cursor)))
     (setq-local chirp--timeline-loading-more nil)
     (setq-local chirp--rerender-function
-                (let ((saved-user user)
-                      (saved-tweets tweets)
-                      (saved-title title)
-                      (saved-refresh refresh)
-                      (saved-mode current-mode)
-                      (saved-modes modes)
-                      (saved-next-cursor next-cursor)
-                      (saved-timeline-ready timeline-ready)
-                      (saved-status-message status-message))
-                  (lambda ()
-                    (chirp-profile--render
-                     buffer
-                     saved-title
-                     saved-refresh
-                     saved-user
-                     saved-tweets
-                     saved-mode
-                     saved-modes
-                     :anchor-id (chirp-capture-point-anchor)
-                     :timeline-ready saved-timeline-ready
-                     :next-cursor saved-next-cursor
-                     :status-message saved-status-message))))
+                (lambda ()
+                  (chirp-profile--render
+                   buffer title refresh user tweets current-mode modes
+                   :anchor-id (chirp-capture-point-anchor)
+                   :timeline-ready timeline-ready :next-cursor next-cursor
+                   :status-message status-message)))
     (or (and anchor-id
              (chirp-restore-point-anchor anchor-id))
         (chirp-move-point-to-first-entry)))
@@ -203,19 +179,20 @@ STATUS-MESSAGE record pagination and loading status."
          (when (chirp-request-current-p buffer token)
            (let* ((next-cursor (chirp-backend-envelope-next-cursor envelope))
                   (merged (chirp-append-unique-tweets current tweets))
-                  (added-p (> (length merged) (length current))))
+                  (tail (and current (nthcdr (1- (length current)) merged)))
+                  (added (if tail (cdr tail) merged)))
              (with-current-buffer buffer
                (setq-local chirp--request-token nil))
              (chirp-profile--render
               buffer title refresh saved-user merged saved-mode saved-modes
               :anchor-id anchor
-              :display-p t
+              :append-after tail
               :timeline-ready t
               :next-cursor next-cursor)
              (chirp-clear-status buffer)
-             (chirp-media-prefetch-tweets tweets buffer)
-             (chirp-enrich-quoted-tweets tweets buffer)
-             (unless added-p
+             (chirp-media-prefetch-tweets added buffer)
+             (chirp-enrich-quoted-tweets added buffer)
+             (unless added
                (message "No older %s." mode-label)))))
        (lambda (message)
          (when (chirp-request-current-p buffer token)
@@ -242,7 +219,7 @@ for paginated modes."
     ('media
      (chirp-backend-user-media handle callback errback max-results cursor))
     ('likes
-     (chirp-backend-likes handle callback errback))
+     (chirp-backend-likes handle callback errback max-results cursor))
     (_
      (funcall (or errback
                   (lambda (message)
@@ -287,7 +264,33 @@ MODE selects the active profile subview and defaults to `posts'."
          (content-prefetched nil)
          (displayed nil))
     (cl-labels
-        ((present-current ()
+        ((fetch-content (requested)
+           (chirp-profile--fetch-content
+            requested
+            clean-handle
+            (lambda (tweets timeline-envelope)
+              (when (and (eq mode requested) (chirp-request-current-p buffer token))
+                (setq saved-tweets tweets
+                      timeline-ready t
+                      timeline-error-message nil
+                      timeline-next-cursor
+                      (and (chirp-profile--paginated-mode-p mode)
+                           (chirp-backend-envelope-next-cursor timeline-envelope)))
+                (update-status)
+                (present-current)))
+            (lambda (message)
+              (when (and (eq mode requested) (chirp-request-current-p buffer token))
+                (setq saved-tweets nil
+                      timeline-ready t
+                      timeline-next-cursor nil
+                      timeline-error-message
+                      (format "Unable to load %s.\n\n%s"
+                              (downcase (chirp-profile--mode-label mode))
+                              message))
+                (update-status)
+                (present-current)))
+            chirp-profile-post-limit))
+         (present-current ()
            (when user-ready
              (chirp-profile--render
               buffer
@@ -300,7 +303,6 @@ MODE selects the active profile subview and defaults to `posts'."
               :anchor-id (and displayed
                               (with-current-buffer buffer
                                 (chirp-capture-point-anchor)))
-              :display-p displayed
               :timeline-ready timeline-ready
               :next-cursor timeline-next-cursor
               :status-message (and timeline-ready timeline-error-message))
@@ -357,6 +359,7 @@ MODE selects the active profile subview and defaults to `posts'."
            (with-current-buffer buffer
              (setq-local chirp--request-token nil))
            (chirp-show-error buffer title refresh message))))
+      (unless (eq mode 'likes) (fetch-content mode))
       (chirp-backend-whoami
        (lambda (user _envelope)
          (when (chirp-request-current-p buffer token)
@@ -371,41 +374,20 @@ MODE selects the active profile subview and defaults to `posts'."
                    whoami-ready t)
              (when saved-user
                (plist-put saved-user :self-p (memq 'likes modes)))
-             (when (not (memq mode modes))
-               (setq mode 'posts
-                     title (chirp-profile--title clean-handle mode)))
+             (when (eq mode 'likes)
+               (unless (memq mode modes)
+                 (setq mode 'posts title (chirp-profile--title clean-handle mode)))
+               (fetch-content mode))
              (when user-ready
                (update-status)
                (present-current)))))
        (lambda (_message)
          (when (chirp-request-current-p buffer token)
            (setq whoami-ready t)
-           (present-current))))
-      (chirp-profile--fetch-content
-       mode
-       clean-handle
-       (lambda (tweets timeline-envelope)
-         (when (chirp-request-current-p buffer token)
-           (setq saved-tweets tweets
-                 timeline-ready t
-                 timeline-error-message nil
-                 timeline-next-cursor
-                 (and (chirp-profile--paginated-mode-p mode)
-                      (chirp-backend-envelope-next-cursor timeline-envelope)))
-           (update-status)
-           (present-current)))
-       (lambda (message)
-         (when (chirp-request-current-p buffer token)
-           (setq saved-tweets nil
-                 timeline-ready t
-                 timeline-next-cursor nil
-                 timeline-error-message
-                 (format "Unable to load %s.\n\n%s"
-                         (downcase (chirp-profile--mode-label mode))
-                         message))
-           (update-status)
-           (present-current)))
-       chirp-profile-post-limit))))
+           (when (eq mode 'likes)
+             (setq mode 'posts title (chirp-profile--title clean-handle mode))
+             (fetch-content mode))
+           (present-current)))))))
 
 ;;;###autoload
 (defun chirp-profile-open-followers (handle &optional buffer)

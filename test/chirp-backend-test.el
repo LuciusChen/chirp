@@ -11,6 +11,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'chirp-backend)
+(require 'chirp-timeline)
 
 (defun chirp-backend-test--timeline-entry (tweet &optional promoted-p)
   "Return one HomeTimeline entry carrying raw TWEET.
@@ -299,7 +300,7 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
            '("data" "timeline")
            (list (cons "instructions" instructions))))
          (page (chirp-backend--timeline-page
-                payload '(("data" "timeline")) 10 "the test timeline")))
+                payload '(("data" "timeline")) "the test timeline")))
     (should (equal (mapcar (lambda (tweet) (plist-get tweet :id)) (car page))
                    '("1" "2")))))
 
@@ -319,9 +320,7 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
                          variables request-variables)
                    (funcall callback '(("data" . nil))))))
         (chirp-backend-request
-         (if (equal (car case) "delete")
-             '("delete" "--yes" "123")
-           (list (car case) "123"))
+         (list (car case) "123")
          (lambda (_payload _envelope)
            (setq success t))))
       (should success)
@@ -489,7 +488,7 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
                        path request-path)
                  (funcall callback
                           '(("id_str" . "123")
-                            ("translation" . "你好")
+                            ("translation" . "你好 &amp;amp; 欢迎\r")
                             ("destinationLanguage" . "zh")
                             ("translationState" . "Success"))))))
       (chirp-backend-translate
@@ -499,13 +498,13 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
        (lambda (message)
          (setq failure message))))
     (should-not failure)
-    (should (eq service 'legacy))
+    (should (eq service 'web))
     (should (string-match-p
              (concat "tweetId=123,destinationLanguage=Some(zh),"
                      "translationSource=Some(Google)")
              path))
     (should (equal (chirp-get result "id") "123"))
-    (should (equal (chirp-get result "translation") "你好"))
+    (should (equal (chirp-get result "translation") "你好 &amp; 欢迎"))
     (should (equal (chirp-get result "destinationLanguage") "zh"))))
 
 (ert-deftest chirp-backend-whoami-cache-reuses-fresh-results ()
@@ -641,8 +640,8 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
        (lambda (items response-envelope)
          (setq users items
                envelope response-envelope))))
-    (should (eq service 'legacy))
-    (should (equal path "followers/list.json"))
+    (should (eq service 'web))
+    (should (equal path "1.1/followers/list.json"))
     (should (equal (alist-get "user_id" query nil nil #'string=) "42"))
     (should (equal (plist-get (car users) :handle) "alice"))
     (should (equal (chirp-backend-envelope-next-cursor envelope) "next"))))
@@ -666,7 +665,7 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
        "@Bob"
        (lambda (items _envelope)
          (setq users items))))
-    (should (equal path "friends/list.json"))
+    (should (equal path "1.1/friends/list.json"))
     (should (equal (plist-get (car users) :handle) "alice"))))
 
 (ert-deftest chirp-backend-list-normalizes-list-urls ()
@@ -769,15 +768,15 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
 
 (ert-deftest chirp-backend-tweet-weighted-length-handles-wide-text-emoji-and-urls ()
   "Create routing should follow X weighting for common text forms."
-  (should (= (chirp-backend--tweet-weighted-length (make-string 280 ?x))
+  (should (= (chirp-backend-tweet-weighted-length (make-string 280 ?x))
              280))
-  (should (= (chirp-backend--tweet-weighted-length (make-string 141 ?你))
+  (should (= (chirp-backend-tweet-weighted-length (make-string 141 ?你))
              282))
-  (should (= (chirp-backend--tweet-weighted-length "👩‍👩‍👧‍👦") 2))
-  (should (= (chirp-backend--tweet-weighted-length
+  (should (= (chirp-backend-tweet-weighted-length "👩‍👩‍👧‍👦") 2))
+  (should (= (chirp-backend-tweet-weighted-length
               (apply #'concat (make-list 57 "←‍←")))
              285))
-  (should (= (chirp-backend--tweet-weighted-length
+  (should (= (chirp-backend-tweet-weighted-length
               (concat "see https://example.com/" (make-string 400 ?x)))
              27)))
 
@@ -920,6 +919,44 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
        (setq failure message)))
     (should (equal failure "Unknown Chirp backend action: unknown"))))
 
+(ert-deftest chirp-home-paginates-after-the-feed-reorders ()
+  "Keep the unread tail and cursor when refreshing changes the first page."
+  (with-temp-buffer
+    (let ((buffer (current-buffer))
+          (chirp-default-max-results 2)
+          (chirp-timeline-load-more-step 2)
+          calls)
+      (cl-letf (((symbol-function 'chirp-buffer) (lambda () buffer))
+                ((symbol-function 'chirp-display-buffer) #'ignore)
+                ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
+                ((symbol-function 'chirp-x-graphql-request)
+                 (lambda (_op variables done &rest _)
+                   (let* ((cursor (cdr (assoc "cursor" variables)))
+                          (ids (cond (cursor '("4" "5")) (calls '("9")) (t '("1" "2" "3"))))
+                          (next (cond (cursor nil) (calls "new-bottom") (t "original-bottom"))))
+                     (push cursor calls)
+                     (funcall done
+                              (chirp-backend-test--home-timeline-payload
+                               (append
+                                (mapcar (lambda (id)
+                                          (chirp-backend-test--timeline-entry
+                                           `(("rest_id" . ,id) ("legacy" . (("full_text" . ,id))))))
+                                        ids)
+                                (when next (list (chirp-backend-test--bottom-cursor next))))))))))
+        (chirp-timeline-open-home)
+        (chirp-refresh)
+        (should (chirp-restore-point-anchor "2"))
+        (call-interactively (key-binding (kbd "n")))
+        (should (equal calls '(nil nil)))
+        (should (equal (chirp-entry-id-at-point) "2"))
+        (should (equal chirp--timeline-next-cursor "original-bottom"))
+        (call-interactively (key-binding (kbd "N")))
+        (should (equal (reverse calls) '(nil nil "original-bottom")))
+        (should (equal (mapcar #'chirp-tweet-key (chirp-timeline--buffer-tweets buffer))
+                       '("9" "1" "2" "3" "4" "5")))
+        (should chirp--timeline-exhausted-p)))))
+
 (ert-deftest chirp-backend-bookmarks-continues-an-oversized-page ()
   "A page larger than requested must not skip bookmarks on continuation."
   (let (requests ids cursor)
@@ -943,7 +980,7 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
            (setq cursor (chirp-backend-envelope-next-cursor envelope)))
          #'ert-fail 1 cursor)))
     (should (equal (nreverse ids) '("71" "72")))
-    (should (equal requests '(nil nil)))
+    (should (equal requests '(nil)))
     (should (equal cursor "remote"))))
 
 (ert-deftest chirp-backend-bookmark-transport-reads-http-response ()
@@ -952,7 +989,8 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
     (cl-letf (((symbol-function 'chirp-x-credentials)
                (lambda () '(:auth-token "example" :ct0 "csrf" :bearer-token "public")))
               ((symbol-function 'url-retrieve)
-               (lambda (url cb &rest _)
+               (lambda (url cb &optional _args _silent inhibit-cookies)
+                 (should inhibit-cookies)
                  (should (string-suffix-p "/CreateBookmark" url))
                  (should (equal url-request-method "POST"))
                  (should (equal (chirp-get-in (json-parse-string url-request-data
@@ -985,6 +1023,173 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
       (chirp-backend-search "emacs" #'ert-fail (lambda (reason) (setq failure reason))))
     (should (string-match-p "HTTP 503" failure))
     (should-not (string-match-p "write" failure))))
+
+(ert-deftest chirp-browser-feed-uses-current-session ()
+  "Send HomeTimeline through the signed-in browser and render its result."
+  (let (op received)
+    (cl-letf (((symbol-function 'chirp-web-ready-p) (lambda () t))
+              ((symbol-function 'chirp-x-credentials) #'ert-fail)
+              ((symbol-function 'chirp-web-request)
+               (lambda (url method done &rest _options)
+                 (setq op (list (file-name-nondirectory url) method))
+                 (funcall done 200 "{\"data\":{\"home\":{\"home_timeline_urt\":{\"instructions\":[]}}}}"))))
+      (chirp-backend-feed (lambda (tweets _page) (setq received (list tweets)))
+                          nil #'ert-fail 10)
+      (should (string-prefix-p "HomeTimeline" (car op)))
+      (should (equal received '(nil))))))
+
+(ert-deftest chirp-thread-paginates-after-locating-the-focus ()
+  (let ((chirp-thread-max-results 2)
+        (chirp-backend-read-cache-ttl 0)
+        ids cursor)
+    (cl-letf (((symbol-function 'chirp-x-graphql-request)
+               (lambda (_op _args cb &rest _)
+                 (funcall cb (chirp-backend-test--thread-payload
+                              (mapcar (lambda (id)
+                                        (chirp-backend-test--timeline-entry
+                                         (list (cons "rest_id" id)
+                                               '("legacy" ("full_text" . "text")))))
+                                      '("1" "2" "3")))))))
+      (chirp-backend-thread
+       "3" (lambda (items envelope)
+             (setq ids (mapcar #'chirp-tweet-key items)
+                   cursor (chirp-backend-envelope-next-cursor envelope))) #'ert-fail)
+      (should (equal ids '("3" "1")))
+      (chirp-backend-thread "3" (lambda (items _) (should (equal (mapcar #'chirp-tweet-key items) '("2"))))
+                            #'ert-fail cursor))))
+
+(ert-deftest chirp-x-distinguishes-partial-reads-from-rejected-writes ()
+  (dolist (case '((200 get :success nil) (200 post :error nil)
+                  (403 post :error nil) (503 post :error t)))
+    (pcase-let ((`(,status ,method ,outcome ,uncertain) case))
+      (with-temp-buffer
+        (setq-local url-http-response-status status)
+        (insert "{\"data\":{\"home\":{\"items\":[1]}},\"errors\":[{\"message\":\"Unavailable\"}]}")
+        (let ((result (chirp-x--decode-response nil nil method)))
+          (should (eq (car result) outcome))
+          (if (eq outcome :success)
+              (should (equal (chirp-get-in (cadr result) '("data" "home" "items")) '(1)))
+            (should (string-match-p "Unavailable" (cadr result)))
+            (should (eq uncertain (not (null (string-match-p "outcome is unknown" (cadr result))))))))))))
+
+(ert-deftest chirp-backend-related-module-preserves-context-and-note-text ()
+  (let* ((module (chirp-backend-test--module-entry
+                  '((rest_id . "8") (legacy . ((full_text . "preview")))
+                    (note_tweet . ((note_tweet_results . ((result . ((text . "full text")))))))))))
+    (setcdr (assoc "entryId" module) "tweetdetailrelatedtweets-8")
+    (let ((tweet (car (chirp-collect-top-level-tweets (chirp-backend--timeline-entry-tweets module)))))
+      (should (eq (plist-get tweet :timeline-context) 'related))
+      (should (equal (plist-get tweet :text) "full text")))))
+
+(ert-deftest chirp-backend-native-follow-relationship-preserves-false-and-count ()
+  (let ((rest (chirp-normalize-user '((screen_name . "a") (following . t) (followed_by . t))))
+        (user (chirp-normalize-user
+               '((rest_id . "42") (legacy . ((following . t) (friends_count . 12)))
+                 (relationship_perspectives . ((following . nil)))))))
+    (should (plist-get rest :viewer-following-p))
+    (should (plist-get rest :viewer-followed-by-p))
+    (should-not (plist-get rest :following))
+    (should (= (plist-get user :following) 12))
+    (should-not (plist-get user :viewer-following-p))))
+
+(ert-deftest chirp-upload-validates-a-symlink-before-reading-and-chunks-its-target ()
+  (let* ((dir (make-temp-file "chirp-image-" t))
+         (image (expand-file-name "target.png" dir))
+         (link (expand-file-name "link.png" dir))
+         (chirp-x--upload-chunk-size 2)
+         calls done)
+    (unwind-protect
+        (progn
+          (with-temp-file image (insert "12345"))
+          (make-symbolic-link image link)
+          (cl-letf (((symbol-function 'chirp-x--request)
+                     (lambda (url _method callback &rest options)
+                       (should (string-prefix-p "https://upload.x.com/i/media/" url))
+                       (let ((body (plist-get options :data)))
+                         (cond
+                          ((string-prefix-p "command=INIT" body)
+                           (should (string-match-p "total_bytes=5" body))
+                           (funcall callback '((media_id_string . "42"))))
+                          ((string-prefix-p "command=FINALIZE" body) (funcall callback nil))
+                          (t (push body calls) (funcall callback nil)))))))
+            (chirp-x-upload-media link (lambda (id) (setq done id)) :errback #'ert-fail))
+          (should (equal done "42"))
+          (should (= (length calls) 3))
+          (let ((chirp-x--upload-image-limit 4))
+            (cl-letf (((symbol-function 'chirp-x--file-bytes)
+                       (lambda (_) (ert-fail "Oversized file was read"))))
+              (let (reason)
+                (chirp-x-upload-media link #'ert-fail :errback (lambda (message) (setq reason message)))
+                (should (string-match-p "at most" reason))))))
+      (delete-directory dir t))))
+
+(ert-deftest chirp-x-only-expires-session-for-authentication-errors ()
+  (dolist (case '((403 32 current nil) (403 179 current current)
+                  (403 353 current nil) (200 89 current nil)
+                  (401 32 old current) (401 32 nil current)))
+    (pcase-let ((`(,status ,code ,session ,ready) case)
+                (chirp-web--ready 'current))
+      (with-temp-buffer
+        (setq-local url-http-response-status status)
+        (insert (format "{\"errors\":[{\"code\":%d,\"message\":\"Rejected\"}]}" code))
+        (let ((result (chirp-x--decode-response nil nil 'post session)))
+          (should (eq (car result) :error))
+          (should (eq chirp-web--ready ready))
+          (when (eq status 401)
+            (should (string-match-p (if session "chirp-login" "auth-source") (cadr result))))
+          (should-not (string-match-p "outcome is unknown" (cadr result))))))))
+
+(ert-deftest chirp-web-finishes-sign-in-once-on-the-home-page ()
+  (save-window-excursion
+    (with-temp-buffer
+      (let ((view (current-buffer))
+            (timer (timer-create))
+            (chirp-web--widget 'widget)
+            (chirp-web--ready nil)
+            (completed 0) check)
+        (let ((chirp-web--login-timer timer))
+          (cl-letf (((symbol-function 'xwidget-live-p) (lambda (_) t))
+                    ((symbol-function 'xwidget-buffer) (lambda (_) view))
+                    ((symbol-function 'xwidget-webkit-uri) (lambda (_) "https://x.com/home"))
+                    ((symbol-function 'xwidget-webkit-execute-script)
+                     (lambda (_widget _script cb) (setq check cb))))
+            (set-window-buffer (split-window-right) view)
+            (chirp-web--check-login (lambda () (cl-incf completed)) (+ (float-time) 10))
+            (funcall check "")
+            (should-not chirp-web--ready)
+            (funcall check "ready")
+            (funcall check "ready")
+            (should (= completed 1))
+            (should chirp-web--ready)
+            (should-not (get-buffer-window view t))
+            (should-not chirp-web--login-timer)))))))
+
+(ert-deftest chirp-web-queries-only-when-closing-its-live-buffer ()
+  (require 'xwidget)
+  (let ((view (generate-new-buffer " *chirp-web-confirm*"))
+        (chirp-web--widget nil) (chirp-web--ready nil) (chirp-web--login-timer nil)
+        (flag 'unset) widget confirm)
+    (unwind-protect
+        (cl-letf (((symbol-function 'display-graphic-p) (lambda (&optional _) t))
+                  ((symbol-function 'xwidget-webkit-execute-script) #'ignore)
+                  ((symbol-function 'xwidget-webkit-new-session) #'ignore)
+                  ((symbol-function 'xwidget-webkit-current-session) (lambda () widget))
+                  ((symbol-function 'xwidget-live-p) (lambda (xw) (eq xw 'live)))
+                  ((symbol-function 'xwidget-buffer) (lambda (_) view))
+                  ((symbol-function 'set-xwidget-query-on-exit-flag)
+                   (lambda (xw value) (should (eq xw 'live)) (setq flag value)))
+                  ((symbol-function 'run-at-time) #'ignore)
+                  ((symbol-function 'yes-or-no-p) (lambda (&rest _) confirm)))
+          (should-error (chirp-web-login #'ignore) :type 'user-error)
+          (should (eq flag 'unset))
+          (setq widget 'live)
+          (chirp-web-login #'ignore)
+          (should-not flag)
+          (should-not (kill-buffer view))
+          (setq confirm t)
+          (should (kill-buffer view)))
+      (when (buffer-live-p view)
+        (with-current-buffer view (let (kill-buffer-query-functions) (kill-buffer view)))))))
 
 (provide 'chirp-backend-test)
 

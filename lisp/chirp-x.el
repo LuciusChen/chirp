@@ -19,6 +19,7 @@
 (require 'url-util)
 (require 'auth-source)
 (require 'chirp-core)
+(require 'chirp-web)
 
 (defgroup chirp-x nil
   "X web API transport for Chirp."
@@ -29,8 +30,7 @@
 
 (defconst chirp-x--rest-base-urls
   '((web . "https://x.com/i/api/")
-    (legacy . "https://api.x.com/1.1/")
-    (upload . "https://upload.twitter.com/i/media/"))
+    (upload . "https://upload.x.com/i/media/"))
   "Trusted X web API roots that may receive session credentials.")
 
 (defconst chirp-x--upload-chunk-size (* 1024 1024)
@@ -80,18 +80,22 @@ client token.  This is not an account credential."
 
 
 (defun chirp-x-credentials ()
-  "Read the user's X session from the environment or Emacs auth-source."
-  (let ((values
-         (mapcar (lambda (name)
-                   (or (getenv (if (equal name "auth_token")
-                                   "TWITTER_AUTH_TOKEN" "TWITTER_CT0"))
-                       (auth-source-pick-first-password :host "x.com" :user name)))
-                 '("auth_token" "ct0"))))
-    (unless (apply #'chirp-x--session-cookie-values-valid-p values)
-      (user-error "Set auth_token and ct0 for host x.com in auth-source, or set TWITTER_AUTH_TOKEN and TWITTER_CT0. Then press g to reconnect"))
-    (list :auth-token (car values) :ct0 (cadr values)
-          :bearer-token (or (chirp-x--environment-value "CHIRP_X_BEARER_TOKEN")
-                            chirp-x-bearer-token))))
+  "Return configured X credentials, or nil for WebKit sign-in."
+  (let ((terminal (not (display-graphic-p))))
+    (when-let* ((auth (or (chirp-x--environment-value "TWITTER_AUTH_TOKEN")
+                          (and terminal (auth-source-pick-first-password
+                                         :host "x.com" :user "auth_token"))))
+                (csrf (or (chirp-x--environment-value "TWITTER_CT0")
+                          (and terminal (auth-source-pick-first-password
+                                         :host "x.com" :user "ct0"))))
+                ((chirp-x--session-cookie-values-valid-p auth csrf)))
+      (list :auth-token auth :ct0 csrf
+            :bearer-token (or (chirp-x--environment-value "CHIRP_X_BEARER_TOKEN")
+                              chirp-x-bearer-token)))))
+
+(defun chirp-x-session ()
+  "Return `webkit' or configured credentials for the current display."
+  (if (chirp-web-ready-p) 'webkit (chirp-x-credentials)))
 
 (defun chirp-x--operation-method (operation)
   "Return the validated HTTP method selected by OPERATION."
@@ -314,11 +318,12 @@ FEATURES and FIELD-TOGGLES are included when non-nil."
    "X write outcome is unknown; the request may have succeeded. "
    "Check X before trying again. " message))
 
-(defun chirp-x--decode-response (request-status &optional allow-empty method)
+(defun chirp-x--decode-response (request-status &optional allow-empty method web-session)
   "Decode the current X response buffer for REQUEST-STATUS.
 
 When ALLOW-EMPTY is non-nil, accept an empty successful response as an empty
 object.  METHOD identifies writes whose transport outcome can be uncertain.
+WEB-SESSION identifies the browser login that sent this request.
 Return either `(:success PAYLOAD)' or `(:error MESSAGE)'."
   (let* ((http-status (chirp-x--response-status request-status))
          (body (chirp-x--response-body
@@ -336,6 +341,16 @@ Return either `(:success PAYLOAD)' or `(:error MESSAGE)'."
                                    :false-object nil)
               (error nil)))))
     (cond
+     ((or (eq http-status 401)
+          (and (memq http-status '(200 403))
+               (seq-some (lambda (item) (memq (chirp-get item "code") '(32 89 353)))
+                         (chirp-x--graphql-errors payload))))
+      (when (and web-session (eq web-session chirp-web--ready))
+        (setq chirp-web--ready nil))
+      (list :error (concat (chirp-x--failure-message
+                            (unless (eq http-status 200) http-status) payload request-status)
+                           (if web-session ". Sign in with M-x chirp-login"
+                             ". Update your X session credentials in the environment or auth-source"))))
      ((or (not http-status)
           (< http-status 200)
           (>= http-status 300))
@@ -343,7 +358,8 @@ Return either `(:success PAYLOAD)' or `(:error MESSAGE)'."
              (chirp-x--failure-message
               http-status payload request-status)))
         (list :error
-              (if (eq method 'post)
+              (if (and (eq method 'post)
+                       (or (null http-status) (= http-status 408) (>= http-status 500)))
                   (chirp-x-unknown-write-outcome message)
                 message))))
      ((and empty-p allow-empty)
@@ -353,12 +369,9 @@ Return either `(:success PAYLOAD)' or `(:error MESSAGE)'."
             (if (eq method 'post)
                 (chirp-x-unknown-write-outcome "X returned invalid JSON")
               "X returned invalid JSON")))
-     ((chirp-x--graphql-error-message payload)
-      (let ((message (chirp-x--failure-message nil payload request-status)))
-        (list :error
-              (if (eq method 'post)
-                  (chirp-x-unknown-write-outcome message)
-                message))))
+     ((and (chirp-x--graphql-errors payload)
+           (or (eq method 'post) (not (seq-some #'cdr-safe (chirp-get payload "data")))))
+      (list :error (chirp-x--failure-message nil payload request-status)))
      (t (list :success payload)))))
 
 
@@ -368,28 +381,67 @@ DATA and CONTENT-TYPE specify the body.  ERRBACK receives errors.
 ALLOW-EMPTY accepts a successful response without a body.
 QUERY-P identifies read-only POST operations."
   (unless (chirp-x--trusted-url-p url) (error "Invalid X request URL"))
-  (let ((url-request-method (upcase (symbol-name method)))
-        (url-request-extra-headers (chirp-x--headers (chirp-x-credentials) content-type))
-        (url-request-data (if (and data (multibyte-string-p data))
-                              (encode-coding-string data 'utf-8) data))
-        (url-max-redirections 0)
-        (url-http-attempt-keepalives (and (eq method 'get) url-http-attempt-keepalives))
-        (url-cookie-untrusted-urls '(".*")))
-    (let ((buffer (url-retrieve
-                   url
-                   (lambda (status)
-                     (let ((result (unwind-protect
-                                       (condition-case err
-                                           (chirp-x--decode-response status allow-empty (unless query-p method))
-                                         (error (list :error (error-message-string err))))
-                                     (kill-buffer (current-buffer)))))
-                       (if (eq (car result) :success)
-                           (funcall callback (cadr result))
-                         (funcall (or errback #'message) (cadr result)))))
-                   nil t t)))
-      (when (buffer-live-p buffer)
-        (with-current-buffer buffer (setq-local url-max-redirections 0)))
-      buffer)))
+  (let* ((session (chirp-x-session))
+         (web-session (and (eq session 'webkit) chirp-web--ready))
+         (verb (upcase (symbol-name method)))
+         (bytes (if (and data (multibyte-string-p data))
+                    (encode-coding-string data 'utf-8) data)))
+    (unless session
+      (user-error (if (display-graphic-p) "Sign in with M-x chirp-login"
+                    "Configure your X session credentials in the environment or auth-source")))
+    (cl-labels ((deliver (status)
+                  (let ((result (condition-case err
+                                    (chirp-x--decode-response
+                                     status allow-empty (unless query-p method) web-session)
+                                  (error (list :error (error-message-string err))))))
+                    (if (eq (car result) :success)
+                        (funcall callback (cadr result))
+                      (funcall (or errback #'message) (cadr result))))))
+      (if (listp session)
+          (let* ((url-request-method verb)
+                 (url-request-extra-headers (chirp-x--headers session content-type))
+                 (url-request-data bytes)
+                 (url-max-redirections 0)
+                 (url-http-attempt-keepalives (and (eq method 'get) url-http-attempt-keepalives))
+                 timer
+                 finished
+                 (buffer (url-retrieve
+                          url (lambda (status)
+                                (let ((response (current-buffer)))
+                                  (unless finished
+                                    (setq finished t)
+                                    (when timer (cancel-timer timer))
+                                    (unwind-protect (deliver status) (kill-buffer response)))))
+                          ;; INHIBIT-COOKIES skips url.el's cookie jar for both request and response.
+                          nil t t)))
+            (when (and (not finished) (buffer-live-p buffer))
+              (with-current-buffer buffer (setq-local url-max-redirections 0))
+              (setq timer
+                    (run-at-time
+                     65 nil
+                     (lambda ()
+                       (setq finished t)
+                       (when (buffer-live-p buffer)
+                         (when-let* ((process (get-buffer-process buffer))) (delete-process process))
+                         (kill-buffer buffer))
+                       (funcall (or errback #'message)
+                                (if (and (eq method 'post) (not query-p))
+                                    (chirp-x-unknown-write-outcome "X request timed out")
+                                  "X request timed out"))))))
+            buffer)
+        (chirp-web-request
+         url verb
+         (lambda (status body)
+           (with-temp-buffer
+             (insert body)
+             (setq-local url-http-response-status (and (> status 0) status)
+                         url-http-end-of-headers nil)
+             (deliver (and (zerop status) (list :error (list 'error body))))))
+         :bearer (or (chirp-x--environment-value "CHIRP_X_BEARER_TOKEN")
+                     chirp-x-bearer-token)
+         :type content-type :data bytes
+         :limit (if (and (eq method 'post) (not query-p))
+                    chirp-x--write-response-limit chirp-x--read-response-limit))))))
 
 (cl-defun chirp-x-graphql-request (operation variables callback &key errback)
   "Issue OPERATION with VARIABLES and deliver the result to CALLBACK.
@@ -413,7 +465,7 @@ ERRBACK receives a single error message."
     (service path callback &key (method 'get) query form errback)
   "Request an authenticated X API PATH from SERVICE asynchronously.
 
-SERVICE is `web' for x.com/i/api or `legacy' for api.x.com/1.1.  METHOD may be
+SERVICE selects an X REST root.  METHOD may be
 `get' or `post'.  QUERY and FORM are string-keyed alists; FORM is valid only
 for POST requests.  CALLBACK receives decoded JSON, and ERRBACK receives one
 readable error string."
@@ -445,7 +497,19 @@ readable error string."
     ("png" "image/png")
     ("gif" "image/gif")
     ("webp" "image/webp")
-    (_ (error "Unsupported image format: %s" file))))
+    (_ (user-error "Unsupported image format: %s" file))))
+
+(defun chirp-x-image-type (file)
+  "Validate upload FILE and return its MIME type."
+  (unless (and (file-regular-p file) (file-readable-p file))
+    (user-error "Image file is not readable: %s" file))
+  (let* ((type (chirp-x--upload-media-type file))
+         (size (file-attribute-size (file-attributes (file-truename file))))
+         (limit (if (equal type "image/gif") chirp-x--upload-gif-limit
+                  chirp-x--upload-image-limit)))
+    (unless (<= 1 size limit)
+      (user-error "Image must be nonempty and at most %d MiB: %s" (/ limit 1048576) file))
+    type))
 
 (defun chirp-x--file-bytes (file)
   "Return FILE contents as an unibyte string."
@@ -454,10 +518,9 @@ readable error string."
     (insert-file-contents-literally file)
     (buffer-string)))
 
-(defun chirp-x--upload-segments (bytes media-type)
-  "Split BYTES into upload segments appropriate for MEDIA-TYPE."
-  (if (and (equal media-type "image/gif")
-           (> (length bytes) chirp-x--upload-chunk-size))
+(defun chirp-x--upload-segments (bytes)
+  "Split BYTES into media upload segments."
+  (if (> (length bytes) chirp-x--upload-chunk-size)
       (cl-loop for start from 0 below (length bytes)
                by chirp-x--upload-chunk-size
                collect (substring bytes start
@@ -533,23 +596,11 @@ mutation is retried automatically."
       (error "X media upload error callback is not callable"))
     (condition-case err
         (progn
-          (unless (and (stringp file) (file-regular-p file)
-                       (file-readable-p file))
-            (error "Image file is not readable: %s" file))
-          (let* ((media-type (chirp-x--upload-media-type file))
-                 (file-size (file-attribute-size (file-attributes file)))
-                 (size-limit (if (equal media-type "image/gif")
-                                 chirp-x--upload-gif-limit
-                               chirp-x--upload-image-limit))
+          (let* ((media-type (chirp-x-image-type file))
                  (bytes (chirp-x--file-bytes file))
-                 (segments (chirp-x--upload-segments bytes media-type))
-                 (upload-url
-                  (chirp-x--rest-url 'upload "upload.json" nil)))
-            (unless (> file-size 0)
-              (error "Image file is empty: %s" file))
-            (when (> file-size size-limit)
-              (error "Image file exceeds the %d MiB limit: %s"
-                     (/ size-limit 1024 1024) file))
+                 (file-size (length bytes))
+                 (segments (chirp-x--upload-segments bytes))
+                 (upload-url (chirp-x--rest-url 'upload "upload.json" nil)))
             (let (settled-p)
               (cl-labels
                   ((fail
