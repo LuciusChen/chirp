@@ -167,8 +167,14 @@
      :field-toggles (("withArticleRichContentState" . t)
                      ("withArticlePlainText" . t)))
     (create-tweet
-     :query-id "IID9x6WsdMnTlXnzXGq8ng" :name "CreateTweet" :method post
-     :features ,chirp-backend--tweet-features)
+     :query-id "l4hk8uVGvR-a8kzQ4nOhPA" :name "CreateTweet" :method post
+     :features ,(append '(("post_ctas_fetch_enabled" . t)
+                          ("responsive_web_grok_analyze_post_followups_enabled" . t)
+                          ("responsive_web_nested_quote_preview_enabled" . t)
+                          ("rweb_sports_post_context_enabled" . t)
+                          ("x_elections_post_context_enabled" . t))
+                        (cl-remove "creator_subscriptions_tweet_preview_api_enabled"
+                                   chirp-backend--tweet-features :key #'car :test #'equal)))
     (create-note-tweet
      :query-id "dAlh5Gh9rR5pKk4HU4vW8g" :name "CreateNoteTweet" :method post
      :features ,chirp-backend--note-tweet-features)
