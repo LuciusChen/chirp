@@ -177,7 +177,7 @@ background and show the browser buffer only if X requires sign-in."
                                              callback (+ (float-time) 600) reveal-state))))
 
 (defconst chirp-web--fetch-script
-  "((id, url, method, bearer, type, data, limit) => {
+  "((id, url, method, bearer, type, data, limit, names) => {
   if (location.origin !== 'https://x.com') return 'signin';
   const results = window.__emacsChirpResults ??= Object.create(null);
   results[id] = null;
@@ -211,7 +211,12 @@ background and show the browser buffer only if X requires sign-in."
           if (size > limit) { abort.abort(); throw Error('X response exceeds size limit'); }
           text += decoder.decode(value, {stream: true});
         }
-        results[id] = [res.status, text + decoder.decode()];
+        const result = [res.status, text + decoder.decode()];
+        if (names) {
+          result.push(names.filter(name => res.headers.has(name))
+            .map(name => name + ': ' + res.headers.get(name)).join('\\n'));
+        }
+        results[id] = result;
       } finally { clearTimeout(timeout); }
     } catch (err) { results[id] = [0, String(err.message)]; }
   })();
@@ -219,17 +224,20 @@ background and show the browser buffer only if X requires sign-in."
 })"
   "Start a browser request while keeping session cookies inside WebKit.")
 
-(cl-defun chirp-web-request (url method callback &key bearer type data limit)
+(cl-defun chirp-web-request (url method callback &key bearer type data limit response-headers)
   "Send URL with METHOD and call CALLBACK with HTTP status and body.
 BEARER is the web client token.  TYPE describes the optional binary DATA.
 LIMIT bounds the response in bytes.  A zero status indicates a network
-or session error.  The caller must validate URL against its API allowlist."
+or session error.  The caller must validate URL against its API allowlist.
+With RESPONSE-HEADERS, pass the selected header lines as a third callback
+argument.  Transport failures have no header lines."
   (unless (chirp-web-ready-p) (user-error "Sign in with M-x chirp"))
   (let* ((widget chirp-web--widget)
          (session chirp-web--ready)
          (id (cl-incf chirp-web--serial))
          (args (vector id url method bearer type
-                       (and data (base64-encode-string data t)) limit))
+                       (and data (base64-encode-string data t)) limit
+                       (and response-headers (vconcat response-headers))))
          (poll (format (concat "(() => {const r=window.__emacsChirpResults;"
                                "if (!r || !Object.hasOwn(r,%d)) return 'gone';"
                                "if (r[%d] === null) return 'wait';"
@@ -237,13 +245,15 @@ or session error.  The caller must validate URL against its API allowlist."
                        id id id id))
          timer poll-timer (interval 0.03) (retry-read (equal method "GET")))
     (cl-labels
-        ((finish (status body)
+        ((finish (status body &optional headers)
            (when timer
              (cancel-timer timer)
              (when poll-timer (cancel-timer poll-timer))
              (remhash id chirp-web--callbacks)
              (setq timer nil)
-             (funcall callback status body)))
+             (if response-headers
+                 (funcall callback status body headers)
+               (funcall callback status body))))
          (start ()
            (chirp-web--execute
             widget id (concat chirp-web--fetch-script "(..." (json-serialize args :null-object nil) ")")
@@ -275,9 +285,12 @@ or session error.  The caller must validate URL against its API allowlist."
                       (let ((response (condition-case nil
                                           (json-parse-string value)
                                         (json-parse-error nil))))
-                        (if (and (vectorp response) (= 2 (length response))
+                        (if (and (vectorp response)
+                                 (or (= 2 (length response))
+                                     (and (= 3 (length response)) (stringp (aref response 2))))
                                  (integerp (aref response 0)) (stringp (aref response 1)))
-                            (finish (aref response 0) (aref response 1))
+                            (finish (aref response 0) (aref response 1)
+                                    (and (= 3 (length response)) (aref response 2)))
                           (finish 0 "Invalid X browser response"))))))))
              (finish 0 "X browser session closed or timed out"))))
       (setq timer (run-at-time 70 nil #'finish 0 "X browser request timed out"))

@@ -295,21 +295,45 @@ FEATURES and FIELD-TOGGLES are included when non-nil."
             (format "%s (%s)" message code))
         message))))
 
+(defconst chirp-x--limit-headers
+  '("retry-after" "x-rate-limit-limit" "x-rate-limit-remaining" "x-rate-limit-reset"
+    "x-user-limit-24hour-limit" "x-user-limit-24hour-remaining" "x-user-limit-24hour-reset"
+    "x-app-limit-24hour-limit" "x-app-limit-24hour-remaining" "x-app-limit-24hour-reset")
+  "Response headers describing request and posting limits.")
+
+(defun chirp-x--limit-details ()
+  "Return the quota fields present in the current HTTP response headers."
+  (when (bound-and-true-p url-http-end-of-headers)
+    (save-excursion
+      (goto-char (point-min))
+      (let ((case-fold-search t)
+            (pattern (concat "^" (regexp-opt chirp-x--limit-headers t)
+                             ":[ \t]*\\([^\r\n]+\\)"))
+            fields)
+        (while (re-search-forward pattern url-http-end-of-headers t)
+          (push (format "%s=%s" (downcase (match-string 1))
+                        (string-trim (match-string 2))) fields))
+        (when fields (string-join (nreverse fields) ", "))))))
+
 (defun chirp-x--failure-message (http-status payload request-status)
   "Return a readable error from HTTP-STATUS, PAYLOAD, and REQUEST-STATUS."
-  (let ((graphql-error (chirp-x--graphql-error-message payload)))
+  (let* ((graphql-error (chirp-x--graphql-error-message payload))
+         (details (and (or (eq http-status 429)
+                           (seq-some (lambda (err) (memq (chirp-get err "code") '(226 344)))
+                                     (chirp-x--graphql-errors payload)))
+                       (chirp-x--limit-details)))
+         (prefix (if details (format "X request failed [%s]" details) "X request failed")))
     (cond
      (http-status
-      (format "X request failed (HTTP %d)%s"
-              http-status
+      (format "%s (HTTP %d)%s" prefix http-status
               (if graphql-error
                   (format ": %s" graphql-error)
                 "")))
      ((plist-get request-status :error)
-      (format "X request failed: %s"
+      (format "%s: %s" prefix
               (error-message-string (plist-get request-status :error))))
      (graphql-error
-      (format "X request failed: %s" graphql-error))
+      (format "%s: %s" prefix graphql-error))
      (t "X request failed without an HTTP response"))))
 
 (defun chirp-x-unknown-write-outcome (message)
@@ -431,15 +455,16 @@ QUERY-P identifies read-only POST operations."
             buffer)
         (chirp-web-request
          url verb
-         (lambda (status body)
+         (lambda (status body &optional headers)
            (with-temp-buffer
-             (insert body)
+             (when headers (insert headers "\n"))
              (setq-local url-http-response-status (and (> status 0) status)
-                         url-http-end-of-headers nil)
+                         url-http-end-of-headers (point-marker))
+             (insert body)
              (deliver (and (zerop status) (list :error (list 'error body))))))
          :bearer (or (chirp-x--environment-value "CHIRP_X_BEARER_TOKEN")
                      chirp-x-bearer-token)
-         :type content-type :data bytes
+         :type content-type :data bytes :response-headers chirp-x--limit-headers
          :limit (if (and (eq method 'post) (not query-p))
                     chirp-x--write-response-limit chirp-x--read-response-limit))))))
 

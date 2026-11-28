@@ -26,6 +26,7 @@ This file records user-visible Chirp changes from 2026-08-01 onward. Earlier his
 
 ### Fixed
 
+- Show the quota and retry headers X supplies with posting restrictions and rate-limit errors.
 - Update the X operation used to publish standard posts, replies, and quotes to match the current web client.
 - Continue a rejected quote from its original post on X while keeping the local draft and attachments.
 - Keep pending WebKit callbacks alive across garbage collection on macOS, including when opening a profile from a tweet.

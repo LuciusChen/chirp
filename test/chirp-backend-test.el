@@ -1025,6 +1025,28 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
     (should (string-match-p "HTTP 503" failure))
     (should-not (string-match-p "write" failure))))
 
+(ert-deftest chirp-x-reports-only-the-limit-headers-of-the-failed-request ()
+  "Keep WebKit and url.el quota messages consistent, including HTTP 200 errors."
+  (let* ((body "{\"errors\":[{\"message\":\"Write refused\",\"code\":344}]}")
+         (headers "X-Rate-Limit-Remaining: 17\r\nRetry-After: 60")
+         (expected "X request failed [x-rate-limit-remaining=17, retry-after=60]: Write refused (344)")
+         (chirp-web--ready 'session)
+         failure)
+    (cl-letf (((symbol-function 'xwidget-live-p) (lambda (_) t))
+              ((symbol-function 'chirp-web--execute)
+               (lambda (_widget _id script done)
+                 (funcall done (if (string-prefix-p chirp-web--fetch-script script)
+                                   "started"
+                                 (json-serialize (vector 200 body headers)))))))
+      (chirp-x--request "https://x.com/i/api/graphql/test/CreateTweet" 'post
+                        #'ert-fail :errback (lambda (reason) (setq failure reason)))
+      (should (equal failure expected)))
+    (with-temp-buffer
+      (insert "HTTP/1.1 200 OK\r\nSet-Cookie: private\r\n" headers "\r\n\r\n")
+      (setq-local url-http-end-of-headers (point-marker) url-http-response-status 200)
+      (insert body)
+      (should (equal (chirp-x--decode-response nil nil 'post) (list :error expected))))))
+
 (ert-deftest chirp-browser-feed-uses-current-session ()
   "Send HomeTimeline through the signed-in browser and render its result."
   (let (op received)
