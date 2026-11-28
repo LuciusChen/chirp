@@ -23,9 +23,29 @@
 
 (defvar chirp-web--widget nil)
 (defvar chirp-web--login-timer nil)
+(defvar chirp-web--login-id nil)
 (defvar chirp-web--ready nil
   "Identity of the current signed-in browser session, or nil.")
 (defvar chirp-web--serial 0)
+(defvar chirp-web--callbacks (make-hash-table :test #'eql)
+  "Pending WebKit result handlers keyed by operation ID.")
+
+(defun chirp-web--receive (reply)
+  "Deliver WebKit REPLY to its pending operation, if still active."
+  (pcase reply
+    (`[,(and (pred stringp) key) ,value]
+     (when-let* ((id (string-to-number key))
+                 (callback (gethash id chirp-web--callbacks)))
+       (remhash id chirp-web--callbacks)
+       (funcall callback value)))))
+
+(defun chirp-web--execute (widget id script callback)
+  "Evaluate SCRIPT on WIDGET and deliver its result to CALLBACK for ID."
+  ;; Cocoa holds the native completion block outside the Lisp GC roots.
+  ;; Give it an interned function and keep the operation's closure in Lisp.
+  (puthash id callback chirp-web--callbacks)
+  (xwidget-webkit-execute-script
+   widget (format "['%d',%s]" id script) #'chirp-web--receive))
 
 (defun chirp-web-ready-p ()
   "Return non-nil when the X browser session is ready for requests."
@@ -76,14 +96,15 @@ Optional REVEAL-STATE is (REVEAL-AT . REVEALED-P) for background restore."
     (cond
      ((or (not live) (> (float-time) deadline))
       (cancel-timer timer)
+      (remhash chirp-web--login-id chirp-web--callbacks)
       (setq chirp-web--login-timer nil)
       (when live (message "X sign-in timed out. Run M-x chirp-login to resume.")))
      (t
       (when (and reveal-state (not (cdr reveal-state))
                  (> (float-time) (car reveal-state)))
         (chirp-web--reveal-login widget reveal-state))
-      (xwidget-webkit-execute-script
-       widget chirp-web--login-script
+      (chirp-web--execute
+       widget chirp-web--login-id chirp-web--login-script
        (lambda (state)
          (when (eq timer chirp-web--login-timer)
            (cond
@@ -138,8 +159,11 @@ background and show the browser buffer only if X requires sign-in."
              (if interactive-p
                  "Sign in to X here. Chirp will open when the session is ready."
                "Connecting to X..."))
-    (when chirp-web--login-timer (cancel-timer chirp-web--login-timer))
+    (when chirp-web--login-timer
+      (cancel-timer chirp-web--login-timer)
+      (remhash chirp-web--login-id chirp-web--callbacks))
     (setq chirp-web--ready nil
+          chirp-web--login-id (cl-incf chirp-web--serial)
           chirp-web--login-timer (run-at-time 0.25 0.35 #'chirp-web--check-login
                                              callback (+ (float-time) 600) reveal-state))))
 
@@ -208,11 +232,12 @@ or session error.  The caller must validate URL against its API allowlist."
            (when timer
              (cancel-timer timer)
              (when poll-timer (cancel-timer poll-timer))
+             (remhash id chirp-web--callbacks)
              (setq timer nil)
              (funcall callback status body)))
          (start ()
-           (xwidget-webkit-execute-script
-            widget (concat chirp-web--fetch-script "(..." (json-serialize args :null-object nil) ")")
+           (chirp-web--execute
+            widget id (concat chirp-web--fetch-script "(..." (json-serialize args :null-object nil) ")")
             (lambda (started)
               (when timer
                 (pcase started
@@ -227,8 +252,8 @@ or session error.  The caller must validate URL against its API allowlist."
              (finish 0 "X browser session changed")))
          (check ()
            (if (xwidget-live-p widget)
-               (xwidget-webkit-execute-script
-                widget poll
+               (chirp-web--execute
+                widget id poll
                 (lambda (value)
                   (when timer
                     (cond
