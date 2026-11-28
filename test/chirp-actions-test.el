@@ -49,13 +49,13 @@ Return a list of (compose source foreign)."
                (chirp-test--make-compose-buffer "hello @em")))
     (let ((request-count 0))
       (unwind-protect
-          (cl-letf (((symbol-function 'chirp-backend-search-users-sync)
-                     (lambda (query &optional max-results)
+          (cl-letf (((symbol-function 'run-at-time) (lambda (_secs _repeat fn &rest args) (apply fn args)))
+                    ((symbol-function 'chirp-backend-search-users)
+                     (lambda (query ok _fail &optional max-results)
                        (setq request-count (1+ request-count))
                        (should (equal query "em"))
                        (should-not max-results)
-                       '((("screenName" . "emacs"))
-                         (("screenName" . "emacslife"))))))
+                       (funcall ok '((:handle "emacs") (:handle "emacslife")) nil))))
             (with-current-buffer compose
               (goto-char (marker-position chirp-compose-body-end-marker))
               (let ((point-before (point))
@@ -63,7 +63,7 @@ Return a list of (compose source foreign)."
                 (should (equal (buffer-substring-no-properties
                                 (nth 0 completion) (nth 1 completion))
                                "em"))
-                (should (equal (nth 2 completion)
+                (should (equal (all-completions "em" (nth 2 completion))
                                '("emacs" "emacslife")))
                 (should (= (point) point-before)))
               (chirp-compose-mention-completion-at-point)
@@ -72,6 +72,36 @@ Return a list of (compose source foreign)."
           (kill-buffer compose))
         (when (buffer-live-p source)
           (kill-buffer source))))))
+
+(ert-deftest chirp-compose-mention-delivers-to-the-existing-completion-table ()
+  (pcase-let ((`(,draft . ,source) (chirp-test--make-compose-buffer "@em")))
+    (unwind-protect
+        (save-window-excursion
+          (switch-to-buffer draft)
+          (goto-char chirp-compose-body-end-marker)
+          (let (timer callback)
+            (cl-letf (((symbol-function 'run-at-time)
+                       (lambda (_delay _repeat fn &rest args) (setq timer (lambda () (apply fn args)))))
+                      ((symbol-function 'chirp-backend-search-users)
+                       (lambda (_query ok _err) (setq callback ok)))
+                      ((symbol-function 'completion-help-at-point)
+                       (lambda () (ert-fail "Background lookup opened a completion window"))))
+              (let* ((capf (run-hook-with-args-until-success 'completion-at-point-functions))
+                     (table (nth 2 capf)))
+                (should-not (all-completions "em" table))
+                (funcall timer)
+                (funcall callback '((:handle "emacs" :name "GNU Emacs")) nil)
+                (should (equal (all-completions "em" table) '("emacs")))
+                (should (equal (funcall (plist-get (nthcdr 3 capf) :annotation-function) "emacs")
+                               "  GNU Emacs"))
+                (should (equal (chirp-compose--current-body) "@em"))
+                (insert "a")
+                (let ((next (run-hook-with-args-until-success 'completion-at-point-functions)))
+                  (should (equal (all-completions "ema" (nth 2 next)) '("emacs"))))
+                (call-interactively (key-binding (kbd "M-TAB")))
+                (should (equal (chirp-compose--current-body) "@emacs"))))))
+      (kill-buffer draft)
+      (kill-buffer source))))
 
 (ert-deftest chirp-compose-does-not-complete-email-addresses ()
   "An @ inside an email address should not start user completion."
@@ -86,34 +116,21 @@ Return a list of (compose source foreign)."
       (when (buffer-live-p source)
         (kill-buffer source)))))
 
-(ert-deftest chirp-compose-send-closes-buffer-immediately ()
-  "Sending should close the compose buffer before the backend replies."
+(ert-deftest chirp-compose-send-retains-draft-until-confirmed ()
+  "Keep the pending draft until the backend replies."
   (pcase-let ((`(,compose . ,source)
                (chirp-test--make-compose-buffer "hello world")))
     (let (captured-args)
       (unwind-protect
           (progn
-            (cl-letf (((symbol-function 'chirp-actions--perform)
-                       (lambda (args _on-success &optional _on-error)
-                         (setq captured-args args))))
+            (cl-letf (((symbol-function 'chirp-backend-compose)
+                       (lambda (&rest args)
+                         (setq captured-args (list (plist-get args :kind) (plist-get args :target-id) (plist-get args :text))))))
               (with-current-buffer compose
                 (chirp-compose-send)))
-            (should (equal captured-args '("post" "hello world")))
-            (should-not (buffer-live-p compose)))
-        (when (buffer-live-p compose)
-          (kill-buffer compose))
-        (when (buffer-live-p source)
-          (kill-buffer source))))))
-
-(ert-deftest chirp-compose-command-args-preserves-long-form-text ()
-  "Long-form drafts should reach twitter-cli without truncation."
-  (let ((body (make-string 281 ?x)))
-    (pcase-let ((`(,compose . ,source)
-                 (chirp-test--make-compose-buffer body)))
-      (unwind-protect
-          (with-current-buffer compose
-            (should (equal (chirp-compose--command-args)
-                           (list "post" body))))
+            (should (equal captured-args '(post nil "hello world")))
+            (should (buffer-live-p compose))
+            (should (buffer-local-value 'chirp-compose-sending compose)))
         (when (buffer-live-p compose)
           (kill-buffer compose))
         (when (buffer-live-p source)
@@ -132,9 +149,9 @@ Return a list of (compose source foreign)."
             (with-current-buffer compose
               (setq-local chirp-compose-attachments (list temp-file))
               (setq-local chirp-compose-temp-attachments (list temp-file)))
-            (cl-letf (((symbol-function 'chirp-actions--perform)
-                       (lambda (_args on-success &optional _on-error)
-                         (setq success-callback on-success))))
+            (cl-letf (((symbol-function 'chirp-backend-compose)
+                       (lambda (&rest args)
+                         (setq success-callback (plist-get args :callback)))))
               (with-current-buffer compose
                 (chirp-compose-send)))
             (should (functionp success-callback))
@@ -148,6 +165,27 @@ Return a list of (compose source foreign)."
         (when (file-exists-p temp-file)
           (delete-file temp-file))))))
 
+(ert-deftest chirp-compose-failure-restores-body-and-attachment ()
+  "A failed submission leaves the same editable draft and its temporary file."
+  (pcase-let* ((`(,draft . ,source) (chirp-test--make-compose-buffer "Keep this"))
+               (file (make-temp-file "chirp-draft-"))
+               (fail nil))
+    (unwind-protect
+        (with-current-buffer draft
+          (setq chirp-compose-attachments (list file)
+                chirp-compose-temp-attachments (list file))
+          (cl-letf (((symbol-function 'chirp-backend-compose)
+                     (lambda (&rest args) (setq fail (plist-get args :errback)))))
+            (chirp-compose-send))
+          (funcall fail "Connection interrupted")
+          (should-not chirp-compose-sending)
+          (should-not buffer-read-only)
+          (should (equal (chirp-compose--body-text) "Keep this"))
+          (should (file-exists-p file)))
+      (kill-buffer draft)
+      (kill-buffer source)
+      (when (file-exists-p file) (delete-file file)))))
+
 (ert-deftest chirp-compose-send-rejects-duplicate-submit ()
   "Sending should reject a second submit while a draft is marked in flight."
   (pcase-let ((`(,compose . ,source)
@@ -155,7 +193,7 @@ Return a list of (compose source foreign)."
     (let ((perform-count 0))
       (unwind-protect
           (progn
-            (cl-letf (((symbol-function 'chirp-actions--perform)
+            (cl-letf (((symbol-function 'chirp-backend-compose)
                        (lambda (&rest _args)
                          (setq perform-count (1+ perform-count)))))
               (with-current-buffer compose
@@ -307,15 +345,20 @@ Return a list of (compose source foreign)."
     (let (captured-args)
       (unwind-protect
           (progn
-            (cl-letf (((symbol-function 'chirp-actions--perform)
-                       (lambda (args _on-success &optional _on-error)
-                         (setq captured-args args))))
+            (cl-letf (((symbol-function 'chirp-backend-compose)
+                       (lambda (&rest args)
+                         (setq captured-args
+                               (list (plist-get args :kind)
+                                     (plist-get args :target-id)
+                                     (plist-get args :target-handle)
+                                     (plist-get args :text))))))
               (with-current-buffer compose
                 (goto-char (marker-position chirp-compose-body-start-marker))
                 (insert "hello quote")
                 (chirp-compose-send)))
-            (should (equal captured-args '("quote" "123" "hello quote")))
-            (should-not (buffer-live-p compose))
+            (should (equal captured-args '(quote "123" "alice" "hello quote")))
+            (should (buffer-live-p compose))
+            (should (buffer-local-value 'chirp-compose-sending compose))
             (should (eq (window-buffer (selected-window)) source)))
         (dolist (buffer (list compose source foreign))
           (when (buffer-live-p buffer)
@@ -347,12 +390,13 @@ Return a list of (compose source foreign)."
               (setq-local chirp-compose-body-start-marker (copy-marker (point-min)))
               (insert "hello world")
               (setq-local chirp-compose-body-end-marker (copy-marker (point-max) t)))
-            (cl-letf (((symbol-function 'chirp-actions--perform)
-                       (lambda (_args _on-success &optional _on-error)
+            (cl-letf (((symbol-function 'chirp-backend-compose)
+                       (lambda (&rest _args)
                          nil)))
               (with-current-buffer compose
                 (chirp-compose-send)))
-            (should-not (buffer-live-p compose))
+            (should (buffer-live-p compose))
+            (should (buffer-local-value 'chirp-compose-sending compose))
             (should (= (length (window-list nil 'no-minibuf)) 1))
             (should (eq (window-buffer (selected-window)) source))))
       (when (buffer-live-p compose)
@@ -445,9 +489,7 @@ Return a list of (compose source foreign)."
                           (point) 'chirp-tweet-action nil (point-max))
                          (point-max))))
                   (push (cons action position) positions)))
-              (cl-letf (((symbol-function 'event-start)
-                         (lambda (_event) event-position))
-                        ((symbol-function 'chirp-reply-at-point)
+              (cl-letf (((symbol-function 'chirp-reply-at-point)
                          (lambda ()
                            (setq dispatched
                                  (list 'reply (chirp-entry-id-at-point)))))
@@ -463,6 +505,15 @@ Return a list of (compose source foreign)."
                          (lambda ()
                            (setq dispatched
                                  (list 'bookmark (chirp-entry-id-at-point))))))
+                (goto-char (point-min))
+                (search-forward "Clicked tweet")
+                (let ((body (1- (point))))
+                  (setq event-position (list (selected-window) body '(0 . 0) nil))
+                  (goto-char (point-min))
+                  (cl-letf (((symbol-function 'chirp-open-at-point)
+                             (lambda () (ert-fail "Plain text opened a view"))))
+                    (funcall (key-binding [mouse-1]) (list 'mouse-1 event-position)))
+                  (should (= (point) body)))
                 (dolist (action '(reply retweet like bookmark))
                   (setq event-position
                         (list (selected-window)
@@ -475,11 +526,7 @@ Return a list of (compose source foreign)."
                               nil
                               nil
                               nil))
-                  (let* ((position (posn-point event-position))
-                         (keymap (get-text-property position 'keymap)))
-                    (should (eq (lookup-key keymap [mouse-1])
-                                #'chirp--dispatch-mouse-action))
-                    (funcall (lookup-key keymap [mouse-1]) '(mouse-1)))
+                  (funcall (key-binding [mouse-1]) (list 'mouse-1 event-position))
                   (should (equal dispatched (list action "clicked"))))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -578,36 +625,26 @@ Return a list of (compose source foreign)."
 
 (ert-deftest chirp-dispatch-uses-toggle-actions-for-stateful-tweet-actions ()
   "The Chirp transient should expose only toggle entries for like/RT/bookmark."
-  (let ((home-suffix (transient-get-suffix 'chirp-dispatch "h"))
-        (following-suffix (transient-get-suffix 'chirp-dispatch "f"))
-        (me-suffix (transient-get-suffix 'chirp-dispatch "u"))
-        (bookmarks-suffix (transient-get-suffix 'chirp-dispatch "b"))
-        (liked-suffix (transient-get-suffix 'chirp-dispatch "L"))
-        (list-suffix (transient-get-suffix 'chirp-dispatch "s"))
-        (follow-suffix (transient-get-suffix 'chirp-dispatch "+"))
-        (unfollow-suffix (transient-get-suffix 'chirp-dispatch "-"))
-        (retweet-suffix (transient-get-suffix 'chirp-dispatch "R"))
-        (like-suffix (transient-get-suffix 'chirp-dispatch "l"))
-        (bookmark-suffix (transient-get-suffix 'chirp-dispatch "B"))
-        (translate-suffix (transient-get-suffix 'chirp-dispatch "T"))
-        (copy-suffix (transient-get-suffix 'chirp-dispatch "y")))
-    (should (eq (plist-get (cdr home-suffix) :command) 'chirp-timeline-open-home))
-    (should (eq (plist-get (cdr following-suffix) :command) 'chirp-timeline-open-following))
-    (should (eq (plist-get (cdr me-suffix) :command) 'chirp-me))
-    (should (eq (plist-get (cdr bookmarks-suffix) :command) 'chirp-timeline-open-bookmarks))
-    (should (eq (plist-get (cdr liked-suffix) :command) 'chirp-timeline-open-likes))
-    (should (eq (plist-get (cdr list-suffix) :command) 'chirp-timeline-open-list))
-    (should (eq (plist-get (cdr follow-suffix) :command) 'chirp-follow-user-at-point))
-    (should (eq (plist-get (cdr unfollow-suffix) :command) 'chirp-unfollow-user-at-point))
-    (should (eq (plist-get (cdr retweet-suffix) :command) 'chirp-toggle-retweet-at-point))
-    (should (eq (plist-get (cdr like-suffix) :command) 'chirp-toggle-like-at-point))
-    (should (eq (plist-get (cdr bookmark-suffix) :command) 'chirp-toggle-bookmark-at-point))
-    (should (eq (plist-get (cdr translate-suffix) :command) 'chirp-translate-at-point))
-    (should (eq (plist-get (cdr copy-suffix) :command) 'chirp-copy-fixupx-url-at-point))
-    (should-error (transient-get-suffix 'chirp-dispatch "U"))))
+  (dolist (binding '(("h" . chirp)
+                     ("f" . chirp-following)
+                     ("u" . chirp-me)
+                     ("b" . chirp-bookmarks)
+                     ("L" . chirp-likes)
+                     ("s" . chirp-list)
+                     ("+" . chirp-follow-user-at-point)
+                     ("-" . chirp-unfollow-user-at-point)
+                     ("R" . chirp-toggle-retweet-at-point)
+                     ("l" . chirp-toggle-like-at-point)
+                     ("B" . chirp-toggle-bookmark-at-point)
+                     ("T" . chirp-translate-at-point)
+                     ("y" . chirp-copy-url-at-point)))
+    (let* ((suffix (transient-get-suffix 'chirp-dispatch (car binding)))
+           (properties (if (integerp (car suffix)) (nth 2 suffix) (cdr suffix))))
+      (should (eq (plist-get properties :command) (cdr binding)))))
+  (should-error (transient-get-suffix 'chirp-dispatch "U")))
 
-(ert-deftest chirp-copy-fixupx-url-at-point-copies-rewritten-url ()
-  "Copy action should rewrite tweet URLs from x.com to fixupx.com."
+(ert-deftest chirp-copy-url-at-point-copies-canonical-url ()
+  "Copy action should copy the canonical x.com URL of the tweet at point."
   (let (captured-url last-message)
     (chirp-test--with-tweet-buffer
      '(:kind tweet
@@ -621,10 +658,190 @@ Return a list of (compose source foreign)."
                  ((symbol-function 'message)
                   (lambda (format-string &rest args)
                     (setq last-message (apply #'format format-string args)))))
-         (chirp-copy-fixupx-url-at-point)
-         (should (equal captured-url "https://fixupx.com/alice/status/123"))
+         (chirp-copy-url-at-point)
+         (should (equal captured-url "https://x.com/alice/status/123"))
          (should (equal last-message
-                        "Copied https://fixupx.com/alice/status/123")))))))
+                        "Copied https://x.com/alice/status/123")))))))
+
+(ert-deftest chirp-compose-reuses-count-until-draft-changes ()
+  (pcase-let ((`(,draft . ,source) (chirp-test--make-compose-buffer "Hi")))
+    (unwind-protect
+        (with-current-buffer draft
+          (let ((calls 0) (chirp-compose--count-cache nil))
+            (cl-letf (((symbol-function 'chirp-backend-tweet-weighted-length)
+                       (lambda (text) (cl-incf calls) (length text))))
+              (should (equal (chirp-compose--count-label) " 2/280"))
+              (goto-char chirp-compose-body-end-marker)
+              (chirp-compose--count-label)
+              (should (= calls 1))
+              (insert "!")
+              (should (equal (chirp-compose--count-label) " 3/280"))
+              (should (= calls 2)))))
+      (kill-buffer draft)
+      (kill-buffer source))))
+
+(ert-deftest chirp-toggle-like-previews-and-settles-across-views ()
+  (dolist (success '(nil t))
+    (let ((chirp-pending-tweet-states (make-hash-table :test #'equal))
+          (chirp-tweet-state-overrides (make-hash-table :test #'equal))
+          (raw '((id . "321") (text . "Example") (metrics (likes . 10))))
+          done fail)
+      (cl-labels ((show (buffer)
+                    (let ((tweet (chirp-normalize-tweet raw)))
+                      (with-current-buffer buffer
+                        (setq-local chirp--rerender-function
+                                    (lambda ()
+                                      (let ((inhibit-read-only t))
+                                        (erase-buffer)
+                                        (chirp-render-insert-tweet tweet)
+                                        (goto-char (point-min)))))
+                        (funcall chirp--rerender-function))))
+                  (likes (buffer)
+                    (with-current-buffer buffer
+                      (let ((start (text-property-any (point-min) (point-max) 'chirp-tweet-action 'like)))
+                        (buffer-substring-no-properties
+                         start (next-single-property-change start 'chirp-tweet-action))))))
+        (cl-letf (((symbol-function 'chirp-actions--perform)
+                   (lambda (_args ok err) (setq done ok fail err)))
+                  ((symbol-function 'chirp-request-rerender)
+                   (lambda (buf) (with-current-buffer buf (funcall chirp--rerender-function)))))
+          (with-temp-buffer
+            (chirp-view-mode)
+            (let ((first (current-buffer)))
+              (show first)
+              (chirp-toggle-like-at-point)
+              (should (string-suffix-p " 11" (likes first)))
+              (with-temp-buffer
+                (chirp-view-mode)
+                (show (current-buffer))
+                (should (string-suffix-p " 11" (likes (current-buffer))))
+                (if success (funcall done nil nil) (funcall fail "Rejected"))
+                (dolist (buf (list first (current-buffer)))
+                  (should (string-suffix-p (if success " 11" " 10") (likes buf)))
+                  (with-current-buffer buf
+                    (should (eq (plist-get (chirp-entry-at-point) :liked-p) success))))))))))))
+
+(ert-deftest chirp-view-mode-binds-direct-action-shortcuts ()
+  "High-frequency actions should be directly bound in `chirp-view-mode-map'."
+  (dolist (binding '(("c" . chirp-compose-post)
+                     ("r" . chirp-reply-at-point)
+                     ("Q" . chirp-quote-at-point)
+                     ("R" . chirp-toggle-retweet-at-point)
+                     ("l" . chirp-toggle-like-at-point)
+                     ("B" . chirp-toggle-bookmark-at-point)
+                     ("T" . chirp-translate-at-point)
+                     ("y" . chirp-copy-url-at-point)
+                     ("i" . chirp-notifications)))
+    (should (eq (lookup-key chirp-view-mode-map (kbd (car binding)))
+                (cdr binding)))))
+
+(ert-deftest chirp-compose-quote-places-card-below-body ()
+  "Quote buffers should leave one editable blank line above the quoted card."
+  (pcase-let* ((`(,compose ,source ,foreign)
+                (chirp-test--open-compose-from-foreign-current-buffer
+                 'quote
+                 (list :kind 'tweet
+                       :id "123"
+                       :author-name "Alice"
+                       :author-handle "alice"
+                       :text "First line\nSecond line"
+                       :url "https://x.com/alice/status/123"
+                       :media '((:type "photo") (:type "photo"))))))
+    (unwind-protect
+        (with-current-buffer compose
+          (should (= (point) (point-min)))
+          (should (= (marker-position chirp-compose-body-start-marker) (point-min)))
+          (should (string-prefix-p "\n\n│ Alice @alice · 2 photos\n" (buffer-string)))
+          (should (string-match-p "C-c C-c" (chirp-compose--header-line)))
+          (should (string-match-p "│ First line\n│ Second line" (buffer-string)))
+          (should-not (string-match-p "https://x.com/alice/status/123" (buffer-string)))
+          (should-not (string-match-p "No images attached" (buffer-string)))
+          ;; Leaving line 1 blank and typing on the blank line above the card should work.
+          (forward-line 1)
+          (insert "On line 2")
+          (should (equal (chirp-compose--body-text) "On line 2"))
+          (should (string-prefix-p " 9/280" (chirp-compose--count-label)))
+          (goto-char (marker-position chirp-compose-body-end-marker))
+          (insert "!")
+          (should (equal (chirp-compose--body-text) "On line 2!")))
+      (dolist (buffer (list compose source foreign))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest chirp-compose-reply-shows-parent-card-above-editable-body ()
+  "Reply buffers should render the parent tweet card above the editable body."
+  (pcase-let* ((`(,compose ,source ,foreign)
+                (chirp-test--open-compose-from-foreign-current-buffer
+                 'reply
+                 (list :kind 'tweet
+                       :id "456"
+                       :author-name "Bob"
+                       :author-handle "bob"
+                       :text "Hello thread"
+                       :url "https://x.com/bob/status/456"))))
+    (unwind-protect
+        (with-current-buffer compose
+          (let ((body-start (marker-position chirp-compose-body-start-marker)))
+            (should (> body-start (point-min)))
+            (let ((header (buffer-substring-no-properties (point-min) body-start)))
+              (should (string-match-p "│ Bob @bob" header))
+              (should (string-match-p "↳ Replying to @bob" header)))
+            (insert "Agreed")
+            (should (equal (chirp-compose--current-body) "Agreed"))))
+      (dolist (buffer (list compose source foreign))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest chirp-compose-attachments-section-is-hidden-when-empty ()
+  "Compose buffers should show the Images section only while images are attached."
+  (pcase-let ((`(,compose . ,source) (chirp-test--make-compose-buffer ""))
+              (file (make-temp-file "chirp-attach-" nil ".png")))
+    (with-temp-file file (insert "png"))
+    (unwind-protect
+        (with-current-buffer compose
+          (chirp-compose--refresh-display)
+          (should-not (string-match-p "Images" (buffer-string)))
+          (chirp-compose--add-attachment file t)
+          (should (string-match-p "Images (1/4)" (buffer-string)))
+          (should (string-match-p "Clipboard image (PNG)" (buffer-string)))
+          (chirp-compose-remove-image)
+          (should-not (string-match-p "Images" (buffer-string))))
+      (when (buffer-live-p compose) (kill-buffer compose))
+      (when (buffer-live-p source) (kill-buffer source))
+      (when (file-exists-p file) (delete-file file)))))
+
+(ert-deftest chirp-compose-cancel-confirms-only-for-nonempty-drafts ()
+  "Cancelling an empty draft should not prompt, while non-empty drafts should confirm."
+  (pcase-let ((`(,empty . ,source-a) (chirp-test--make-compose-buffer "   "))
+              (`(,filled . ,source-b) (chirp-test--make-compose-buffer "Unsent thought")))
+    (let ((prompted nil))
+      (unwind-protect
+          (progn
+            (cl-letf (((symbol-function 'yes-or-no-p)
+                       (lambda (_prompt) (setq prompted t) nil)))
+              (with-current-buffer empty
+                (chirp-compose-cancel))
+              (should-not prompted)
+              (should-not (buffer-live-p empty))
+              (with-current-buffer filled
+                (chirp-compose-cancel))
+              (should prompted)
+              (should (buffer-live-p filled)))
+            (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_prompt) t)))
+              (with-current-buffer filled
+                (chirp-compose-cancel))
+              (should-not (buffer-live-p filled))))
+        (dolist (buf (list empty source-a filled source-b))
+          (when (buffer-live-p buf) (kill-buffer buf)))))))
+
+(ert-deftest chirp-compose-clipboard-backend-falls-back-to-osascript-on-macos ()
+  "macOS image paste should fall back to built-in osascript when pngpaste is missing."
+  (let ((system-type 'darwin))
+    (cl-letf (((symbol-function 'executable-find) (lambda (_name) nil)))
+      (let ((backend (chirp-compose--clipboard-image-backend)))
+        (should (eq (plist-get backend :kind) 'filearg))
+        (should (equal (plist-get backend :program) "/usr/bin/osascript"))
+        (should (equal (plist-get backend :extension) ".png"))))))
 
 (provide 'chirp-actions-test)
 

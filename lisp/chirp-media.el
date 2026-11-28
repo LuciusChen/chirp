@@ -36,7 +36,7 @@
   :group 'chirp)
 
 (defcustom chirp-media-thumbnail-size 128
-  "Maximum pixel size for timeline and thread thumbnails."
+  "Target pixel height for timeline and thread thumbnails."
   :type 'integer
   :group 'chirp)
 
@@ -226,6 +226,8 @@ When nil, Chirp falls back to a text placeholder for video-like media."
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "n") #'chirp-media-next)
     (define-key map (kbd "p") #'chirp-media-previous)
+    (define-key map (kbd "c") #'chirp-media-copy-image)
+    (define-key map (kbd "w") #'chirp-media-copy-image)
     (define-key map (kbd "D") #'chirp-media-download-at-point)
     (define-key map (kbd "v") #'chirp-media-play)
     (define-key map (kbd "o") #'chirp-media-browse)
@@ -241,6 +243,8 @@ When nil, Chirp falls back to a text placeholder for video-like media."
     (set-keymap-parent map image-mode-map)
     (define-key map (kbd "n") #'chirp-media-next)
     (define-key map (kbd "p") #'chirp-media-previous)
+    (define-key map (kbd "c") #'chirp-media-copy-image)
+    (define-key map (kbd "w") #'chirp-media-copy-image)
     (define-key map (kbd "D") #'chirp-media-download-at-point)
     (define-key map (kbd "v") #'chirp-media-play)
     (define-key map (kbd "o") #'chirp-media-browse)
@@ -394,7 +398,7 @@ Use FALLBACK-EXT when URL has no recognizable extension."
   (let ((callbacks (prog1 (gethash url chirp-media--link-card-pending)
                      (remhash url chirp-media--link-card-pending))))
     (setq chirp-media--link-card-active (max 0 (1- chirp-media--link-card-active)))
-    (puthash url (or card chirp-media--link-card-fetch-failed)
+    (chirp-cache-put url (or card chirp-media--link-card-fetch-failed)
              chirp-media-link-card-cache)
     (dolist (callback callbacks)
       (when callback
@@ -478,25 +482,24 @@ Use FALLBACK-EXT when URL has no recognizable extension."
     (let* ((job (pop chirp-media--prefetch-queue))
            (url (plist-get job :url))
            (path (plist-get job :path))
+           (partial (make-temp-file (concat path ".part-")))
            (buffer (generate-new-buffer " *chirp-prefetch*")))
       (setq chirp-media--prefetch-active (1+ chirp-media--prefetch-active))
       (make-process
        :name "chirp-prefetch"
        :buffer buffer
        :command (list chirp-media-prefetch-command
-                      "-L" "-f" "-sS"
-                      "-o" path
+                      "-L" "-f" "-sS" "--max-time" "30"
+                      "-o" partial
                       url)
        :noquery t
        :sentinel
        (lambda (process _event)
          (when (memq (process-status process) '(exit signal))
            (let ((ok (and (zerop (process-exit-status process))
-                          (file-exists-p path))))
-             (unless ok
-               (ignore-errors
-                 (when (file-exists-p path)
-                   (delete-file path))))
+                          (file-exists-p partial))))
+             (if ok (rename-file partial path t)
+               (when (file-exists-p partial) (delete-file partial)))
              (when (buffer-live-p (process-buffer process))
                (kill-buffer (process-buffer process)))
              (chirp-media--prefetch-finish path ok))))))))
@@ -547,19 +550,17 @@ Use FALLBACK-EXT when URL has no recognizable extension."
 
 (defun chirp-media--extract-meta-content (html key)
   "Return content for HTML meta KEY, or nil."
-  (let ((case-fold-search t)
-        (quoted-key (regexp-quote key)))
-    (chirp-media--normalize-link-card-field
-     (or (and (string-match
-               (format "<meta[^>]+\\(?:property\\|name\\|itemprop\\)=['\"]%s['\"][^>]+content=['\"]\\([^\"']+\\)['\"]"
-                       quoted-key)
-               html)
-              (match-string 1 html))
-         (and (string-match
-               (format "<meta[^>]+content=['\"]\\([^\"']+\\)['\"][^>]+\\(?:property\\|name\\|itemprop\\)=['\"]%s['\"]"
-                       quoted-key)
-               html)
-              (match-string 1 html))))))
+  (let ((case-fold-search t) (pos 0))
+    (catch 'value
+      (while (string-match "<meta\\b[^>]*>" html pos)
+        (let ((tag (match-string 0 html)))
+          (setq pos (match-end 0))
+          (when (and (string-match-p
+                      (format "\\b\\(?:property\\|name\\|itemprop\\)\\s-*=\\s-*['\"]%s['\"]"
+                              (regexp-quote key)) tag)
+                     (string-match "\\bcontent\\s-*=\\s-*\\(?:\"\\([^\"]*\\)\"\\|'\\([^']*\\)'\\)" tag))
+            (throw 'value (chirp-media--normalize-link-card-field
+                           (or (match-string 1 tag) (match-string 2 tag))))))))))
 
 (defun chirp-media--extract-html-title (html)
   "Return the HTML <title> from HTML, or nil."
@@ -627,7 +628,7 @@ Use FALLBACK-EXT when URL has no recognizable extension."
       (cond
        ((eq cached chirp-media--link-card-fetch-failed)
         nil)
-       ((listp cached)
+       ((consp cached)
         (when-let* ((image-url (plist-get cached :image-url)))
           (when chirp-show-tweet-media
             (chirp-media-prefetch-file image-url "media" "jpg"
@@ -807,13 +808,26 @@ When FALLBACK is non-nil, call it if remote extraction fails."
               image)))
       (error nil))))
 
-(defun chirp-media--scaled-dimensions (width height max-width max-height)
-  "Return scaled WIDTH and HEIGHT constrained by MAX-WIDTH and MAX-HEIGHT."
-  (let* ((scale (min 1.0
-                     (/ (float max-width) (max 1.0 width))
-                     (/ (float max-height) (max 1.0 height)))))
-    (cons (max 1 (round (* width scale)))
-          (max 1 (round (* height scale))))))
+(defconst chirp-media--thumbnail-min-aspect 0.45
+  "Minimum width/height ratio for uniform-height thumbnails before center-crop.")
+
+(defconst chirp-media--thumbnail-max-aspect 2.5
+  "Maximum width/height ratio for uniform-height thumbnails before center-crop.")
+
+(defun chirp-media--thumbnail-dimensions (width height target-height)
+  "Return (TARGET-WIDTH . TARGET-HEIGHT) scaling WIDTH x HEIGHT to TARGET-HEIGHT.
+
+Preserve aspect ratio for normal images while clamping extreme aspect ratios to
+`[chirp-media--thumbnail-min-aspect, chirp-media--thumbnail-max-aspect]' so
+every thumbnail in a row shares the same height."
+  (let* ((w (max 1.0 (float width)))
+         (h (max 1.0 (float height)))
+         (target-h (max 1 target-height))
+         (min-w (max 1 (round (* target-h chirp-media--thumbnail-min-aspect))))
+         (max-w (max min-w (round (* target-h chirp-media--thumbnail-max-aspect))))
+         (scaled-w (round (* target-h (/ w h)))))
+    (cons (max min-w (min max-w scaled-w))
+          target-h)))
 
 (defun chirp-media--mime-type (file)
   "Return a MIME type for FILE."
@@ -850,56 +864,89 @@ When FALLBACK is non-nil, call it if remote extraction fails."
           (svg-image svg :ascent 'center))
       (error nil))))
 
-(defun chirp-media--photo-thumbnail-image (file max-width max-height)
-  "Render FILE within MAX-WIDTH and MAX-HEIGHT without runtime scaling."
+(defun chirp-media--rounded-thumbnail-svg (file target-width target-height)
+  "Return a rounded SVG embedding FILE at TARGET-WIDTH by TARGET-HEIGHT."
+  (let* ((svg (svg-create target-width target-height))
+         (radius (min 6.0 (/ (min target-width target-height) 4.0)))
+         (dark-p (eq (frame-parameter nil 'background-mode) 'dark))
+         (stroke (if dark-p "rgba(255,255,255,0.14)" "rgba(0,0,0,0.12)"))
+         (clip (svg-clip-path svg :id "thumb-clip")))
+    (dom-append-child
+     clip
+     (dom-node 'rect
+               `((x . 0)
+                 (y . 0)
+                 (width . ,target-width)
+                 (height . ,target-height)
+                 (rx . ,radius)
+                 (ry . ,radius))))
+    (svg-embed svg
+               file
+               (chirp-media--mime-type file)
+               nil
+               :x 0
+               :y 0
+               :width target-width
+               :height target-height
+               :preserveAspectRatio "xMidYMid slice"
+               :clip-path "url(#thumb-clip)")
+    (dom-append-child
+     svg
+     (dom-node 'rect
+               `((x . 0.5)
+                 (y . 0.5)
+                 (width . ,(max 1 (- target-width 1)))
+                 (height . ,(max 1 (- target-height 1)))
+                 (rx . ,radius)
+                 (ry . ,radius)
+                 (fill . "none")
+                 (stroke . ,stroke)
+                 (stroke-width . "1"))))
+    svg))
+
+(defun chirp-media--photo-thumbnail-image (file target-height)
+  "Render FILE as a uniform-height SVG thumbnail of TARGET-HEIGHT pixels."
   (when (and file
              (display-images-p))
     (condition-case nil
         (let ((base-image (create-image file)))
           (when base-image
             (pcase-let* ((`(,width . ,height) (image-size base-image t))
-                         (`(,target-width . ,target-height)
-                          (chirp-media--scaled-dimensions
-                           width height max-width max-height))
-                         (svg (svg-create target-width target-height)))
-              (svg-embed svg
-                         file
-                         (chirp-media--mime-type file)
-                         nil
-                         :x 0
-                         :y 0
-                         :width target-width
-                         :height target-height
-                         :preserveAspectRatio "xMidYMid meet")
+                         (`(,target-width . ,resolved-height)
+                          (chirp-media--thumbnail-dimensions
+                           width height target-height))
+                         (svg (chirp-media--rounded-thumbnail-svg
+                               file target-width resolved-height)))
               (svg-image svg :ascent 'center))))
       (error nil))))
 
-(defun chirp-media--video-badged-thumbnail-image (file size)
-  "Return FILE rendered as a SIZE thumbnail with a play badge."
+(defun chirp-media--video-badged-thumbnail-image (file target-height)
+  "Return FILE rendered as a TARGET-HEIGHT thumbnail with a play badge."
   (when (and file
              (display-images-p))
     (condition-case nil
-        (let* ((svg (svg-create size size))
-               (center (/ size 2.0))
-               (radius (max 10.0 (/ size 6.0)))
-               (left (- center (* radius 0.35)))
-               (top (- center (* radius 0.55)))
-               (bottom (+ center (* radius 0.55)))
-               (right (+ center (* radius 0.55))))
-          (svg-embed svg
-                     file
-                     (chirp-media--mime-type file)
-                     nil
-                     :x 0
-                     :y 0
-                     :width size
-                     :height size
-                     :preserveAspectRatio "xMidYMid slice")
+        (let* ((base-image (ignore-errors (create-image file)))
+               (dims (if base-image
+                         (pcase-let ((`(,width . ,height) (image-size base-image t)))
+                           (chirp-media--thumbnail-dimensions
+                            width height target-height))
+                       (cons target-height target-height)))
+               (target-width (car dims))
+               (resolved-height (cdr dims))
+               (svg (chirp-media--rounded-thumbnail-svg
+                     file target-width resolved-height))
+               (cx (/ target-width 2.0))
+               (cy (/ resolved-height 2.0))
+               (radius (max 10.0 (/ (min target-width resolved-height) 6.0)))
+               (left (- cx (* radius 0.35)))
+               (top (- cy (* radius 0.55)))
+               (bottom (+ cy (* radius 0.55)))
+               (right (+ cx (* radius 0.55))))
           (dom-append-child
            svg
            (dom-node 'circle
-                     `((cx . ,center)
-                       (cy . ,center)
+                     `((cx . ,cx)
+                       (cy . ,cy)
                        (r . ,radius)
                        (fill . "rgba(0,0,0,0.5)")
                        (stroke . "rgba(255,255,255,0.85)")
@@ -910,7 +957,7 @@ When FALLBACK is non-nil, call it if remote extraction fails."
                      `((points . ,(format "%s,%s %s,%s %s,%s"
                                           left top
                                           left bottom
-                                          right center))
+                                          right cy))
                        (fill . "white"))))
           (svg-image svg :ascent 'center))
       (error nil))))
@@ -993,6 +1040,44 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
      chirp-media-thumbnail-size
      (string= (plist-get media :type) "animated_gif"))))
 
+(defun chirp-media-overflow-badge-image (count width height)
+  "Return a `+COUNT' overflow card SVG of WIDTH by HEIGHT pixels, or nil."
+  (when (and (> count 0)
+             (display-images-p))
+    (condition-case nil
+        (let* ((w (max 1 width))
+               (h (max 1 height))
+               (radius (min 6.0 (/ (min w h) 4.0)))
+               (dark-p (eq (frame-parameter nil 'background-mode) 'dark))
+               (bg (if dark-p "#27303a" "#e9eef3"))
+               (stroke (if dark-p "rgba(255,255,255,0.16)" "rgba(0,0,0,0.14)"))
+               (fg (if dark-p "#e6edf3" "#24292f"))
+               (font-size (max 11 (min 16 (round (/ (min w h) 3.0)))))
+               (svg (svg-create w h)))
+          (dom-append-child
+           svg
+           (dom-node 'rect
+                     `((x . 0.5)
+                       (y . 0.5)
+                       (width . ,(max 1 (1- w)))
+                       (height . ,(max 1 (1- h)))
+                       (rx . ,radius)
+                       (ry . ,radius)
+                       (fill . ,bg)
+                       (stroke . ,stroke)
+                       (stroke-width . "1"))))
+          (svg-text svg
+                    (format "+%d" count)
+                    :x (/ w 2.0)
+                    :y (+ (/ h 2.0) (* font-size 0.35))
+                    :text-anchor "middle"
+                    :font-size (number-to-string font-size)
+                    :font-family "sans-serif"
+                    :font-weight "600"
+                    :fill fg)
+          (svg-image svg :ascent 'center))
+      (error nil))))
+
 (defun chirp-media-avatar-image (url)
   "Return a small avatar image descriptor for URL."
   (when-let* ((file (if chirp-media-render-from-cache-only
@@ -1012,12 +1097,13 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
                         (chirp-media-local-file (plist-get media :url)
                                                 "media"
                                                 "jpg"))))
-      (or (chirp-media--photo-thumbnail-image file
-                                              chirp-media-thumbnail-size
-                                              chirp-media-thumbnail-size)
-          (chirp-media--scaled-image file
-                                     chirp-media-thumbnail-size
-                                     chirp-media-thumbnail-size))))
+      (let ((max-width (max 1 (round (* chirp-media-thumbnail-size
+                                        chirp-media--thumbnail-max-aspect)))))
+        (or (chirp-media--photo-thumbnail-image file
+                                                chirp-media-thumbnail-size)
+            (chirp-media--scaled-image file
+                                       max-width
+                                       chirp-media-thumbnail-size)))))
    ((chirp-media-video-like-p media)
     (when-let* ((file (if chirp-media-render-from-cache-only
                           (or (and-let* ((preview-url (plist-get media :preview-url)))
@@ -1028,11 +1114,13 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
                                 (and (file-exists-p thumbnail-file)
                                      thumbnail-file)))
                         (chirp-media-video-thumbnail-file media))))
-      (or (chirp-media--video-badged-thumbnail-image file
-                                                     chirp-media-thumbnail-size)
-          (chirp-media--scaled-image file
-                                     chirp-media-thumbnail-size
-                                     chirp-media-thumbnail-size))))))
+      (let ((max-width (max 1 (round (* chirp-media-thumbnail-size
+                                        chirp-media--thumbnail-max-aspect)))))
+        (or (chirp-media--video-badged-thumbnail-image file
+                                                       chirp-media-thumbnail-size)
+            (chirp-media--scaled-image file
+                                       max-width
+                                       chirp-media-thumbnail-size)))))))
 
 (defun chirp-media-view-image (media)
   "Return a large image descriptor for MEDIA."
@@ -1048,25 +1136,9 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
   (interactive)
   (if-let* ((media (or (chirp-media-at-point)
                        (nth chirp--media-index chirp--media-list)))
-            (url (plist-get media :url)))
+            (url (chirp-media-playback-url media)))
       (browse-url url)
     (user-error "No media URL available")))
-
-(defun chirp-media--highest-bitrate-variant-url (media)
-  "Return the highest bitrate variant URL for MEDIA, or nil."
-  (when-let* ((variants
-               (cl-remove-if-not
-                (lambda (variant)
-                  (let ((url (plist-get variant :url)))
-                    (and (stringp url)
-                         (not (string-empty-p url)))))
-                (copy-sequence (plist-get media :variants)))))
-    (let ((sorted
-           (sort variants
-                 (lambda (left right)
-                   (> (chirp-media--variant-bitrate left)
-                      (chirp-media--variant-bitrate right))))))
-      (plist-get (car sorted) :url))))
 
 (defun chirp-media-download-url (media)
   "Return the best download URL for MEDIA."
@@ -1074,8 +1146,8 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
     ("photo"
      (chirp-media--photo-original-url (plist-get media :url)))
     ((or "video" "animated_gif")
-     (or (chirp-media--highest-bitrate-variant-url media)
-         (plist-get media :url)))
+     (let ((chirp-video-playback-max-bitrate nil))
+       (chirp-media-playback-url media)))
     (_
      (plist-get media :url))))
 
@@ -1180,6 +1252,64 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
                      (format "Downloaded %s" (abbreviate-file-name target))
                    (format "Failed to download %s" (abbreviate-file-name target))))))))
 
+(defconst chirp-media--macos-copy-image-script
+  "ObjC.import('AppKit');
+function run(argv) {
+  var img = $.NSImage.alloc.initWithContentsOfFile(argv[0]);
+  if (!img || img.isNil()) { throw new Error('Could not load image'); }
+  var pb = $.NSPasteboard.generalPasteboard;
+  pb.clearContents;
+  if (!pb.writeObjects($.NSArray.arrayWithObject(img))) {
+    throw new Error('Could not write image to clipboard');
+  }
+}"
+  "JXA script used on macOS to copy an image file to the system clipboard.")
+
+(defun chirp-media--copy-image-file (file)
+  "Copy local image FILE to the system clipboard."
+  (let ((expanded (expand-file-name file))
+        program)
+    (unless (file-readable-p expanded)
+      (user-error "Image file is not readable: %s" expanded))
+    (cond
+     ((eq system-type 'darwin)
+      (let ((status (call-process "/usr/bin/osascript" nil nil nil
+                                  "-l" "JavaScript"
+                                  "-e" chirp-media--macos-copy-image-script
+                                  "--" expanded)))
+        (unless (and (numberp status) (zerop status))
+          (user-error "Failed to copy image to macOS clipboard"))))
+     ((setq program (and (getenv "WAYLAND_DISPLAY") (executable-find "wl-copy")))
+      (let ((status (call-process program expanded nil nil
+                                  "--type" (chirp-media--mime-type expanded))))
+        (unless (and (numberp status) (zerop status))
+          (user-error "Failed to copy image with wl-copy"))))
+     ((setq program (and (getenv "DISPLAY") (executable-find "xclip")))
+      (let ((status (call-process program nil nil nil
+                                  "-selection" "clipboard"
+                                  "-t" (chirp-media--mime-type expanded)
+                                  "-i" expanded)))
+        (unless (and (numberp status) (zerop status))
+          (user-error "Failed to copy image with xclip"))))
+     (t
+      (user-error "No supported image clipboard tool found (requires macOS, wl-copy, or xclip)")))))
+
+(defun chirp-media-copy-image ()
+  "Copy the current photo media item to the system clipboard."
+  (interactive)
+  (let ((media (or (chirp-media-at-point)
+                   (and chirp--media-list
+                        (nth chirp--media-index chirp--media-list))
+                   (chirp-media--select-download-media))))
+    (unless (string= (plist-get media :type) "photo")
+      (user-error "Only photo media can be copied to the clipboard"))
+    (let ((file (or (chirp-media--cached-download-file media)
+                    (chirp-media--photo-file media))))
+      (unless file
+        (user-error "Image file unavailable"))
+      (chirp-media--copy-image-file file)
+      (message "Copied image to clipboard."))))
+
 (defun chirp-media-download-at-point ()
   "Download the current media item at its original or highest-quality URL."
   (interactive)
@@ -1233,35 +1363,27 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
      (t 0))))
 
 (defun chirp-media-playback-url (media)
-  "Return the preferred playback URL for video-like MEDIA."
-  (if-let* (((chirp-media-video-like-p media))
-            (variants
-             (cl-remove-if-not
-              (lambda (variant)
-                (let ((url (plist-get variant :url)))
-                  (and (stringp url)
-                       (not (string-empty-p url)))))
-              (copy-sequence (plist-get media :variants)))))
-      (let* ((sorted
-             (sort variants
-                    (lambda (left right)
-                      (< (chirp-media--variant-bitrate left)
-                         (chirp-media--variant-bitrate right)))))
-             (capped
-              (and chirp-video-playback-max-bitrate
-                   (cl-remove-if
-                    (lambda (variant)
-                      (> (chirp-media--variant-bitrate variant)
-                         chirp-video-playback-max-bitrate))
-                    sorted)))
-             (selected
-              (if chirp-video-playback-max-bitrate
-                  (or (car (last capped))
-                      (car sorted))
-                (car (last sorted)))))
-        (or (plist-get selected :url)
-            (plist-get media :url)))
-    (plist-get media :url)))
+  "Return the preferred playable URL for MEDIA."
+  (if (not (chirp-media-video-like-p media))
+      (plist-get media :url)
+    (let* ((variants (plist-get media :variants))
+           (mp4 (seq-filter
+                 (lambda (item)
+                   (or (equal (plist-get item :content-type) "video/mp4")
+                       (string-match-p "\\.mp4\\(?:[?#]\\|\\'\\)" (or (plist-get item :url) ""))))
+                 variants))
+           (sorted (sort (copy-sequence (or mp4 variants))
+                         (lambda (a b) (> (chirp-media--variant-bitrate a)
+                                          (chirp-media--variant-bitrate b)))))
+           (best (if chirp-video-playback-max-bitrate
+                     (or (seq-find (lambda (item) (<= (chirp-media--variant-bitrate item)
+                                                      chirp-video-playback-max-bitrate))
+                                   sorted)
+                         (car (last sorted)))
+                   (car sorted))))
+      (or (plist-get best :url)
+          (unless (equal (plist-get media :url) (plist-get media :preview-url))
+            (plist-get media :url))))))
 
 (defun chirp-media--play-external (media)
   "Open video-like MEDIA in the configured external player."
@@ -1311,7 +1433,8 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
 
 (defun chirp-media--video-file (media)
   "Return a local file path for video-like MEDIA."
-  (chirp-media-local-file (plist-get media :url) "media" "mp4"))
+  (when-let* ((url (chirp-media-playback-url media)))
+    (chirp-media-local-file url "media" "mp4")))
 
 (defun chirp-media--video-thumbnail-file (media)
   "Return the cached thumbnail path for video-like MEDIA."
@@ -1366,6 +1489,19 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
                      thumbnail-file)
                 (chirp-media--extract-video-thumbnail video-file thumbnail-file)))))))
 
+(defun chirp-media--init-view-buffer (buffer media-list index title)
+  "Initialize shared media view state for MEDIA-LIST at INDEX with TITLE in BUFFER."
+  (setq-local chirp--media-list media-list)
+  (setq-local chirp--media-index index)
+  (setq-local chirp--media-title title)
+  (setq-local chirp--view-title title)
+  (setq-local chirp--timeline-kind nil)
+  (setq-local chirp--refresh-function nil)
+  (setq-local chirp--rerender-function
+              (lambda ()
+                (chirp-media-open media-list index title buffer)))
+  (setq-local header-line-format nil))
+
 (defun chirp-media--render-image-buffer (buffer media-list index title)
   "Render photo MEDIA-LIST at INDEX into BUFFER using `image-mode'."
   (let* ((media (nth index media-list))
@@ -1379,20 +1515,18 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
           (erase-buffer)
           (insert-file-contents-literally file))
         (chirp-media-image-mode)
-        (use-local-map chirp-media-image-mode-map)
-        (setq-local chirp--media-list media-list)
-        (setq-local chirp--media-index index)
-        (setq-local chirp--media-title title)
-        (setq-local chirp--view-title title)
-        (setq-local chirp--timeline-kind nil)
-        (setq-local chirp--refresh-function nil)
-        (setq-local chirp--rerender-function
-                    (lambda ()
-                      (chirp-media-open media-list index title buffer)))
-        (setq-local header-line-format nil)
+        (chirp-media--init-view-buffer buffer media-list index title)
         (goto-char (point-min)))
       (chirp-display-buffer buffer)
-      (message "%s (%d/%d)" title (1+ index) (length media-list)))))
+      (let* ((total (length media-list))
+             (alt (chirp-first-nonblank (plist-get media :alt)))
+             (hint (if (> total 1)
+                       "n/p: switch · c: copy · D: download · o: browser · q: back"
+                     "c: copy · D: download · o: browser · q: back")))
+        (message "%s (%d/%d)%s  [%s]"
+                 title (1+ index) total
+                 (if alt (format " — %s" (truncate-string-to-width alt 80 nil nil "…")) "")
+                 hint)))))
 
 (defun chirp-media--render-buffer (buffer media-list index title)
   "Render MEDIA-LIST at INDEX into BUFFER."
@@ -1400,16 +1534,7 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
          (total (length media-list)))
     (with-current-buffer buffer
       (chirp-media-view-mode)
-      (setq-local chirp--media-list media-list)
-      (setq-local chirp--media-index index)
-      (setq-local chirp--media-title title)
-      (setq-local chirp--view-title title)
-      (setq-local chirp--timeline-kind nil)
-      (setq-local chirp--refresh-function nil)
-      (setq-local chirp--rerender-function
-                  (lambda ()
-                    (chirp-media-open media-list index title buffer)))
-      (setq-local header-line-format nil)
+      (chirp-media--init-view-buffer buffer media-list index title)
       (let ((inhibit-read-only t))
         (erase-buffer)
         (insert (format "%s (%d/%d)\n\n" title (1+ index) total))
@@ -1436,6 +1561,8 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
         (when-let* ((width (plist-get media :width))
                     (height (plist-get media :height)))
           (insert (format "Size: %sx%s\n" width height)))
+        (when-let* ((alt (chirp-first-nonblank (plist-get media :alt))))
+          (insert (format "Alt: %s\n" alt)))
         (when-let* ((url (plist-get media :url)))
           (insert (format "URL: %s\n" url)))
         (goto-char (point-min))))

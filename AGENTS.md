@@ -4,9 +4,9 @@ This file applies to the entire repository. Keep it self-contained: agents shoul
 
 ## Product and Architecture Boundaries
 
-- Chirp is an Emacs UI for X/Twitter. `twitter-cli` owns authentication, network access, API compatibility, and wire-format details; do not add direct X API calls to Chirp.
+- Chirp is an Emacs UI for X/Twitter. `chirp-x.el` owns authentication, HTTP and wire-format details.
 - `chirp.el` is the public entry point. External users load `(require 'chirp)`.
-- `chirp-backend.el` owns `twitter-cli` discovery, process invocation, retries, and JSON envelope handling.
+- `chirp-backend.el` owns operation selection, response normalization, and read caching.
 - `chirp-core.el` owns shared state, history, buffer lifecycle, and cross-view navigation.
 - `chirp-render.el` renders normalized data. `chirp-media.el` owns cache paths, thumbnail extraction, prefetching, and large-media display.
 - View modules orchestrate fetching and rendering; they must not duplicate backend, normalization, or media behavior. `chirp-actions.el` owns compose and write actions, which share one backend request path.

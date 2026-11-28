@@ -197,30 +197,40 @@ rerender and creates a CPU loop."
     (should (equal (plist-get card :image-url)
                    "https://github.com/preview.png"))))
 
-(ert-deftest chirp-media-scaled-dimensions-preserve-aspect-ratio ()
-  "Scaled dimensions should fit the target box without distorting aspect ratio."
-  (should (equal (chirp-media--scaled-dimensions 921 1008 128 128)
+(ert-deftest chirp-media-thumbnail-dimensions-unify-height-and-clamp-extremes ()
+  "Thumbnails should share a uniform height while preserving normal aspect ratios."
+  ;; Portrait mobile screenshot (9:19.5) and wide landscape (16:9) share 128px height.
+  (should (equal (chirp-media--thumbnail-dimensions 540 1170 128)
+                 '(59 . 128)))
+  (should (equal (chirp-media--thumbnail-dimensions 921 1008 128)
                  '(117 . 128)))
-  (should (equal (chirp-media--scaled-dimensions 1651 1079 128 128)
-                 '(128 . 84))))
+  (should (equal (chirp-media--thumbnail-dimensions 1651 1079 128)
+                 '(196 . 128)))
+  (should (equal (chirp-media--thumbnail-dimensions 1200 675 128)
+                 '(228 . 128)))
+  ;; Extreme vertical strips and ultra-wide panoramas are clamped cleanly.
+  (should (equal (chirp-media--thumbnail-dimensions 400 3200 128)
+                 '(58 . 128)))
+  (should (equal (chirp-media--thumbnail-dimensions 3000 300 128)
+                 '(320 . 128))))
 
 (ert-deftest chirp-media-thumbnail-image-uses-photo-thumbnail-wrapper ()
-  "Photo thumbnails should prefer the fixed-size SVG wrapper renderer."
+  "Photo thumbnails should prefer the uniform-height SVG wrapper renderer."
   (let ((chirp-media-render-from-cache-only t)
         rendered-file)
     (cl-letf (((symbol-function 'chirp-media-cached-file)
                (lambda (&rest _args)
                  "/tmp/chirp-photo-thumb.jpg"))
               ((symbol-function 'chirp-media--photo-thumbnail-image)
-               (lambda (file width height)
-                 (setq rendered-file (list file width height))
+               (lambda (file height)
+                 (setq rendered-file (list file height))
                  'photo-image)))
-        (should (eq (chirp-media-thumbnail-image
-                     '(:type "photo"
-                       :url "https://example.com/photo.jpg"))
-                    'photo-image))
+      (should (eq (chirp-media-thumbnail-image
+                   '(:type "photo"
+                     :url "https://example.com/photo.jpg"))
+                  'photo-image))
       (should (equal rendered-file
-                     '("/tmp/chirp-photo-thumb.jpg" 128 128))))))
+                     '("/tmp/chirp-photo-thumb.jpg" 128))))))
 
 (ert-deftest chirp-media-thumbnail-image-badges-video-like-media ()
   "Video-like thumbnails should use the play-badge renderer."
@@ -249,7 +259,9 @@ rerender and creates a CPU loop."
     (should (chirp-media-thumbnail-placeholder-image
              '(:type "animated_gif" :url "https://example.com/anim.mp4")))
     (should-not (chirp-media-thumbnail-placeholder-image
-                 '(:type "photo" :url "https://example.com/photo.jpg")))))
+                 '(:type "photo" :url "https://example.com/photo.jpg")))
+    (should (chirp-media-overflow-badge-image 2 48 128))
+    (should-not (chirp-media-overflow-badge-image 0 48 128))))
 
 (ert-deftest chirp-normalize-media-item-preserves-preview-and-variants ()
   "Structured media payloads should keep preview URLs and variant lists."
@@ -501,6 +513,66 @@ rerender and creates a CPU loop."
                    "https://pbs.twimg.com/media/abc123.jpg?name=orig"))
     (should (equal copied-target "/tmp/chirp-photo.jpg"))
     (should (equal final-message "Downloaded /tmp/chirp-photo.jpg"))))
+
+(ert-deftest chirp-media-video-cover-and-playback-stay-distinct ()
+  (let* ((chirp-video-playback-max-bitrate 1000)
+         (media (chirp-normalize-media-item
+                 '((type . "video") (media_url_https . "cover.jpg")
+                   (video_info . ((variants . (((url . "hls") (content_type . "application/x-mpegURL"))
+                                               ((url . "movie") (content_type . "video/mp4") (bitrate . 5000))))))))))
+    (should (equal (plist-get media :preview-url) "cover.jpg"))
+    (should (equal (chirp-media-playback-url media) "movie"))
+    (should (equal (chirp-media-download-url media) "movie"))))
+
+(ert-deftest chirp-media-copy-image-copies-current-photo-and-binds-keys ()
+  "Media viewers should bind `c' and `w' to copy photos and reject videos."
+  (should (eq (lookup-key chirp-media-image-mode-map (kbd "c")) #'chirp-media-copy-image))
+  (should (eq (lookup-key chirp-media-image-mode-map (kbd "w")) #'chirp-media-copy-image))
+  (should (eq (lookup-key chirp-media-view-mode-map (kbd "c")) #'chirp-media-copy-image))
+  (should (eq (lookup-key chirp-media-view-mode-map (kbd "w")) #'chirp-media-copy-image))
+  (let ((photo-file (make-temp-file "chirp-copy-" nil ".jpg"))
+        copied-file
+        captured-args)
+    (unwind-protect
+        (progn
+          (with-temp-buffer
+            (chirp-media-view-mode)
+            (setq-local chirp--media-list
+                        '((:type "photo" :url "https://example.com/pic.jpg")
+                          (:type "video" :url "https://example.com/clip.mp4")))
+            (setq-local chirp--media-index 0)
+            (cl-letf (((symbol-function 'chirp-media--cached-download-file) (lambda (_) nil))
+                      ((symbol-function 'chirp-media--photo-file) (lambda (_) photo-file))
+                      ((symbol-function 'chirp-media--copy-image-file)
+                       (lambda (file) (setq copied-file file)))
+                      ((symbol-function 'message) #'ignore))
+              (chirp-media-copy-image)
+              (should (equal copied-file photo-file)))
+            (setq-local chirp--media-index 1)
+            (should-error (chirp-media-copy-image) :type 'user-error))
+          (let ((system-type 'darwin))
+            (cl-letf (((symbol-function 'call-process)
+                       (lambda (program &rest args)
+                         (setq captured-args (cons program args))
+                         0)))
+              (chirp-media--copy-image-file photo-file))
+            (should (equal (car captured-args) "/usr/bin/osascript"))
+            (should (equal (car (last captured-args)) (expand-file-name photo-file)))))
+      (when (file-exists-p photo-file)
+        (delete-file photo-file)))))
+
+(ert-deftest chirp-media-copies-with-the-active-display-backend ()
+  (let ((system-type 'gnu/linux)
+        (process-environment (copy-sequence process-environment))
+        (file (locate-library "chirp-media")) invoked)
+    (setenv "DISPLAY" ":1")
+    (cl-letf (((symbol-function 'executable-find) #'identity)
+              ((symbol-function 'call-process)
+               (lambda (program &rest _) (setq invoked program) 0)))
+      (dolist (wayland '(nil "wayland-1"))
+        (setenv "WAYLAND_DISPLAY" wayland)
+        (chirp-media--copy-image-file file)
+        (should (equal invoked (if wayland "wl-copy" "xclip")))))))
 
 (provide 'chirp-media-test)
 

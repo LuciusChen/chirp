@@ -13,7 +13,7 @@ Keep it practical. If a rule does not help this codebase, do not cargo-cult it.
 ## Architecture
 
 - `chirp.el` is the public entry point. External users should load `(require 'chirp)`.
-- `chirp-backend.el` owns `twitter-cli` discovery, process invocation, retries, and JSON envelope handling.
+- `chirp-backend.el` owns native X operations, caching and response adaptation. `chirp-x.el` owns transport and `chirp-web.el` owns WebKit sign-in.
 - `chirp-core.el` owns shared state, history, buffer lifecycle, and cross-view navigation helpers.
 - `chirp-render.el` renders normalized data into buffers. Data-bearing annotations belong in text properties, not overlays.
 - `chirp-media.el` owns cache paths, thumbnail extraction, async prefetch, and large-media display behavior.

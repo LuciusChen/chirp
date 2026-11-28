@@ -8,6 +8,36 @@
 (require 'cl-lib)
 (require 'chirp-core)
 (require 'chirp-timeline)
+(require 'chirp)
+
+(ert-deftest chirp-opens-home-after-sign-in ()
+  "Fetch a fresh Home buffer after switching sessions, and reuse within one."
+  (save-window-excursion
+    (let ((session "first") (requests 0) complete views)
+      (unwind-protect
+          (cl-letf (((symbol-function 'chirp-x-credentials)
+                     (lambda () (and session '(:auth-token "a" :ct0 "c" :bearer-token "b"))))
+                    ((symbol-function 'chirp-x-session-key) (lambda () session))
+                    ((symbol-function 'chirp--sign-in)
+                     (lambda (command args)
+                       (setq complete (lambda () (apply command args)))))
+                    ((symbol-function 'chirp-backend-feed)
+                     (lambda (ok &rest _)
+                       (cl-incf requests)
+                       (funcall ok nil nil)
+                       (push (current-buffer) views))))
+            (chirp)
+            (setq session nil)
+            (call-interactively #'chirp)
+            (should (= requests 1))
+            (setq session "second")
+            (funcall complete)
+            (should (= requests 2))
+            (should-not (eq (car views) (cadr views)))
+            (chirp)
+            (should (= requests 2))
+            (should (eq (window-buffer) (car views))))
+        (mapc #'kill-buffer views)))))
 
 (ert-deftest chirp-buffer-creates-fresh-view-buffers ()
   "Each `chirp-buffer' call should return a fresh buffer."
@@ -26,7 +56,7 @@
 
 (ert-deftest chirp-quit-current-buffer-keeps-main-timeline-buffers ()
   "Quitting For You/Following should keep the timeline buffer alive."
-  (let ((previous (generate-new-buffer " *chirp-prev*"))
+  (let ((previous (generate-new-buffer "*chirp-prev*"))
         (timeline (generate-new-buffer " *chirp-home*")))
     (unwind-protect
         (save-window-excursion
@@ -44,7 +74,7 @@
 
 (ert-deftest chirp-quit-current-buffer-kills-secondary-chirp-views ()
   "Quitting secondary Chirp views should still kill the current buffer."
-  (let ((previous (generate-new-buffer " *chirp-prev*"))
+  (let ((previous (generate-new-buffer "*chirp-prev*"))
         (detail (generate-new-buffer " *chirp-detail*")))
     (unwind-protect
         (save-window-excursion
@@ -161,6 +191,20 @@
       (chirp-clear-status (current-buffer))
       (should-not (chirp--mode-line-status-string)))))
 
+(ert-deftest chirp-refresh-error-preserves-view-and-point ()
+  (with-temp-buffer
+    (chirp-view-mode)
+    (setq-local chirp--view-title "Thread")
+    (let ((inhibit-read-only t))
+      (insert (propertize "existing post" 'chirp-entry-start t)))
+    (goto-char 5)
+    (chirp-set-status (current-buffer) "Loading thread")
+    (chirp-show-error (current-buffer) "Thread" #'ignore "HTTP 503")
+    (should (equal (buffer-string) "existing post"))
+    (should (= (point) 5))
+    (should-not chirp--status-timer)
+    (should (equal (chirp--mode-line-status-string) " · HTTP 503 · g retry"))))
+
 (ert-deftest chirp-timeline-render-clears-persistent-status ()
   "Rendering a timeline should clear any previous loading status."
   (let ((buffer (generate-new-buffer " *chirp-status-render*")))
@@ -192,13 +236,41 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest chirp-timeline-pagination-only-renders-new-entries ()
+  "Appending a page preserves existing text and cross-page reply context."
+  (let* ((first '(:id "1" :kind tweet :text "Parent" :author-handle "alice"))
+         (reply '(:id "2" :kind tweet :text "Reply" :reply-to-id "1"))
+         (buffer (generate-new-buffer " *chirp-append*"))
+         prefetched)
+    (unwind-protect
+        (with-current-buffer buffer
+          (chirp-timeline--render buffer "Bookmarks" #'ignore (list first)
+                                  :kind 'bookmarks :limit 1 :next-cursor "next")
+          (let ((inhibit-read-only t))
+            (put-text-property (point-min) (1+ (point-min)) 'old-page t))
+          (cl-letf (((symbol-function 'chirp-display-buffer) #'ignore)
+                    ((symbol-function 'chirp-media-prefetch-tweets)
+                     (lambda (tweets _buffer) (setq prefetched tweets)))
+                    ((symbol-function 'chirp-backend-bookmarks)
+                     (lambda (ok _fail _limit cursor)
+                       (should (equal cursor "next"))
+                       (funcall ok (list first reply) nil))))
+            (chirp-timeline--load-more))
+          (should (get-text-property (point-min) 'old-page))
+          (should (equal prefetched (list reply)))
+          (should (equal (chirp-timeline--buffer-tweets buffer) (list first reply)))
+          (let ((appended (buffer-substring-no-properties (point-min) (point-max))))
+            (funcall chirp--rerender-function)
+            (should (equal appended (buffer-substring-no-properties
+                                     (point-min) (point-max))))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
 (ert-deftest chirp-timeline-handle-feed-success-keeps-view-when-no-growth ()
   "Loading more should keep the current view when the response adds nothing."
   (let ((buffer (generate-new-buffer " *chirp-timeline-test*")))
     (unwind-protect
         (with-current-buffer buffer
           (chirp-view-mode)
-          (setq-local chirp--timeline-loading-more t)
           (setq-local chirp--request-token 'token)
           (let ((render-called nil)
                 (last-message nil))
@@ -218,14 +290,12 @@
                :anchor-id "2"
                :loading-more t
                :refreshing nil
-               :previous-count 2
                :previous-tweets (list (list :id "1") (list :id "2"))
                :previous-exhausted-p nil
                :previous-next-cursor nil
                :envelope nil))
             (should-not render-called)
             (should chirp--timeline-exhausted-p)
-            (should-not chirp--timeline-loading-more)
             (should-not chirp--request-token)
             (should (equal last-message "No older posts."))))
       (when (buffer-live-p buffer)
@@ -251,7 +321,6 @@
        :anchor-id "2"
        :loading-more nil
        :refreshing t
-       :previous-count nil
        :previous-tweets (list (list :id "2") (list :id "1"))
        :previous-exhausted-p t
        :previous-next-cursor nil
@@ -272,7 +341,6 @@
           (chirp-view-mode)
           (setq-local chirp--timeline-kind 'home)
           (setq-local chirp--timeline-limit 20)
-          (setq-local chirp--timeline-count 2)
           (setq-local chirp--timeline-next-cursor nil)
           (let ((render-called nil)
                 (last-message nil))
@@ -292,7 +360,6 @@
                :anchor-id "2"
                :loading-more nil
                :refreshing t
-               :previous-count 2
                :previous-tweets (list (list :id "2") (list :id "1"))
                :previous-exhausted-p nil
                :previous-next-cursor nil
@@ -322,7 +389,6 @@
        :anchor-id "2"
        :loading-more nil
        :refreshing t
-       :previous-count nil
        :previous-tweets (list (list :id "2") (list :id "1"))
        :previous-exhausted-p nil
        :previous-next-cursor nil
@@ -342,7 +408,6 @@
           (chirp-view-mode)
           (setq-local chirp--timeline-kind 'home)
           (setq-local chirp--timeline-limit 20)
-          (setq-local chirp--timeline-count 2)
           (setq-local chirp--timeline-next-cursor "cursor-next")
           (setq-local chirp--timeline-exhausted-p nil)
           (setq-local chirp--request-token 'token)
@@ -364,14 +429,12 @@
                :anchor-id "2"
                :loading-more nil
                :refreshing t
-               :previous-count 2
                :previous-tweets (list (list :id "2") (list :id "1"))
                :previous-exhausted-p nil
                :previous-next-cursor "cursor-next"
                :envelope nil))
             (should-not render-called)
             (should-not chirp--request-token)
-            (should-not chirp--timeline-loading-more)
             (should (equal chirp--timeline-next-cursor "cursor-next"))
             (should (equal last-message "No new posts."))))
       (when (buffer-live-p buffer)
@@ -424,7 +487,7 @@
                      (setq whoami-called t)
                      (funcall callback '(:handle "alice") nil)))
                   ((symbol-function 'chirp-backend-likes)
-                   (lambda (handle callback &optional _errback)
+                   (lambda (handle callback &optional _errback _limit _cursor)
                      (setq likes-handle handle)
                      (funcall callback (list (list :id "1")) nil)))
                   ((symbol-function 'chirp-timeline--render)
@@ -446,13 +509,14 @@
         seen-prompt
         seen-collection)
     (unwind-protect
-        (cl-letf (((symbol-function 'chirp-backend-lists-sync)
-                   (lambda ()
+        (cl-letf (((symbol-function 'chirp-backend-lists)
+                   (lambda (callback &optional _errback)
+                     (funcall callback
                      '((("id" . "1956792682412345678")
                         ("name" . "Emacs")
                         ("mode" . "private")
                         ("sources" . ("owned"))
-                        ("owner" . (("screenName" . "lucius")))))))
+                        ("owner" . (("screenName" . "lucius"))))) nil)))
                   ((symbol-function 'completing-read)
                    (lambda (prompt collection &rest _args)
                      (setq seen-prompt prompt
@@ -465,7 +529,7 @@
                    (lambda (_buffer _token)
                      t))
                   ((symbol-function 'chirp-backend-list)
-                   (lambda (list-target callback &optional _errback)
+                   (lambda (list-target callback &optional _errback _limit _cursor)
                      (setq captured-target list-target)
                      (funcall callback (list (list :id "1")) nil)))
                   ((symbol-function 'chirp-timeline--render)
@@ -476,7 +540,7 @@
           (should (string-match-p "@lucius" (caar seen-collection)))
           (should (string-match-p "owned" (caar seen-collection)))
           (should (equal captured-target "1956792682412345678"))
-          (should (equal (nth 1 render-args) "List: 1956792682412345678"))
+          (should (equal (nth 1 render-args) "List: Emacs"))
           (should (equal (nth 3 render-args) '((:id "1")))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -494,7 +558,7 @@
                    (lambda (_buffer _token)
                      t))
                   ((symbol-function 'chirp-backend-list)
-                   (lambda (list-target callback &optional _errback)
+                   (lambda (list-target callback &optional _errback _limit _cursor)
                      (setq captured-target list-target)
                      (funcall callback (list (list :id "1")) nil)))
                   ((symbol-function 'chirp-timeline--render)
@@ -666,6 +730,200 @@
                  "say \"hi\" 'now'"))
   (should (equal (chirp-clean-text "A&#10;B&#x21;")
                  "A\nB!")))
+
+(ert-deftest chirp-search-load-more-skips-duplicate-page-without-changing-windows ()
+  (save-window-excursion
+    (let ((view (generate-new-buffer " *chirp-search-page*"))
+          (other (current-buffer)) calls)
+      (unwind-protect
+          (cl-letf (((symbol-function 'chirp-backend-search)
+                     (lambda (_query ok _err _limit cursor)
+                       (push cursor calls)
+                       (funcall ok (list (list :kind 'tweet :id (if (equal cursor "2") "b" "a")))
+                                (pcase cursor
+                                  ('nil '(("nextCursor" . "1")))
+                                  ("1" '(("nextCursor" . "2"))))))))
+            (chirp-timeline-open-search "emacs" view)
+            (switch-to-buffer other)
+            (with-current-buffer view (chirp-load-more))
+            (should (eq other (window-buffer)))
+            (should (equal (nreverse calls) '(nil "1" "2")))
+            (should (equal (mapcar #'chirp-tweet-key (chirp-timeline--buffer-tweets view)) '("a" "b"))))
+        (kill-buffer view)))))
+
+(ert-deftest chirp-bookmarks-verifies-saves-and-resumes-after-login ()
+  "Missing credentials should fail over across browser profiles, then clipboard/manual."
+  (let* ((dir (make-temp-file "chirp-login-" t))
+         (chirp-x-auth-file (expand-file-name "auth.json" dir))
+         verified-creds opened tried)
+    (unwind-protect
+        (progn
+          ;; First browser candidate fails verification; second candidate automatically succeeds.
+          (cl-letf (((symbol-function 'getenv) (lambda (&rest _) nil))
+                    ((symbol-function 'auth-source-pick-first-password) (lambda (&rest _) nil))
+                    ((symbol-function 'chirp-x-cookies-make-iterator)
+                     (lambda (&optional _browser _profile)
+                       (let ((items '((:auth-token "stale-tok" :ct0 "stale-ct0" :browser "Dia (Old)")
+                                      (:auth-token "br-tok" :ct0 "br-ct0" :browser "Dia (Work)"))))
+                         (lambda () (pop items)))))
+                    ((symbol-function 'read-passwd)
+                     (lambda (&rest _) (ert-fail "Should not prompt when browser failover succeeds")))
+                    ((symbol-function 'chirp-backend-verify-credentials)
+                     (lambda (creds ok err)
+                       (push (plist-get creds :auth-token) tried)
+                       (if (equal (plist-get creds :auth-token) "stale-tok")
+                           (funcall err "HTTP 401")
+                         (setq verified-creds creds)
+                         (funcall ok '(:kind user :handle "alice") nil))))
+                    ((symbol-function 'chirp-timeline-open-bookmarks)
+                     (lambda () (setq opened t))))
+            (chirp-bookmarks)
+            (should opened)
+            (should (equal (nreverse tried) '("stale-tok" "br-tok")))
+            (should (equal (plist-get verified-creds :auth-token) "br-tok"))
+            (should (equal (plist-get (chirp-x-credentials) :ct0) "br-ct0"))
+            (chirp-logout)
+            (should-not (file-exists-p chirp-x-auth-file)))
+          ;; When no browser cookies exist, clipboard cURL is offered before manual paste.
+          (setq verified-creds nil opened nil)
+          (cl-letf (((symbol-function 'getenv) (lambda (&rest _) nil))
+                    ((symbol-function 'auth-source-pick-first-password) (lambda (&rest _) nil))
+                    ((symbol-function 'chirp-x-cookies-make-iterator)
+                     (lambda (&optional _browser _profile) (lambda () nil)))
+                    ((symbol-function 'chirp-x-cookies-last-diagnostic) (lambda () nil))
+                    ((symbol-function 'chirp--clipboard-cookies)
+                     (lambda () '("clip-tok" . "clip-ct0")))
+                    ((symbol-function 'y-or-n-p) (lambda (_) t))
+                    ((symbol-function 'read-passwd)
+                     (lambda (&rest _) (ert-fail "Should not prompt when clipboard accepted")))
+                    ((symbol-function 'chirp-backend-verify-credentials)
+                     (lambda (creds ok _err)
+                       (setq verified-creds creds)
+                       (funcall ok '(:kind user :handle "alice") nil)))
+                    ((symbol-function 'chirp-timeline-open-bookmarks)
+                     (lambda () (setq opened t))))
+            (chirp-bookmarks)
+            (should opened)
+            (should (equal (plist-get verified-creds :auth-token) "clip-tok"))
+            (chirp-logout))
+          ;; When neither browser nor clipboard has cookies, fall back to masked manual paste.
+          (setq verified-creds nil opened nil)
+          (cl-letf (((symbol-function 'getenv) (lambda (&rest _) nil))
+                    ((symbol-function 'auth-source-pick-first-password) (lambda (&rest _) nil))
+                    ((symbol-function 'chirp-x-cookies-make-iterator)
+                     (lambda (&optional _browser _profile) (lambda () nil)))
+                    ((symbol-function 'chirp-x-cookies-last-diagnostic) (lambda () nil))
+                    ((symbol-function 'chirp--clipboard-cookies) (lambda () nil))
+                    ((symbol-function 'read-passwd)
+                     (lambda (_prompt) "Cookie: auth_token=tok-ok; ct0=ct0-ok"))
+                    ((symbol-function 'chirp-backend-verify-credentials)
+                     (lambda (creds ok _err)
+                       (setq verified-creds creds)
+                       (funcall ok '(:kind user :handle "alice") nil)))
+                    ((symbol-function 'chirp-timeline-open-bookmarks)
+                     (lambda () (setq opened t))))
+            (chirp-bookmarks)
+            (should opened)
+            (should (equal (plist-get verified-creds :auth-token) "tok-ok"))
+            (should (equal (plist-get (chirp-x-credentials) :ct0) "ct0-ok"))))
+      (when (file-directory-p dir)
+        (delete-directory dir t)))))
+
+(ert-deftest chirp-home-retries-in-the-same-view-after-first-load-fails ()
+  (save-window-excursion
+    (let ((view (generate-new-buffer " *chirp-retry*")) (requests 0))
+      (unwind-protect
+          (cl-letf (((symbol-function 'chirp-x-credentials)
+                     (lambda () '(:auth-token "a" :ct0 "c" :bearer-token "b")))
+                    ((symbol-function 'chirp-buffer) (lambda () view))
+                    ((symbol-function 'chirp-backend-feed)
+                     (lambda (ok _following fail &rest _)
+                       (cl-incf requests)
+                       (if (= requests 1) (funcall fail "Offline")
+                         (funcall ok nil nil)))))
+            (chirp)
+            (should (eq (current-buffer) view))
+            (should (string-match-p "Offline" (buffer-string)))
+            (chirp)
+            (should-not (string-match-p "Offline" (buffer-string)))
+            (chirp)
+            (should (= requests 2)))
+        (kill-buffer view)))))
+
+(ert-deftest chirp-list-picker-only-prompts-in-the-requesting-window-and-buffer ()
+  (save-window-excursion
+    (with-temp-buffer
+      (let ((origin (current-buffer)) callback busy opened)
+        (switch-to-buffer origin)
+        (cl-letf (((symbol-function 'chirp-x-credentials)
+                   (lambda () '(:auth-token "a" :ct0 "c" :bearer-token "b")))
+                  ((symbol-function 'chirp-backend-lists) (lambda (ok &rest _) (setq callback ok)))
+                  ((symbol-function 'active-minibuffer-window)
+                   (lambda () (and busy (minibuffer-window))))
+                  ((symbol-function 'completing-read)
+                   (lambda (_prompt choices &rest _)
+                     (should-not busy)
+                     (should (eq origin (window-buffer)))
+                     (caar choices)))
+                  ((symbol-function 'chirp-timeline--open) (lambda (kind &rest _) (setq opened kind))))
+          (let ((lists '(((name . "Lisp") (id . "42")))))
+            (chirp-list)
+            (setq busy t)
+            (funcall callback lists nil)
+            (should-not opened)
+            (setq busy nil)
+            (chirp-list)
+            (switch-to-buffer (other-buffer))
+            (funcall callback lists nil)
+            (should-not opened)
+            (switch-to-buffer origin)
+            (chirp-list)
+            (funcall callback lists nil)
+            (should (equal opened '(list "42" "Lisp")))
+            (should-error (chirp-list " ") :type 'user-error)))))))
+
+(ert-deftest chirp-search-tab-toggles-between-top-and-latest ()
+  "TAB in a search view should toggle between Top and Latest product ordering."
+  (save-window-excursion
+    (let ((view (generate-new-buffer " *chirp-search-toggle*"))
+          products)
+      (unwind-protect
+          (cl-letf (((symbol-function 'chirp-backend-search)
+                     (lambda (query ok _err _limit _cursor &optional product)
+                       (push (cons query (or product "Top")) products)
+                       (funcall ok (list (list :kind 'tweet :id "1" :text query)) nil))))
+            (should-error (chirp-timeline-open-search "   " view) :type 'user-error)
+            (chirp-timeline-open-search "emacs" view)
+            (with-current-buffer view
+              (should (equal chirp--view-title "Search: emacs"))
+              (chirp-toggle-home-following)
+              (should (equal chirp--view-title "Search (Latest): emacs"))
+              (chirp-toggle-home-following)
+              (should (equal chirp--view-title "Search: emacs")))
+            (should (equal (nreverse products)
+                           '(("emacs" . "Top")
+                             ("emacs" . "Latest")
+                             ("emacs" . "Top")))))
+        (kill-buffer view)))))
+
+(ert-deftest chirp-search-switch-waits-for-the-new-cursor ()
+  (save-window-excursion
+    (with-temp-buffer
+      (let (requests respond)
+        (cl-letf (((symbol-function 'chirp-backend-search)
+                   (lambda (_query success _failure _limit cursor &optional product)
+                     (push (list product cursor) requests)
+                     (setq respond success))))
+          (chirp-timeline-open-search "emacs" (current-buffer))
+          (funcall respond '((:kind tweet :id "top")) '(("nextCursor" . "top-cursor")))
+          (chirp-toggle-home-following)
+          (chirp-load-more)
+          (should (= (length requests) 2))
+          (funcall respond '((:kind tweet :id "latest")) '(("nextCursor" . "latest-cursor")))
+          (chirp-load-more)
+          (should (equal (car requests) '("Latest" "latest-cursor")))
+          (should (equal (mapcar #'chirp-tweet-key (chirp-timeline--buffer-tweets (current-buffer)))
+                         '("latest"))))))))
 
 (provide 'chirp-timeline-test)
 

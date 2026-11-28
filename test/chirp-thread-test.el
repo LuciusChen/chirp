@@ -56,7 +56,7 @@
                      (setq thread-callback callback)))
                   ((symbol-function 'chirp-backend-article) #'ignore)
                   ((symbol-function 'chirp-thread--render-view)
-                   (lambda (_buffer _title _refresh ordered &optional _anchor-id _display-p)
+                   (lambda (_buffer _title _refresh ordered &rest _options)
                      (push ordered renders)))
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
@@ -101,7 +101,7 @@
                    (lambda (_target callback &optional _errback)
                      (setq thread-callback callback)))
                   ((symbol-function 'chirp-thread--render-view)
-                   (lambda (_buffer _title _refresh ordered &optional _anchor-id _display-p)
+                   (lambda (_buffer _title _refresh ordered &rest _options)
                      (setq rendered ordered)))
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
@@ -156,7 +156,7 @@
                   ((symbol-function 'chirp-backend-article) #'ignore)
                   ((symbol-function 'chirp-thread--render-view)
                    (lambda (_buffer _title _refresh ordered
-                            &optional _anchor-id _display-p)
+                            &rest _options)
                      (setq rendered ordered)))
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
@@ -266,13 +266,18 @@
       (delete-file file))))
 
 (ert-deftest chirp-thread-spam-rule-suggestion-can-use-author ()
-  "A prefix request should suggest the current author display name."
+  "A prefix request should suggest `@handle' when available, else display name."
   (with-temp-buffer
     (cl-letf (((symbol-function 'chirp-entry-at-point)
                (lambda ()
                  '(:kind tweet :text "Reply text" :author-name "Promo Author"))))
       (should (equal (chirp-thread--spam-rule-suggestion nil) "Reply text"))
-      (should (equal (chirp-thread--spam-rule-suggestion t) "Promo Author")))))
+      (should (equal (chirp-thread--spam-rule-suggestion t) "Promo Author")))
+    (cl-letf (((symbol-function 'chirp-entry-at-point)
+               (lambda ()
+                 '(:kind tweet :text "Reply text" :author-name "Promo Author"
+                   :author-handle "promo_bot"))))
+      (should (equal (chirp-thread--spam-rule-suggestion t) "@promo_bot")))))
 
 (ert-deftest chirp-thread-add-spam-rule-rejects-comments ()
   "Interactive additions should reject values parsed as file comments."
@@ -443,6 +448,138 @@
      (chirp-thread--spam-reply-p
       '(:text "推广昵称" :author-name "推广昵称" :author-handle "spam_handle"
         :timeline-context related)))))
+
+(ert-deftest chirp-thread-spam-filter-protects-op-self-and-followed-authors ()
+  "Built-in spam rules should never hide OP, self, or followed replies."
+  (let ((chirp-thread-spam-keywords '("返佣"))
+        (chirp-thread-spam-rules-file nil))
+    (pcase-let* ((tweets
+                  (list '(:id "focus" :text "Topic" :author-handle "op_user")
+                        '(:id "op-reply" :text "警惕返佣骗局" :author-handle "OP_USER")
+                        '(:id "self-reply" :text "我也遇到返佣" :author-handle "me" :author-self-p t)
+                        '(:id "friend-reply" :text "返佣都是坑" :author-handle "friend"
+                          :author-following-p t)
+                        '(:id "stranger-spam" :text "返佣85" :author-handle "bot")))
+                 (`(,visible . ,hidden) (chirp-thread--partition-spam-replies tweets)))
+      (should (equal (mapcar (lambda (tweet) (plist-get tweet :id)) visible)
+                     '("focus" "op-reply" "self-reply" "friend-reply")))
+      (should (equal (mapcar (lambda (entry) (cons (plist-get (car entry) :id) (cdr entry)))
+                             hidden)
+                     '(("stranger-spam" . "返佣")))))))
+
+(ert-deftest chirp-thread-spam-filter-inspects-bio-quoted-tweet-and-evasive-text ()
+  "Matcher should inspect author bios and quoted tweets while defeating text evasion."
+  (let ((chirp-thread-spam-keywords '("返佣" ("体制内幼师" "sao的很")))
+        (chirp-thread-spam-rules-file nil))
+    ;; Spam hidden in author bio behind an innocent reply.
+    (should (equal (chirp-thread--spam-reply-p
+                    '(:text "确实不错" :author-handle "bot1" :author-bio "大户返佣私信"))
+                   "返佣"))
+    ;; Spam hidden inside a quoted tweet.
+    (should (equal (chirp-thread--spam-reply-p
+                    '(:text "看这个" :author-handle "bot2"
+                      :quoted-tweet (:text "高额返佣渠道" :author-handle "promo")))
+                   "返佣"))
+    ;; Zero-width spaces, newline splits, and fullwidth ASCII should not bypass rules.
+    (should (chirp-thread--spam-reply-p
+             (list :text (concat "体\u200b制内幼师\nｓａｏ\ufeff的很"))))))
+
+(ert-deftest chirp-thread-spam-filter-supports-handle-host-and-regexp-rules ()
+  "Rule syntax should support `@handle', `host:', `A && B', and `/regexp/'."
+  (let ((chirp-thread-spam-keywords
+         '("@spam_bot"
+           "host:t.me"
+           "找炮友 && 点主页"
+           "/应该没人比[我她]玩得?更?开/"
+           "/[invalid-regex/"))
+        (chirp-thread-spam-rules-file nil))
+    ;; Exact @handle match.
+    (should (equal (chirp-thread--spam-reply-p
+                    '(:text "hi" :author-handle "SPAM_BOT"))
+                   "@spam_bot"))
+    (should-not (chirp-thread--spam-reply-p
+                 '(:text "talking about spam_bot" :author-handle "spam_bot_fan")))
+    ;; URL host match (exact and subdomain only).
+    (should (equal (chirp-thread--spam-reply-p
+                    '(:text "join" :urls ("https://sub.t.me/channel")))
+                   "host:t.me"))
+    (should-not (chirp-thread--spam-reply-p
+                 '(:text "mentioning t.me" :urls ("https://example.com/?q=t.me"))))
+    ;; String AND rule.
+    (should (equal (chirp-thread--spam-reply-p
+                    '(:text "找炮友 请点主页"))
+                   "找炮友 && 点主页"))
+    (should-not (chirp-thread--spam-reply-p
+                 '(:text "点主页看看")))
+    ;; Regexp rule matching variants.
+    (should (equal (chirp-thread--spam-reply-p
+                    '(:text "应该没人比她玩得更开"))
+                   "/应该没人比[我她]玩得?更?开/"))))
+
+(ert-deftest chirp-thread-hidden-replies-toggle-expands-with-rule-badges ()
+  "Activating the conversation heading should toggle filtered replies and show rules."
+  (let ((buffer (generate-new-buffer " *chirp-thread-toggle-test*"))
+        (chirp-thread-spam-keywords '("返佣"))
+        (chirp-thread-spam-rules-file nil)
+        thread-callback)
+    (unwind-protect
+        (cl-letf (((symbol-function 'chirp-begin-background-request)
+                   (lambda (_buffer _title) 'tok))
+                  ((symbol-function 'chirp-request-current-p)
+                   (lambda (_buffer token) (eq token 'tok)))
+                  ((symbol-function 'chirp-backend-thread)
+                   (lambda (_target cb &optional _err) (setq thread-callback cb)))
+                  ((symbol-function 'chirp-backend-article) #'ignore)
+                  ((symbol-function 'chirp-media-avatar-image) (lambda (&rest _) nil))
+                  ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _) nil))
+                  ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
+                  ((symbol-function 'chirp-display-buffer) #'ignore))
+          (chirp-thread-open '(:kind tweet :id "1" :text "Focus") "1" buffer)
+          (funcall thread-callback
+                   (list '(:kind tweet :id "1" :text "Focus" :author-name "OP" :author-handle "op"
+                           :reply-count 0 :retweet-count 0 :like-count 0 :quote-count 0 :bookmark-count 0 :view-count 0)
+                         '(:kind tweet :id "2" :text "Good reply" :author-name "Bob" :author-handle "bob"
+                           :reply-count 0 :retweet-count 0 :like-count 0 :quote-count 0 :bookmark-count 0 :view-count 0)
+                         '(:kind tweet :id "3" :text "高额返佣" :author-name "Bot" :author-handle "bot"
+                           :reply-count 0 :retweet-count 0 :like-count 0 :quote-count 0 :bookmark-count 0 :view-count 0))
+                   nil)
+          (with-current-buffer buffer
+            (should (string-match-p "1 shown · 1 hidden (RET to show)" (buffer-string)))
+            (should-not (string-match-p "高额返佣" (buffer-string)))
+            (let ((heading (text-property-any (point-min) (point-max) 'chirp-replies-heading t)))
+              (should heading)
+              (should (eq (get-text-property heading 'pointer) 'hand))
+              (goto-char heading)
+              (chirp-open-at-point))
+            (should (string-match-p "1 shown · 1 filtered shown (RET to hide)" (buffer-string)))
+            (should (string-match-p "\\[filtered: 返佣\\]" (buffer-string)))
+            (should (string-match-p "高额返佣" (buffer-string)))
+            (chirp-open-at-point)
+            (should (string-match-p "1 shown · 1 hidden (RET to show)" (buffer-string)))
+            (should-not (string-match-p "高额返佣" (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-timeline-applies-user-spam-rules-without-builtin-defaults ()
+  "Persistent user rules should filter timelines while built-in defaults stay thread-only."
+  (let* ((file (make-temp-file "chirp-user-rules-"))
+         (chirp-thread-spam-rules-file file)
+         (chirp-thread--user-rules-cache nil)
+         (chirp-thread-spam-keywords '("返佣"))
+         (tweets (list '(:id "1" :text "聊一下返佣现象" :author-handle "alice")
+                       '(:id "2" :text "剧透警告" :author-handle "bob")
+                       '(:id "3" :text "hello" :author-handle "noisy_bot")
+                       '(:id "4" :text "剧透我自己发的" :author-handle "me" :author-self-p t))))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "@noisy_bot\n剧透\n"))
+          (should (equal (mapcar (lambda (tweet) (plist-get tweet :id))
+                                 (chirp-thread-filter-user-tweets tweets))
+                         '("1" "4"))))
+      (setq chirp-thread--user-rules-cache nil)
+      (delete-file file))))
 
 (provide 'chirp-thread-test)
 
