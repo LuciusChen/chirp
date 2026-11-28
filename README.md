@@ -1,16 +1,12 @@
 # chirp.el
 
-`chirp.el` is an Emacs browser for X/Twitter for people who want to read, search, inspect, and act on posts without leaving Emacs. Browsing views use dedicated Emacs buffers; read-only text views use Chirp's `special-mode` UI, image views use `image-mode`, and compose buffers remain editable. Chirp fetches data directly from X.
-
-## What you can do
-
-Use Chirp to follow timelines, search and inspect posts, move from a post to its thread, author, profile lists, or media, and perform common post, reply, quote, like, bookmark, and follow actions without leaving Emacs. Optional desktop notifications surface account activity, and translation is available on demand.
+`chirp.el` is an Emacs client for X/Twitter. It fetches data directly from X and renders timelines, threads, profiles, notifications, and media in dedicated `special-mode` and `image-mode` buffers, with editable compose buffers for posting.
 
 ## Quick Start
 
-Chirp requires GNU Emacs 29.1 or newer. Open a Chirp view in a graphical Emacs with Xwidgets and sign in on the X page. Chirp opens the requested view automatically when sign-in completes. It keeps the signed-in WebKit session in a background buffer and uses the cookies supplied by X. Closing the session buffer asks for confirmation. Use `M-x chirp-login` to sign in again.
+Chirp requires GNU Emacs 29.1 or newer. In a graphical Emacs built with Xwidgets, open any Chirp view and sign in on the X page; once sign-in finishes, Chirp opens the view you asked for and keeps the WebKit session in a background buffer. Closing that session buffer asks for confirmation, and `M-x chirp-login` signs in again.
 
-For a terminal-only installation, Chirp also accepts `TWITTER_AUTH_TOKEN` and `TWITTER_CT0` in the Emacs environment, or the corresponding `auth_token` and `ct0` password entries for `x.com` in auth-source.
+In a terminal-only Emacs, set `TWITTER_AUTH_TOKEN` and `TWITTER_CT0` in the environment, or store `auth_token` and `ct0` entries for `x.com` in `auth-source`.
 
 ### Load Chirp
 
@@ -19,35 +15,7 @@ For a terminal-only installation, Chirp also accepts `TWITTER_AUTH_TOKEN` and `T
 (require 'chirp)
 ```
 
-Run `M-x chirp` to open the For You timeline in a dedicated buffer.
-
-## Notifications
-
-Open `M-x chirp-notifications` to browse dated activity. Use `n` and `p` to move between events, `RET` anywhere on a linked event (including its timestamp) to open its post, and `N` for older activity.
-
-To receive account activity notifications, enable the global mode:
-
-```elisp
-(chirp-notifications-mode 1)
-```
-
-The first check establishes a baseline without showing old activity. Later
-checks run every five minutes by default and notify only unseen activity. Linux
-uses freedesktop notifications over D-Bus; macOS uses AppleScript. Titles and
-bodies have Emacs text properties removed before reaching either backend.
-
-To change the interval or the size of each recent-activity check:
-
-```elisp
-(setq chirp-notifications-interval 300
-      chirp-notifications-max-results 20)
-```
-
-Tweet translation defaults to Chinese. Customize the target language with:
-
-```elisp
-(setq chirp-translation-language "zh")
-```
+Run `M-x chirp` to open the For You timeline.
 
 ## Entry Points
 
@@ -67,63 +35,76 @@ M-x chirp-profile-followers
 M-x chirp-profile-following-users
 ```
 
-If you switch away while `M-x chirp-list` loads, run it again to choose from the cached lists.
+If you switch away while `M-x chirp-list` is loading, run it again to pick from the cached lists.
 
 ## Keys
 
-- `g`: refresh; on Home and Following, Chirp keeps the current timeline visible and merges newer posts at the top
-- `TAB`: switch between Home and Following on those timelines; toggle between `Top` and `Latest` in search buffers; in profile buffers, cycle `Posts`, `Replies`, `Highlights`, `Media`, and `Likes` when available
-- `n` / `p`: next or previous entry; at the last entry of a paginated view, `n` loads the next available page
-- `N`: append older entries in timelines, searches, lists, profiles, threads, and follower lists. Chirp shows any posts remaining from the current response first, then continues from X’s bottom cursor. If a page request fails, press `N` to retry.
-- `q`: close the current Chirp window; on For You and Following, keep the timeline buffer alive so you can switch back later
-- When Home or Following has no more older posts, Chirp says so instead of leaving the last loading message in place
-- `RET`: expand an article when point is on `Show more`; otherwise open the current tweet or profile, or open large media when point is on a thumbnail
-- `/`: search X (with minibuffer search history; press `TAB` in results to toggle `Top` and `Latest`)
-- Click ordinary post text, including quoted text, to place point; click a quote heading, handle (including `retweeted by` and `replying to` handles), hashtag, link, thumbnail, or profile tab to open its target
-- `l` / `R` / `B`: directly toggle like, repost/retweet, or bookmark for the tweet at point with immediate optimistic UI feedback and automatic rollback on failure
-- `c` / `r` / `Q`: compose a new post, reply to, or quote the tweet at point
-- `T`: translate the tweet at point and show the result below its original text
-- `y`: copy the current tweet URL as a `fixupx.com` link
-- `i`: open the account activity view
-- `Mouse-1` on a tweet's reply, repost/retweet, like, quote, or bookmark metric opens or toggles that action for the clicked tweet
-- In profile summaries, `RET` on `Followers` or `Following` opens that user list
-- In profile buffers, `RET` on the subview strip switches between available profile timelines
-- `m`: open the first media item for the current tweet
-- `D`: download the current media, or choose one media item from the current tweet; photos try the original-resolution URL and videos use the highest-quality variant
-- `A`: open the author profile
-- `S`: add a persistent spam phrase or keyword using the active region or current tweet text; use `C-u S` to start with the author's display name
-- `x`: open the actions menu for timeline switching, your own profile, bookmarks, liked tweets, lists, post/reply/quote, follow/unfollow, translation, and tweet actions
-- `o`: open the current item in a browser
+- `g`: refresh the current view (on Home and Following, newer posts are merged at the top without clearing the buffer).
+- `TAB`: switch between Home and Following, toggle between `Top` and `Latest` in search buffers, or cycle profile tabs (`Posts`, `Replies`, `Highlights`, `Media`, `Likes`).
+- `n` / `p`: move to the next or previous entry; at the end of a paginated view, `n` loads the next page.
+- `N`: load older entries in timelines, searches, lists, profiles, threads, notifications, and follower lists (also retries a failed page load).
+- `q`: close the current window; Home and Following buffers stay alive so you can switch back to them later.
+- `RET`: open the item at point (a tweet's thread, a profile, a large media view, a link, or inline `Show more` expansion for article previews).
+- `/`: search X (with minibuffer history; press `TAB` in search results to toggle `Top` and `Latest`).
+- `l` / `R` / `B`: toggle like, repost, or bookmark on the tweet at point; counts update immediately and revert if the request fails.
+- `c` / `r` / `Q`: compose a new post, reply to the tweet at point, or quote it.
+- `T`: translate the tweet at point and display the translation underneath.
+- `y`: copy the tweet URL as a `fixupx.com` link.
+- `i`: open the account activity view.
+- `m`: open the first media item on the current tweet.
+- `D`: download the media at point, or pick one item from the current tweet (originals for photos, highest-quality variant for videos).
+- `A`: open the author's profile.
+- `S`: add a spam filter phrase from the active region or current tweet text (`C-u S` starts from the author's display name).
+- `x`: open the transient actions menu.
+- `o`: open the current item in a browser.
+- Mouse: clicking post text (including quoted text) places point; clicking handles, hashtags, quote headings, links, thumbnails, profile tabs, or tweet action metrics activates that target.
 
 Inside the compose buffer:
 
-- `C-c C-a`: attach an image file (up to 4)
-- `C-c C-v`: paste one image from the clipboard
-- `C-c C-d`: remove an attached image
-- `M-TAB`: complete a user handle after typing an `@` prefix. Suggestions appear through your completion frontend. With built-in completion, press `M-TAB` again if the first lookup is still loading.
-- `C-c C-c`: return to browsing while sending. A failed send restores the editable draft and its attachments. Use `C-c C-o` to check your posts before retrying
-- `C-c C-k`: cancel the draft
+- `C-c C-a`: attach an image file (up to 4).
+- `C-c C-v`: paste an image from the clipboard (uses `pngpaste` on macOS and `wl-paste` on Wayland when available).
+- `C-c C-d`: remove an attached image.
+- `M-TAB`: complete `@handle` mentions via your active completion frontend (with built-in completion, press `M-TAB` again if the first lookup is still loading).
+- `C-c C-c`: send the draft in the background and return to browsing; if sending fails, the draft and attachments are restored (`C-c C-o` opens your profile to check before retrying).
+- `C-c C-k`: cancel the draft.
 
-Chirp selects the long-form operation for drafts exceeding the standard weighted length.
+Drafts longer than 280 weighted characters are sent as long-form posts automatically.
 
-Tweet metrics also reflect the current local state: with text metrics, liked tweets show `Liked`, bookmarked tweets show `Saved`, and retweeted tweets show `RTed`. The visible reply, repost/retweet, like, quote, and bookmark metrics also provide mouse-1 action controls.
-Every tweet returned by the Likes view is shown with its like state active, even when X omits the per-item `favorited` field.
-Clipboard image paste uses `wl-paste` on Wayland and `pngpaste` on macOS when available.
+## Notifications
+
+Run `M-x chirp-notifications` (or press `i`) to browse account activity. Use `n` and `p` to move between events, `RET` anywhere on a linked event to open its post, and `N` to load older activity.
+
+To enable periodic desktop notifications:
+
+```elisp
+(chirp-notifications-mode 1)
+```
+
+The first check records a baseline without notifying on old items; subsequent checks run every five minutes by default (freedesktop notifications over D-Bus on Linux, AppleScript on macOS).
+
+```elisp
+(setq chirp-notifications-interval 300
+      chirp-notifications-max-results 20)
+```
+
+## Translation
+
+Tweet translation (`T` or `x T`) defaults to Chinese. Change the target language with:
+
+```elisp
+(setq chirp-translation-language "zh")
+```
 
 ## Thread Reply Filtering
 
-Chirp hides likely spam replies using a conservative default list collected from repeated public reply spam, prioritizing Chinese templates before English ones. Matching configured literal phrases against reply text, expanded links, the author's display name, and the author's `@handle` ignores case and never filters the thread's focus tweet. A nested list requires every fragment to occur, which catches split templates without filtering on either broad fragment alone; set the option to nil to disable filtering.
+Chirp filters common spam replies in thread views using a case-insensitive list of literal phrases matched against reply text, expanded links, author names, and `@handles`. The focus tweet and X's `Related tweet` entries are never filtered. Nested lists match only when every fragment appears.
 
-Press `S` on a reply to edit and save a literal phrase, or select the useful portion first so it becomes the initial input. Use `C-u S` to start from the author's display name. Chirp stores accepted entries under `user-emacs-directory` (`~/.emacs.d/chirp/spam-rules.txt` in the usual setup), one UTF-8 literal per line, de-duplicates them without regard to case, and immediately refreshes the current view. Blank lines and lines beginning with `#` are ignored. Nicknames, handles, reply text, and expanded links all use this same combined rule set.
-
-Run `M-x chirp-thread-edit-spam-rules` to edit the file directly, or customize `chirp-thread-spam-rules-file` to keep it in another location such as a dotfiles repository. After manual edits, refresh an open thread with `g`. Complex rules requiring every fragment to occur remain available through `chirp-thread-spam-keywords` and the source-controlled defaults.
-
-To propose local rules for everyone, open the [spam rule submission form](https://github.com/LuciusChen/chirp/issues/new?template=spam-rule.yml), paste one or more entries from the local file, and include public examples or other evidence. The same submitted rule covers reply text and author identity, so it does not need separate nickname and content variants. Built-in additions are reviewed for false positives; maintainers can keep a specific literal rule or turn broad fragments into an all-fragment rule in [`lisp/chirp-spam-rules.el`](lisp/chirp-spam-rules.el).
+Press `S` on a reply to save a literal phrase to `~/.emacs.d/chirp/spam-rules.txt` (one entry per line, `#` comments and blank lines ignored) and refresh the view immediately. Use `C-u S` to prefill the author's display name, or run `M-x chirp-thread-edit-spam-rules` to edit the file directly. You can change the file location via `chirp-thread-spam-rules-file`.
 
 ```elisp
-(setq chirp-thread-spam-keywords nil) ; Disable filtering entirely.
+(setq chirp-thread-spam-keywords nil) ; Disable filtering.
 
-;; Or use Elisp for grouped or fully customized in-memory rules.
+;; Or customize rules in Elisp (nested lists require all fragments to match):
 (setq chirp-thread-spam-keywords
       '("联系我领取"
         ("体制内幼师" "sao的很")
@@ -131,79 +112,57 @@ To propose local rules for everyone, open the [spam rule submission form](https:
         "t.me/"))
 ```
 
-Refresh an open thread after changing the option.
-
-X-provided related-tweet modules remain visible with a highlighted `Related tweet` context label and are not treated as replies by the keyword spam filter. Reply-target `@username` handles are highlighted separately from their muted `replying to` context, while standard quote tweets continue to render as nested `Quoted …` blocks.
+Refresh an open thread with `g` after changing `chirp-thread-spam-keywords` or editing the rules file. To contribute patterns to the built-in list in [`lisp/chirp-spam-rules.el`](lisp/chirp-spam-rules.el), use the [spam rule submission form](https://github.com/LuciusChen/chirp/issues/new?template=spam-rule.yml).
 
 ## Appearance
 
-Tweet lists use a lightweight separator between posts by default. To customize it:
+Independent posts in list views are separated by a divider line (adjacent reply chains stay grouped without a divider between them). To customize or disable the separator:
 
 ```elisp
-(setq chirp-tweet-separator "- - - - - - - - - - - -")
-(setq chirp-tweet-separator-indent 6)
+(setq chirp-tweet-separator "- - - - - - - - - - - -"
+      chirp-tweet-separator-indent 6)
 ```
 
-Set it to `nil` or an empty string to disable tweet separators.
-
-Avatars and tweet media thumbnails can be hidden independently:
+Set `chirp-tweet-separator` to `nil` or `""` to turn separators off. To disable highlighting on the active entry's header line:
 
 ```elisp
-(setq chirp-show-avatars nil)
-(setq chirp-show-tweet-media nil)
+(setq chirp-highlight-current-entry nil)
 ```
 
-When tweet media thumbnails are hidden, Chirp keeps compact text media entries
-so media commands still work, and shows alt text when X provides it.
+Avatars and media thumbnails can be toggled independently:
+
+```elisp
+(setq chirp-show-avatars nil
+      chirp-show-tweet-media nil)
+```
+
+When thumbnails are hidden, Chirp shows compact text placeholders (including alt text when available) so media keys still work.
 
 ## Media
 
-- Chirp hides tweet permalinks and image/video resource links; genuine external links remain visible and highlight on hover.
-- Images render as small thumbnails in timeline, thread, and profile post lists.
-- Images and video/GIF cover thumbnails are split into gapless text-row slices, so point can move through a tall cover one row at a time. Multiple media items remain aligned in the same thumbnail grid.
-- Timeline, thread, and profile views now render cached avatars/thumbnails first; missing media are prefetched in the background so text appears faster.
-- Video and animated GIF thumbnails are filled in asynchronously when Chirp can use an upstream preview image or extract one with `ffmpeg`.
-- Press `RET` on a thumbnail to open the photo in a new Chirp media buffer when image display is available.
-- In image and fallback media views, `c` or `w` copies the current photo to the system clipboard, `D` downloads the current media item, and `q` closes the current media buffer
-- Videos currently open externally through `mpv` when available, or the browser otherwise.
+- Tweet permalinks and raw image/video URLs are hidden from the link list; external links stay visible and highlight on hover.
+- Photo and video/GIF thumbnails are sliced by text row so point moves smoothly row by row, and multi-photo grids wrap cleanly within the window width.
+- List views display cached avatars and thumbnails immediately and prefetch missing ones in the background (video/GIF covers use upstream previews or `ffmpeg` when available).
+- Press `RET` on a thumbnail to open a photo in `image-mode`, or play a video through `mpv` (falling back to the browser when `mpv` is unavailable).
+- Inside the media viewer, press `n` / `p` to switch items, `c` or `w` to copy the current photo to the clipboard, `D` to download, `o` to open in a browser, and `q` to close.
 
-If you want a larger or fixed mpv window, customize:
+Common media and cache options:
 
 ```elisp
-(setq chirp-video-player-window-size '(1280 . 720))
+(setq chirp-video-player-window-size '(1280 . 720)
+      chirp-media-download-directory "~/Downloads/chirp/"
+      chirp-backend-read-cache-ttl 15)
 ```
 
-If you do not use `mpv`, either point `chirp-video-player-command` at another
-player executable, or set it to `nil` to always open video URLs in the browser.
-
-Downloaded media default to `~/Downloads/`.  To change that:
-
-```elisp
-(setq chirp-media-download-directory "~/Downloads/chirp/")
-```
-
-If you prefer the old blocking behavior, customize:
-
-```elisp
-(setq chirp-media-render-from-cache-only nil)
-```
-
-To disable background image prefetch, customize:
-
-```elisp
-(setq chirp-media-prefetch-images nil)
-```
-
-To trade freshness for faster repeated opens of the same thread/profile/article,
-customize the short in-memory backend cache:
-
-```elisp
-(setq chirp-backend-read-cache-ttl 15)
-```
+Point `chirp-video-player-command` at another player or set it to `nil` to always open videos in a browser. Set `chirp-media-render-from-cache-only` to `nil` to fetch thumbnails synchronously, or `chirp-media-prefetch-images` to `nil` to disable background prefetching.
 
 ## Notes
 
-- X may change its web API independently of Chirp releases. Creating a bookmark currently returns HTTP 404 in live testing. Reading bookmarks is available.
+- X can change its web API without notice. Reading bookmarks works, while creating a bookmark currently returns HTTP 404.
+
+## Acknowledgments
+
+The native X web API backend (`lisp/chirp-x.el` and the X GraphQL/REST adapters in `lisp/chirp-backend.el`) was adapted and ported from the [`emacs-apps/chirp`](https://github.com/emacs-apps/chirp) fork. Many thanks to its maintainers for building the native backend work that made dropping `twitter-cli` possible.
 
 ## License
 
