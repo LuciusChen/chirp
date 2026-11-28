@@ -11,16 +11,29 @@
 (require 'chirp)
 
 (ert-deftest chirp-opens-home-after-web-sign-in ()
-  "Open the login page first and continue to Home on completion."
-  (let (complete home)
-    (cl-letf (((symbol-function 'chirp-x-credentials) #'ignore)
-              ((symbol-function 'chirp-web-ready-p) #'ignore)
-              ((symbol-function 'chirp-web-login) (lambda (done) (setq complete done)))
-              ((symbol-function 'chirp-timeline-open-home) (lambda () (setq home t))))
-      (call-interactively #'chirp)
-      (should-not home)
-      (funcall complete)
-      (should home))))
+  "Fetch Home on sign-in, even if a previous session has an open Home."
+  (save-window-excursion
+    (let ((chirp-web--ready 'first) (requests 0) complete views)
+      (unwind-protect
+          (cl-letf (((symbol-function 'chirp-x-session) (lambda () chirp-web--ready))
+                    ((symbol-function 'chirp-web-login) (lambda (done) (setq complete done)))
+                    ((symbol-function 'chirp-backend-feed)
+                     (lambda (ok &rest _)
+                       (cl-incf requests)
+                       (funcall ok nil nil)
+                       (push (current-buffer) views))))
+            (chirp)
+            (setq chirp-web--ready nil)
+            (call-interactively #'chirp)
+            (should (= requests 1))
+            (setq chirp-web--ready 'second)
+            (funcall complete)
+            (should (= requests 2))
+            (should-not (eq (car views) (cadr views)))
+            (chirp)
+            (should (= requests 2))
+            (should (eq (window-buffer) (car views))))
+        (mapc #'kill-buffer views)))))
 
 (ert-deftest chirp-buffer-creates-fresh-view-buffers ()
   "Each `chirp-buffer' call should return a fresh buffer."

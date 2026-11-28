@@ -14,6 +14,11 @@
 (require 'chirp-backend)
 (require 'chirp-media)
 (require 'chirp-render)
+(require 'chirp-web)
+
+(defvar-local chirp-timeline--session nil
+  "WebKit session that requested this timeline.")
+(put 'chirp-timeline--session 'permanent-local t)
 
 (defun chirp-timeline--set-kind (buffer kind)
   "Record timeline KIND in BUFFER."
@@ -339,11 +344,16 @@ requests a specific pagination page."
 
 (defun chirp-timeline--open-primary (kind)
   "Revisit the persistent timeline for KIND, or load it."
-  (let ((buffer (seq-find (lambda (buf) (eq kind (buffer-local-value 'chirp--timeline-kind buf)))
+  (let ((buffer (seq-find (lambda (buf)
+                            (with-current-buffer buf
+                              (and (eq chirp--timeline-kind kind)
+                                   (eq chirp-timeline--session chirp-web--ready))))
                           (buffer-list))))
     (if (and buffer (with-current-buffer buffer (or chirp--timeline-limit chirp--request-token)))
         (chirp-display-buffer buffer)
-      (chirp-timeline--open kind :limit chirp-default-max-results :buffer buffer))))
+      (setq buffer (or buffer (chirp-buffer)))
+      (with-current-buffer buffer (setq chirp-timeline--session chirp-web--ready))
+      (chirp-timeline--open kind :buffer buffer))))
 
 (defun chirp-timeline-open-home ()
   "Open the home timeline."

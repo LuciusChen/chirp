@@ -172,7 +172,7 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
 
 (ert-deftest chirp-backend-feed-uses-x-graphql-and-preserves-pagination ()
   "Home feeds should use direct X GraphQL with normalized pagination metadata."
-  (let (operation variables raw-tweets next-cursor tweets)
+  (let (operation variables next-cursor tweets)
     (cl-letf (((symbol-function 'chirp-x-graphql-request)
                (lambda (request-operation request-variables callback &rest _options)
                  (setq operation request-operation
@@ -183,12 +183,12 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
                    (list
                     (chirp-backend-test--timeline-entry
                      '(("rest_id" . "1")
+                       ("core" . (("user_results" .
+                                   (("result" .
+                                     (("core" . (("screen_name" . "alice") ("name" . "Alice")))
+                                      ("avatar" . (("image_url" . "https://pbs.twimg.com/avatar.jpg")))))))))
                        ("legacy" . (("full_text" . "hello")))))
-                    (chirp-backend-test--bottom-cursor "cursor-next"))))))
-              ((symbol-function 'chirp-collect-top-level-tweets)
-               (lambda (items)
-                 (setq raw-tweets items)
-                 '((:id "1")))))
+                    (chirp-backend-test--bottom-cursor "cursor-next")))))))
       (chirp-backend-feed
        (lambda (items envelope)
          (setq tweets items
@@ -198,8 +198,9 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
     (should (equal (alist-get "count" variables nil nil #'string=) 20))
     (should (equal (alist-get "cursor" variables nil nil #'string=)
                    "cursor-prev"))
-    (should (equal (length raw-tweets) 1))
-    (should (equal tweets '((:id "1"))))
+    (should (equal (mapcar #'chirp-tweet-key tweets) '("1")))
+    (should (equal (plist-get (car tweets) :author-handle) "alice"))
+    (should (equal (plist-get (car tweets) :author-avatar-url) "https://pbs.twimg.com/avatar.jpg"))
     (should (equal next-cursor "cursor-next"))))
 
 (ert-deftest chirp-backend-feed-selects-the-following-operation ()
@@ -1150,7 +1151,7 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
         (let ((chirp-web--login-timer timer))
           (cl-letf (((symbol-function 'xwidget-live-p) (lambda (_) t))
                     ((symbol-function 'xwidget-buffer) (lambda (_) view))
-                    ((symbol-function 'xwidget-webkit-uri) (lambda (_) "https://x.com/home"))
+                    ((symbol-function 'xwidget-webkit-uri) (lambda (_) "https://x.com/i/flow/login"))
                     ((symbol-function 'xwidget-webkit-execute-script)
                      (lambda (_widget _script cb) (setq check cb))))
             (set-window-buffer (split-window-right) view)
@@ -1163,6 +1164,28 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
             (should chirp-web--ready)
             (should-not (get-buffer-window view t))
             (should-not chirp-web--login-timer)))))))
+
+(ert-deftest chirp-web-recovers-a-read-interrupted-by-navigation ()
+  (dolist (case '(("GET" ("gone" "[200,\"ok\"]") 200)
+                  ("GET" ("gone" "gone") 0)
+                  ("POST" ("gone") 0)
+                  ("GET" ("gone") 0 changed-session)))
+    (pcase-let ((`(,method ,responses ,expected . ,change) case)
+                (chirp-web--ready 'signed-in)
+                (starts 0) (result nil))
+      (cl-letf (((symbol-function 'xwidget-live-p) (lambda (_) t))
+                ((symbol-function 'xwidget-webkit-execute-script)
+                 (lambda (_widget script callback)
+                   (if (string-prefix-p chirp-web--fetch-script script)
+                       (progn (cl-incf starts) (funcall callback "started"))
+                     (when change (setq chirp-web--ready 'new-session))
+                     (should responses)
+                     (funcall callback (pop responses))))))
+        (chirp-web-request "https://x.com/test" method
+                           (lambda (status _body) (push status result))
+                           :bearer "test" :limit 100)
+        (should (equal result (list expected)))
+        (should (= starts (length (cadr case))))))))
 
 (ert-deftest chirp-web-queries-only-when-closing-its-live-buffer ()
   (require 'xwidget)

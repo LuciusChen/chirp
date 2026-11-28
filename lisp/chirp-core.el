@@ -1289,6 +1289,7 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
             (chirp-get object "screenName")
             (chirp-get object "username")
             (chirp-get object "handle")
+            (chirp-get-in object '("core" "screen_name"))
             (chirp-get-in object '("legacy" "screen_name")))
            (chirp-get object "id" "rest_id"))
        (or (chirp-first-nonblank
@@ -1296,6 +1297,7 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
             (chirp-get object "display_name")
             (chirp-get object "description")
             (chirp-get object "bio")
+            (chirp-get-in object '("core" "name"))
             (chirp-get-in object '("legacy" "name"))
             (chirp-get-in object '("legacy" "description")))
            (chirp-get object "followers_count" "friends_count" "statuses_count")

@@ -8,7 +8,7 @@ Use Chirp to follow timelines, search and inspect posts, move from a post to its
 
 ## Quick Start
 
-Chirp requires GNU Emacs 29.1 or newer. Open a Chirp view in a graphical Emacs with Xwidgets and sign in on the X page. Chirp keeps the signed-in WebKit session in a background buffer and uses the cookies supplied by X. Closing the session buffer asks for confirmation. Use `M-x chirp-login` to sign in again.
+Chirp requires GNU Emacs 29.1 or newer. Open a Chirp view in a graphical Emacs with Xwidgets and sign in on the X page. Chirp opens the requested view automatically when sign-in completes. It keeps the signed-in WebKit session in a background buffer and uses the cookies supplied by X. Closing the session buffer asks for confirmation. Use `M-x chirp-login` to sign in again.
 
 For a terminal-only installation, Chirp also accepts `TWITTER_AUTH_TOKEN` and `TWITTER_CT0` in the Emacs environment, or the corresponding `auth_token` and `ct0` password entries for `x.com` in auth-source.
 

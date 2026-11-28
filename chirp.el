@@ -33,21 +33,25 @@
 (require 'chirp-profile)
 (require 'chirp-timeline)
 
+(defun chirp--sign-in (command &rest args)
+  "Start a new X session and continue with COMMAND and ARGS."
+  (chirp-web-login (lambda ()
+                     (chirp-backend-clear-cache)
+                     (clrhash chirp-quoted-tweet-cache)
+                     (clrhash chirp-tweet-state-overrides)
+                     (apply command args))))
+
 (defun chirp--open (command &rest args)
   "Call COMMAND with ARGS after obtaining an X session."
   (if (chirp-x-session)
       (apply command args)
-    (chirp-web-login (lambda () (apply command args)))))
+    (apply #'chirp--sign-in command args)))
 
 ;;;###autoload
 (defun chirp-login ()
   "Open X sign-in and return to the home timeline."
   (interactive)
-  (chirp-web-login (lambda ()
-                     (chirp-backend-clear-cache)
-                     (clrhash chirp-quoted-tweet-cache)
-                     (clrhash chirp-tweet-state-overrides)
-                     (chirp-timeline--open 'home))))
+  (chirp--sign-in #'chirp-timeline-open-home))
 
 ;;;###autoload
 (defun chirp ()

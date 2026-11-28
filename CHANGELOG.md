@@ -29,6 +29,8 @@ history remains available in Git.
 
 ### Fixed
 
+- Restore timeline avatars for authors whose name and profile image are supplied separately by X.
+- Open a fresh timeline after WebKit sign-in and recover a timeline read interrupted by the final redirect.
 - Preserve full NoteTweet text, focus tweets in deep threads, related-post labels, and follow relationships from X’s native responses.
 - Continue searches, likes, lists, and follower lists beyond page one. Skip duplicate-only feed pages and preserve the active window while appending older entries.
 - Open the list picker only while its original window and buffer are selected and the minibuffer is free. Reopening a failed home timeline retries the request.

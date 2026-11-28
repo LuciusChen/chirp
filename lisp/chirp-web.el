@@ -16,7 +16,6 @@
 (declare-function set-xwidget-query-on-exit-flag "xwidget.c" (xwidget flag))
 (declare-function xwidget-live-p "xwidget.c" (object))
 (declare-function xwidget-buffer "xwidget.c" (xwidget))
-(declare-function xwidget-webkit-uri "xwidget.c" (xwidget))
 (declare-function xwidget-webkit-goto-uri "xwidget.c" (xwidget uri))
 (declare-function xwidget-webkit-execute-script "xwidget.c" (xwidget script &optional fun))
 (declare-function xwidget-webkit-new-session "xwidget" (url))
@@ -33,6 +32,14 @@
   (and chirp-web--ready (fboundp 'xwidget-live-p)
        (xwidget-live-p chirp-web--widget)))
 
+(defconst chirp-web--login-script
+  "location.origin === 'https://x.com' && document.readyState !== 'loading' &&
+   (/^\\/home\\/?$/.test(location.pathname) ||
+    (!location.pathname.startsWith('/i/flow/') &&
+     document.querySelector('[data-testid=\"AppTabBar_Home_Link\"]'))) &&
+   /(?:^|;\\s*)ct0=[^;]+/.test(document.cookie) ? 'ready' : ''"
+  "Detect sign-in inside the current X document after client-side navigation.")
+
 (defun chirp-web--check-login (callback deadline)
   "Run CALLBACK once the X home session is ready, or stop at DEADLINE."
   (let* ((widget chirp-web--widget)
@@ -43,11 +50,9 @@
       (cancel-timer timer)
       (setq chirp-web--login-timer nil)
       (when live (message "X sign-in timed out. Run M-x chirp-login to resume.")))
-     ((string-match-p (rx string-start "https://x.com/home" (? "/")
-                          (or string-end "?" "#"))
-                      (or (xwidget-webkit-uri widget) ""))
+     (t
       (xwidget-webkit-execute-script
-       widget "location.origin === 'https://x.com' && /(?:^|;\\s*)ct0=[^;]+/.test(document.cookie) ? 'ready' : ''"
+       widget chirp-web--login-script
        (lambda (state)
          (when (and (eq timer chirp-web--login-timer) (equal state "ready"))
            (cancel-timer timer)
@@ -148,7 +153,7 @@ or session error.  The caller must validate URL against its API allowlist."
                                "if (r[%d] === null) return 'wait';"
                                "const v=r[%d]; delete r[%d]; return JSON.stringify(v)})()")
                        id id id id))
-         timer poll-timer (interval 0.03))
+         timer poll-timer (interval 0.03) (retry-read (equal method "GET")))
     (cl-labels
         ((finish (status body)
            (when timer
@@ -156,6 +161,21 @@ or session error.  The caller must validate URL against its API allowlist."
              (when poll-timer (cancel-timer poll-timer))
              (setq timer nil)
              (funcall callback status body)))
+         (start ()
+           (xwidget-webkit-execute-script
+            widget (concat chirp-web--fetch-script "(..." (json-serialize args :null-object nil) ")")
+            (lambda (started)
+              (when timer
+                (pcase started
+                  ("started" (check))
+                  ("signin"
+                   (when (eq session chirp-web--ready) (setq chirp-web--ready nil))
+                   (finish 0 "Sign in with M-x chirp"))
+                  (_ (page-changed)))))))
+         (page-changed ()
+           (if (and retry-read (eq session chirp-web--ready) (xwidget-live-p widget))
+               (progn (setq retry-read nil) (start))
+             (finish 0 "X browser session changed")))
          (check ()
            (if (xwidget-live-p widget)
                (xwidget-webkit-execute-script
@@ -167,7 +187,7 @@ or session error.  The caller must validate URL against its API allowlist."
                       (setq poll-timer (run-at-time interval nil #'check)
                             interval (min 0.15 (* 2 interval))))
                      ((or (not (stringp value)) (equal value "gone"))
-                      (finish 0 "X browser session changed"))
+                      (page-changed))
                      (t
                       (let ((response (condition-case nil
                                           (json-parse-string value)
@@ -178,13 +198,7 @@ or session error.  The caller must validate URL against its API allowlist."
                           (finish 0 "Invalid X browser response"))))))))
              (finish 0 "X browser session closed or timed out"))))
       (setq timer (run-at-time 70 nil #'finish 0 "X browser request timed out"))
-      (xwidget-webkit-execute-script
-       widget (concat chirp-web--fetch-script "(..." (json-serialize args :null-object nil) ")")
-       (lambda (started)
-         (when timer
-           (if (equal started "started") (check)
-             (when (eq session chirp-web--ready) (setq chirp-web--ready nil))
-             (finish 0 "Sign in with M-x chirp"))))))))
+      (start))))
 
 (provide 'chirp-web)
 
