@@ -26,6 +26,7 @@ This file records user-visible Chirp changes from 2026-08-01 onward. Earlier his
 
 ### Fixed
 
+- Continue a rejected quote from its original post on X while keeping the local draft and attachments.
 - Keep pending WebKit callbacks alive across garbage collection on macOS, including when opening a profile from a tweet.
 - Restore an existing WebKit X session quietly in the background after restarting Emacs, showing the sign-in page only when authentication is needed or when `M-x chirp-login` is run explicitly.
 - Keep pagination on the selected search ordering while switching between Top and Latest.

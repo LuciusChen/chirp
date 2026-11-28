@@ -66,6 +66,7 @@ Inside the compose buffer:
 - `C-c C-d`: remove an attached image.
 - `M-TAB`: complete `@handle` mentions via your active completion frontend (with built-in completion, press `M-TAB` again if the first lookup is still loading).
 - `C-c C-c`: send the draft in the background and return to browsing; if sending fails, the draft and attachments are restored (`C-c C-o` opens your profile to check before retrying).
+- After X rejects a quote with code 226, press `C-c C-c` to open the original post in Emacs WebKit and copy your comment. Choose **Repost → Quote**, paste the comment, and review it before posting. Use `C-u C-c C-c` from any quote draft to open the original in your configured browser. The draft and attached files stay in Chirp. Add those files to the web composer before posting.
 - `C-c C-k`: cancel the draft.
 
 Drafts longer than 280 weighted characters are sent as long-form posts automatically.

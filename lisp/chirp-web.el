@@ -12,6 +12,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'browse-url)
 
 (declare-function set-xwidget-query-on-exit-flag "xwidget.c" (xwidget flag))
 (declare-function xwidget-live-p "xwidget.c" (object))
@@ -51,6 +52,14 @@
   "Return non-nil when the X browser session is ready for requests."
   (and chirp-web--ready (fboundp 'xwidget-live-p)
        (xwidget-live-p chirp-web--widget)))
+
+(defun chirp-web-open-post (id &optional external)
+  "Display X post ID in a new WebKit buffer when signed in graphically.
+With EXTERNAL, or without a graphical session, use the configured browser."
+  (let ((url (format "https://x.com/i/status/%s" id)))
+    (if (and (not external) (display-graphic-p) (chirp-web-ready-p))
+        (xwidget-webkit-new-session url)
+      (browse-url url))))
 
 (defconst chirp-web--home-url "https://x.com/home"
   "X home page used to restore an existing WebKit session quietly.")

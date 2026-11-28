@@ -186,6 +186,36 @@ Return a list of (compose source foreign)."
       (kill-buffer source)
       (when (file-exists-p file) (delete-file file)))))
 
+(ert-deftest chirp-compose-continues-rejected-quotes-on-x ()
+  "A rejected quote can continue on X without another write or losing its draft."
+  (pcase-let ((`(,draft . ,source) (chirp-test--make-compose-buffer "My comment")))
+    (unwind-protect
+        (with-current-buffer draft
+          (setq chirp-compose-kind 'quote chirp-compose-target-id "42"
+                chirp-compose-attachments '("/tmp/photo.jpg"))
+          (let ((posts 0) (kill-ring nil) (interprogram-cut-function nil)
+                (send (key-binding (kbd "C-c C-c"))) opened)
+            (cl-letf (((symbol-function 'chirp-backend-compose)
+                       (lambda (&rest args)
+                         (cl-incf posts)
+                         (funcall (plist-get args :errback) "X rejected this request (226)")))
+                      ((symbol-function 'chirp-web-open-post)
+                       (lambda (id external) (setq opened (list id external)))))
+              (call-interactively send)
+              (should-not opened)
+              (call-interactively send)
+              (should (= posts 1))
+              (should (equal opened '("42" nil)))
+              (let ((current-prefix-arg '(4)))
+                (call-interactively send))
+              (should (equal opened '("42" (4))))
+              (should (= posts 1))
+              (should (equal (car kill-ring) "My comment"))
+              (should (equal (chirp-compose--body-text) "My comment"))
+              (should (equal chirp-compose-attachments '("/tmp/photo.jpg"))))))
+      (kill-buffer draft)
+      (kill-buffer source))))
+
 (ert-deftest chirp-compose-send-rejects-duplicate-submit ()
   "Sending should reject a second submit while a draft is marked in flight."
   (pcase-let ((`(,compose . ,source)

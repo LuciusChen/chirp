@@ -16,6 +16,7 @@
 (require 'chirp-backend)
 
 (require 'chirp-x)
+(require 'chirp-web)
 (declare-function chirp "chirp" ())
 (declare-function chirp-me "chirp" ())
 
@@ -62,6 +63,9 @@ cancelled, the attachment is removed, or the send completes."
 
 (defvar-local chirp-compose-body-end-marker nil
   "Marker at the end of the editable compose body.")
+
+(defvar-local chirp-compose--quote-rejected nil
+  "Non-nil after X explicitly rejected this quote as automated.")
 
 (defvar-local chirp-compose-sending nil
   "Non-nil while the current compose buffer is sending a draft.")
@@ -713,10 +717,31 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
         (user-error "Text cannot be empty")
       text)))
 
-(defun chirp-compose-send ()
-  "Send this draft and release its attachments after confirmed success."
-  (interactive)
+(defun chirp-compose--continue-quote (external)
+  "Copy this quote draft and open the original post on X.
+When EXTERNAL is non-nil, use the configured browser."
+  (unless (and (eq chirp-compose-kind 'quote)
+               (stringp chirp-compose-target-id)
+               (string-match-p "\\`[0-9]+\\'" chirp-compose-target-id))
+    (user-error "This command needs a quote draft with an original post"))
+  (let ((text (string-trim (chirp-compose--current-body)))
+        (files chirp-compose-attachments))
+    (chirp-web-open-post chirp-compose-target-id external)
+    (unless (string-empty-p text) (kill-new text))
+    (message "On the original post choose Repost → Quote%s%s"
+             (if (string-empty-p text) "" ", then paste your comment")
+             (if files
+                 (concat ". Attach: " (mapconcat #'abbreviate-file-name files ", "))
+               ""))))
+
+(cl-defun chirp-compose-send (&optional on-x)
+  "Send this draft, or open a quote in the configured browser with ON-X.
+After X rejects a quote with code 226, continue it on X in WebKit when
+available.  Interactively, ON-X is the prefix argument."
+  (interactive "P")
   (when chirp-compose-sending (user-error "Draft is already sending"))
+  (when (or on-x chirp-compose--quote-rejected)
+    (cl-return-from chirp-compose-send (chirp-compose--continue-quote on-x)))
   (let ((draft (current-buffer))
         (source chirp-compose-source-buffer)
         (kind chirp-compose-kind)
@@ -729,11 +754,17 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
     (cl-labels ((restore (reason)
                   (when (buffer-live-p draft)
                     (with-current-buffer draft
+                      (setq chirp-compose--quote-rejected
+                            (and (eq kind 'quote) (string-suffix-p "(226)" reason)
+                                 (not (string-prefix-p "X write outcome is unknown" reason))))
                       (setq chirp-compose-sending nil buffer-read-only nil)
                       (setq-local header-line-format
-                                  (if (string-match-p "outcome is unknown" reason)
-                                      "Check your posts with C-c C-o before retrying"
-                                    "Draft retained · C-c C-c to send")))
+                                  (cond
+                                      (chirp-compose--quote-rejected
+                                       "X rejected the quote (226) · C-c C-c to continue on X")
+                                      ((string-match-p "outcome is unknown" reason)
+                                       "Check your posts with C-c C-o before retrying")
+                                      (t "Draft retained · C-c C-c to send"))))
                     (display-buffer draft))
                   (chirp-actions--show-error reason)))
       (condition-case err
