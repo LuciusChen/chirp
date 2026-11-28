@@ -105,7 +105,8 @@ cancelled, the attachment is removed, or the send completes."
       (let* ((n (chirp-backend-tweet-weighted-length (string-trim (chirp-compose--current-body))))
              (label (format " %d/280%s" n (if (> n 280) " · Note" ""))))
         (setq chirp-compose--count-cache
-              (cons tick (cond ((> n 280) (propertize label 'face 'error))
+              (cons tick (cond ((> n 25000) (propertize label 'face 'error))
+                               ((> n 280) (propertize label 'face 'mode-line-emphasis))
                                ((> n 260) (propertize label 'face 'warning))
                                (t label))))))
     (cdr chirp-compose--count-cache)))
@@ -224,6 +225,17 @@ cancelled, the attachment is removed, or the send completes."
                (eq (plist-get (chirp-entry-at-point) :kind) 'user)))
     (chirp-actions--refresh-buffer buffer)))
 
+(defvar chirp-actions--pending-states (make-hash-table :test #'equal)
+  "Map (TWEET-ID . STATE-KEY) pairs to non-nil while an update is in flight.")
+
+(defun chirp-actions--format-error (args reason)
+  "Format error REASON for backend action ARGS."
+  (if (and (equal (car args) "bookmark")
+           (string-match-p "(HTTP 404)" reason))
+      (format "%s. Open https://x.com/i/status/%s to bookmark on X."
+              reason (cadr args))
+    reason))
+
 (defun chirp-actions--perform (args on-success &optional on-error)
   "Run action ARGS and call ON-SUCCESS with the decoded payload.
 
@@ -235,12 +247,21 @@ When ON-ERROR is non-nil, call it with the human-readable error message."
      (funcall on-success data envelope))
    (or on-error
        (lambda (reason)
-         (chirp-actions--show-error
-          (if (and (equal (car args) "bookmark")
-                   (string-match-p "(HTTP 404)" reason))
-              (format "%s. Open https://x.com/i/status/%s to bookmark on X."
-                      reason (cadr args))
-            reason))))))
+         (chirp-actions--show-error (chirp-actions--format-error args reason))))))
+
+(defun chirp-actions--restore-state-override (tweet-id state-key had-override old-override)
+  "Restore STATE-KEY override for TWEET-ID using HAD-OVERRIDE and OLD-OVERRIDE."
+  (if had-override
+      (chirp-set-tweet-state-override tweet-id state-key old-override)
+    (when-let* ((existing (gethash tweet-id chirp-tweet-state-overrides)))
+      (let (cleaned)
+        (while existing
+          (unless (eq (car existing) state-key)
+            (setq cleaned (plist-put cleaned (car existing) (cadr existing))))
+          (setq existing (cddr existing)))
+        (if cleaned
+            (puthash tweet-id cleaned chirp-tweet-state-overrides)
+          (remhash tweet-id chirp-tweet-state-overrides))))))
 
 (defun chirp-actions--apply-state (buffer tweet-id state-key state-value count-key)
   "Update tweet state in BUFFER for TWEET-ID.
@@ -270,20 +291,50 @@ STATE-KEY is set to STATE-VALUE and COUNT-KEY is adjusted when needed."
 (defun chirp-actions--set-state (state-key command count-key state-value success-message)
   "Set STATE-KEY for the current tweet using COMMAND.
 
+Apply the change optimistically in the current buffer, rolling back on failure.
 COUNT-KEY is adjusted locally to reflect STATE-VALUE.  Display SUCCESS-MESSAGE
 when the request succeeds."
-  (let* ((tweet-id (chirp-actions--tweet-id-at-point))
-         (buffer (current-buffer)))
-    (message "%s…" (capitalize command))
-    (chirp-actions--perform
-     (list command tweet-id)
-     (lambda (_data _envelope)
-       (chirp-actions--apply-state buffer tweet-id state-key state-value count-key)
-       (when (and (eq state-key :bookmarked-p)
-                  (not state-value)
-                  (chirp-actions--bookmarks-view-p buffer))
-         (chirp-actions--refresh-buffer buffer))
-       (message "%s" success-message)))))
+  (let* ((tweet (chirp-actions--tweet-at-point))
+         (tweet-id (or (plist-get tweet :id)
+                       (user-error "Current tweet has no id")))
+         (pending-key (cons tweet-id state-key))
+         (buffer (current-buffer))
+         (args (list command tweet-id)))
+    (if (gethash pending-key chirp-actions--pending-states)
+        (message "%s already in progress…" (capitalize command))
+      (let* ((old-state (chirp-boolean-value (plist-get tweet state-key)))
+             (old-count (plist-get tweet count-key))
+             (existing-overrides (gethash tweet-id chirp-tweet-state-overrides))
+             (had-override (plist-member existing-overrides state-key))
+             (old-override (and had-override (plist-get existing-overrides state-key))))
+        (cl-labels ((rollback (reason)
+                      (remhash pending-key chirp-actions--pending-states)
+                      (chirp-actions--restore-state-override
+                       tweet-id state-key had-override old-override)
+                      (chirp-update-tweet-by-id
+                       buffer tweet-id
+                       (lambda (item)
+                         (plist-put item state-key old-state)
+                         (plist-put item count-key old-count))
+                       t)
+                      (chirp-actions--show-error
+                       (chirp-actions--format-error args reason))))
+          (puthash pending-key t chirp-actions--pending-states)
+          (chirp-actions--apply-state buffer tweet-id state-key state-value count-key)
+          (message "%s…" (capitalize command))
+          (condition-case err
+              (chirp-actions--perform
+               args
+               (lambda (_data _envelope)
+                 (remhash pending-key chirp-actions--pending-states)
+                 (chirp-actions--apply-state buffer tweet-id state-key state-value count-key)
+                 (when (and (eq state-key :bookmarked-p)
+                            (not state-value)
+                            (chirp-actions--bookmarks-view-p buffer))
+                   (chirp-actions--refresh-buffer buffer))
+                 (message "%s" success-message))
+               #'rollback)
+            (error (rollback (error-message-string err)))))))))
 
 (defun chirp-actions--toggle-state (state-key command-on command-off count-key
                                               success-on success-off)
@@ -450,13 +501,15 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
   (let ((attachments
          (if chirp-compose-attachments
              (mapconcat
-              (lambda (path)
-                (concat (when (display-images-p)
-                          (when-let* ((image (ignore-errors
-                                               (create-image path nil nil :max-width 80 :max-height 48))))
-                            (propertize " " 'display image)))
-                        "  " (abbreviate-file-name path)))
-              chirp-compose-attachments
+              #'identity
+              (cl-loop for path in chirp-compose-attachments
+                       for index from 1
+                       collect
+                       (concat (when (display-images-p)
+                                 (when-let* ((image (ignore-errors
+                                                      (create-image path nil nil :max-width 80 :max-height 48))))
+                                   (propertize " " 'display image)))
+                               (format "  [%d] %s" index (abbreviate-file-name path))))
               "\n")
            (propertize "  No images attached." 'face 'shadow))))
     (concat
@@ -666,15 +719,21 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
   (interactive)
   (unless chirp-compose-attachments
     (user-error "No attached images"))
-  (let* ((choice (if (= (length chirp-compose-attachments) 1)
-                     (car chirp-compose-attachments)
-                   (completing-read "Remove image: "
-                                    chirp-compose-attachments
-                                    nil
-                                    t
-                                    nil
-                                    nil
-                                    (car chirp-compose-attachments))))
+  (let* ((choices (cl-loop for path in chirp-compose-attachments
+                           for index from 1
+                           collect (cons (format "[%d] %s" index
+                                                 (file-name-nondirectory path))
+                                         path)))
+         (choice (if (= (length choices) 1)
+                     (cdar choices)
+                   (cdr (assoc (completing-read "Remove image: "
+                                                choices
+                                                nil
+                                                t
+                                                nil
+                                                nil
+                                                (caar choices))
+                               choices))))
          (removed (expand-file-name choice)))
     (setq-local chirp-compose-attachments
                 (delete removed chirp-compose-attachments))

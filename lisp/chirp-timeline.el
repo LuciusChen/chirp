@@ -32,6 +32,10 @@
     ('following "Following")
     ('bookmarks "Bookmarks")
     (`(search ,query) (format "Search: %s" query))
+    (`(search ,query ,product)
+     (if (equal product "Latest")
+         (format "Search (Latest): %s" query)
+       (format "Search: %s" query)))
     (`(likes ,handle) (format "Liked: @%s" handle))
     (`(list ,target ,name) (format "List: %s" (or name (chirp-backend-list-id target))))
     (_ "Timeline")))
@@ -298,8 +302,11 @@ requests a specific pagination page."
                ('bookmarks (chirp-backend-bookmarks #'success #'failure fetch-count page))
                ((or 'home 'following)
                 (chirp-backend-feed #'success (eq kind 'following) #'failure fetch-count page))
+               (`(search ,query)
+                (chirp-backend-search query #'success #'failure fetch-count page))
+               (`(search ,query ,product)
+                (chirp-backend-search query #'success #'failure fetch-count page product))
                (_ (funcall (pcase (car kind)
-                             ('search #'chirp-backend-search)
                              ('list #'chirp-backend-list)
                              ('likes #'chirp-backend-likes))
                            (cadr kind) #'success #'failure fetch-count page))))
@@ -425,16 +432,24 @@ When HANDLE is nil, resolve the currently authenticated account first."
                (chirp-timeline--open
                 (list 'list (chirp-get item "id") (chirp-get item "name")) :buffer buffer))))))))))
 
-(defun chirp-timeline-open-search (query &optional buffer)
-  "Open search results for QUERY in BUFFER."
-  (interactive "sSearch X: ")
-  (chirp-timeline--open (list 'search query) :buffer buffer))
+(defun chirp-timeline-open-search (query &optional buffer product)
+  "Open search results for QUERY in BUFFER using optional PRODUCT ordering."
+  (interactive (list (read-string "Search X: " nil 'chirp-search-history)))
+  (let ((trimmed (string-trim query)))
+    (when (string-empty-p trimmed)
+      (user-error "Enter a search query"))
+    (chirp-timeline--open
+     (if (equal product "Latest")
+         (list 'search trimmed "Latest")
+       (list 'search trimmed))
+     :buffer buffer)))
 
 (defun chirp-toggle-home-following ()
   "Toggle between primary Chirp subviews.
 
-On Home/Following, switch between the two timelines.  In profile buffers that
-expose subviews, cycle the current profile mode."
+On Home/Following, switch between the two timelines.  In search buffers,
+toggle between Top and Latest results.  In profile buffers that expose
+subviews, cycle the current profile mode."
   (interactive)
   (cond
    ((functionp chirp--profile-switch-mode-function)
@@ -449,6 +464,18 @@ expose subviews, cycle the current profile mode."
       ('following
        (chirp-timeline--open
         'home
+        :limit chirp-default-max-results
+        :buffer (current-buffer)))
+      (`(search ,query)
+       (chirp-timeline--open
+        (list 'search query "Latest")
+        :limit chirp-default-max-results
+        :buffer (current-buffer)))
+      (`(search ,query ,product)
+       (chirp-timeline--open
+        (if (equal product "Latest")
+            (list 'search query)
+          (list 'search query "Latest"))
         :limit chirp-default-max-results
         :buffer (current-buffer)))
       (_

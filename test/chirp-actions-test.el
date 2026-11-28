@@ -676,6 +676,49 @@ Return a list of (compose source foreign)."
       (kill-buffer draft)
       (kill-buffer source))))
 
+(ert-deftest chirp-toggle-like-updates-optimistically-and-rolls-back-on-error ()
+  "State toggles should update immediately and revert cleanly if the request fails."
+  (clrhash chirp-tweet-state-overrides)
+  (clrhash chirp-actions--pending-states)
+  (let (captured-error rerender-count)
+    (setq rerender-count 0)
+    (unwind-protect
+        (chirp-test--with-tweet-buffer
+         '(:kind tweet :id "321" :liked-p nil :like-count 10)
+         (lambda (_buffer)
+           (cl-letf (((symbol-function 'chirp-actions--perform)
+                      (lambda (_args _on-success &optional on-error)
+                        (setq captured-error on-error)))
+                     ((symbol-function 'chirp-request-rerender)
+                      (lambda (&optional _buffer _delay)
+                        (cl-incf rerender-count)))
+                     ((symbol-function 'message) #'ignore))
+             (chirp-toggle-like-at-point)
+             (should (plist-get (chirp-entry-at-point) :liked-p))
+             (should (= (plist-get (chirp-entry-at-point) :like-count) 11))
+             (should (= rerender-count 1))
+             (funcall captured-error "Network error")
+             (should-not (plist-get (chirp-entry-at-point) :liked-p))
+             (should (= (plist-get (chirp-entry-at-point) :like-count) 10))
+             (should-not (gethash "321" chirp-tweet-state-overrides))
+             (should (= rerender-count 2)))))
+      (clrhash chirp-tweet-state-overrides)
+      (clrhash chirp-actions--pending-states))))
+
+(ert-deftest chirp-view-mode-binds-direct-action-shortcuts ()
+  "High-frequency actions should be directly bound in `chirp-view-mode-map'."
+  (dolist (binding '(("c" . chirp-compose-post)
+                     ("r" . chirp-reply-at-point)
+                     ("Q" . chirp-quote-at-point)
+                     ("R" . chirp-toggle-retweet-at-point)
+                     ("l" . chirp-toggle-like-at-point)
+                     ("B" . chirp-toggle-bookmark-at-point)
+                     ("T" . chirp-translate-at-point)
+                     ("y" . chirp-copy-fixupx-url-at-point)
+                     ("i" . chirp-notifications)))
+    (should (eq (lookup-key chirp-view-mode-map (kbd (car binding)))
+                (cdr binding)))))
+
 (provide 'chirp-actions-test)
 
 ;;; chirp-actions-test.el ends here

@@ -1366,7 +1366,15 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
         (setq-local header-line-format nil)
         (goto-char (point-min)))
       (chirp-display-buffer buffer)
-      (message "%s (%d/%d)" title (1+ index) (length media-list)))))
+      (let* ((total (length media-list))
+             (alt (chirp-first-nonblank (plist-get media :alt)))
+             (hint (if (> total 1)
+                       "n/p: switch · D: download · o: browser · q: back"
+                     "D: download · o: browser · q: back")))
+        (message "%s (%d/%d)%s  [%s]"
+                 title (1+ index) total
+                 (if alt (format " — %s" (truncate-string-to-width alt 80 nil nil "…")) "")
+                 hint)))))
 
 (defun chirp-media--render-buffer (buffer media-list index title)
   "Render MEDIA-LIST at INDEX into BUFFER."
@@ -1410,6 +1418,8 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
         (when-let* ((width (plist-get media :width))
                     (height (plist-get media :height)))
           (insert (format "Size: %sx%s\n" width height)))
+        (when-let* ((alt (chirp-first-nonblank (plist-get media :alt))))
+          (insert (format "Alt: %s\n" alt)))
         (when-let* ((url (plist-get media :url)))
           (insert (format "URL: %s\n" url)))
         (goto-char (point-min))))

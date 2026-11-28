@@ -23,8 +23,6 @@ Run `M-x chirp` to open the For You timeline in a dedicated buffer.
 
 ## Notifications
 
-If you switch away while `M-x chirp-list` loads, run it again to choose from the cached lists.
-
 Open `M-x chirp-notifications` to browse dated activity. Use `n` and `p` to move between events, `RET` anywhere on a linked event (including its timestamp) to open its post, and `N` for older activity.
 
 To receive account activity notifications, enable the global mode:
@@ -69,17 +67,24 @@ M-x chirp-profile-followers
 M-x chirp-profile-following-users
 ```
 
+If you switch away while `M-x chirp-list` loads, run it again to choose from the cached lists.
+
 ## Keys
 
 - `g`: refresh; on Home and Following, Chirp keeps the current timeline visible and merges newer posts at the top
-- `TAB`: switch between Home and Following on those timelines; in profile buffers, cycle `Posts`, `Replies`, `Highlights`, `Media`, and `Likes` when available
+- `TAB`: switch between Home and Following on those timelines; toggle between `Top` and `Latest` in search buffers; in profile buffers, cycle `Posts`, `Replies`, `Highlights`, `Media`, and `Likes` when available
 - `n` / `p`: next or previous entry; at the last entry of a paginated view, `n` loads the next available page
 - `N`: append older entries in timelines, searches, lists, profiles, threads, and follower lists. Chirp shows any posts remaining from the current response first, then continues from X’s bottom cursor. If a page request fails, press `N` to retry.
 - `q`: close the current Chirp window; on For You and Following, keep the timeline buffer alive so you can switch back later
 - When Home or Following has no more older posts, Chirp says so instead of leaving the last loading message in place
 - `RET`: expand an article when point is on `Show more`; otherwise open the current tweet or profile, or open large media when point is on a thumbnail
-- `/` searches X. Click a handle or hashtag to open its profile or search. Click a link, thumbnail, or profile tab to open it.
-- Click ordinary post text, including quoted text, to place point. Click a quote heading to open the quoted post. Click a handle to open its profile or a hashtag to search.
+- `/`: search X (with minibuffer search history; press `TAB` in results to toggle `Top` and `Latest`)
+- Click ordinary post text, including quoted text, to place point; click a quote heading, handle (including `retweeted by` and `replying to` handles), hashtag, link, thumbnail, or profile tab to open its target
+- `l` / `R` / `B`: directly toggle like, repost/retweet, or bookmark for the tweet at point with immediate optimistic UI feedback and automatic rollback on failure
+- `c` / `r` / `Q`: compose a new post, reply to, or quote the tweet at point
+- `T`: translate the tweet at point and show the result below its original text
+- `y`: copy the current tweet URL as a `fixupx.com` link
+- `i`: open the account activity view
 - `Mouse-1` on a tweet's reply, repost/retweet, like, quote, or bookmark metric opens or toggles that action for the clicked tweet
 - In profile summaries, `RET` on `Followers` or `Following` opens that user list
 - In profile buffers, `RET` on the subview strip switches between available profile timelines
@@ -88,7 +93,6 @@ M-x chirp-profile-following-users
 - `A`: open the author profile
 - `S`: add a persistent spam phrase or keyword using the active region or current tweet text; use `C-u S` to start with the author's display name
 - `x`: open the actions menu for timeline switching, your own profile, bookmarks, liked tweets, lists, post/reply/quote, follow/unfollow, translation, and tweet actions
-- `x T`: translate the tweet at point and show the result below its original text
 - `o`: open the current item in a browser
 
 Inside the compose buffer:

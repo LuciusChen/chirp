@@ -139,11 +139,21 @@
   (when chirp-notifications-mode
     (message "Chirp notification check failed: %s" message)))
 
+(defun chirp-notifications--kind-face (notification)
+  "Return a semantic face for NOTIFICATION's activity type."
+  (pcase (chirp-get notification "type")
+    ("like" 'chirp-liked-metric-face)
+    ("retweet" 'chirp-retweeted-metric-face)
+    ("follow" 'chirp-bookmarked-metric-face)
+    ((or "mention" "reply" "quote") 'chirp-author-face)
+    (_ 'bold)))
+
 (defun chirp-notifications--insert-row (item)
   "Insert one activity ITEM with its timestamp and optional tweet link."
   (let ((start (point))
         (id (chirp-get item "tweetId")))
-    (insert (propertize (chirp-notifications--kind-label item) 'face 'bold)
+    (insert (propertize (chirp-notifications--kind-label item)
+                        'face (chirp-notifications--kind-face item))
             "  " (chirp-notifications--body item))
     (when id
       (add-text-properties start (point) '(mouse-face highlight pointer hand

@@ -105,6 +105,19 @@
           (should (equal (chirp-entry-id-at-point) "b"))
           (should chirp--timeline-exhausted-p))))))
 
+(ert-deftest chirp-activity-uses-semantic-faces-for-event-kinds ()
+  "Activity labels should use semantic metric faces matching tweet actions."
+  (with-temp-buffer
+    (chirp-notifications--insert-row '((id . "1") (type . "like") (message . "Alice liked")))
+    (chirp-notifications--insert-row '((id . "2") (type . "retweet") (message . "Bob reposted")))
+    (chirp-notifications--insert-row '((id . "3") (type . "follow") (message . "Carol followed")))
+    (goto-char (point-min))
+    (should (eq (get-text-property (point) 'face) 'chirp-liked-metric-face))
+    (forward-line 1)
+    (should (eq (get-text-property (point) 'face) 'chirp-retweeted-metric-face))
+    (forward-line 1)
+    (should (eq (get-text-property (point) 'face) 'chirp-bookmarked-metric-face))))
+
 (provide 'chirp-notifications-test)
 
 ;;; chirp-notifications-test.el ends here

@@ -938,16 +938,18 @@ MAX-RESULTS bounds the page size and CURSOR continues a previous page."
        ("data" "bookmark_timeline_v2" "timeline"))
      limit callback :errback errback :label "the bookmarks timeline")))
 
-(defun chirp-backend-search (query callback &optional errback max-results cursor)
+(defun chirp-backend-search
+    (query callback &optional errback max-results cursor product)
   "Search for QUERY and call CALLBACK, or ERRBACK on failure.
-MAX-RESULTS sets the page size and CURSOR selects the next page."
+MAX-RESULTS sets the page size, CURSOR selects the next page, and
+PRODUCT selects X search ordering (defaults to \"Top\")."
   (let ((limit (chirp-backend--timeline-limit max-results)))
     (chirp-backend--request-timeline
      'search
      `(,@(when cursor (list (cons "cursor" cursor))) ("count" . ,limit)
        ("rawQuery" . ,query)
        ("querySource" . "typed_query")
-       ("product" . "Top"))
+       ("product" . ,(or product "Top")))
      '(("data" "search_by_raw_query" "search_timeline" "timeline"))
      limit callback :errback errback :label "the search timeline")))
 

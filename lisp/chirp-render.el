@@ -944,6 +944,16 @@ Precede each row with PREFIX using PREFIX-FACE when provided."
       (chirp-render--insert-media-grid media-list prefix prefix-face))
     (insert "\n\n")))
 
+(defun chirp-render--insert-mention-handle (handle)
+  "Insert clickable @HANDLE with profile navigation properties."
+  (let ((tag (format "@%s" (string-remove-prefix "@" handle))))
+    (insert (propertize tag
+                        'face 'chirp-handle-face
+                        'chirp-mention tag
+                        'mouse-face 'highlight
+                        'pointer 'hand
+                        'help-echo "Open profile"))))
+
 (defun chirp-render--insert-tweet
     (tweet &optional prefix prefix-face show-reply-context article-mode reply-parent)
   "Insert TWEET at point, optionally prefixed for thread rendering.
@@ -973,8 +983,8 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
       (insert "\n"))
     (when retweeted-by
       (chirp-render--insert-prefix prefix prefix-face)
-      (insert (propertize (format "retweeted by @%s" retweeted-by)
-                          'face 'chirp-social-context-face))
+      (insert (propertize "retweeted by " 'face 'chirp-social-context-face))
+      (chirp-render--insert-mention-handle retweeted-by)
       (insert "\n"))
     (chirp-render--insert-prefix prefix prefix-face)
     (chirp-render--insert-avatar (plist-get tweet :author-avatar-url) handle)
@@ -993,9 +1003,7 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
       (chirp-render--insert-prefix prefix prefix-face)
       (insert (propertize "replying to "
                           'face 'chirp-thread-reply-context-face))
-      (insert (propertize (format "@%s"
-                                  (plist-get tweet :reply-to-handle))
-                          'face 'chirp-handle-face))
+      (chirp-render--insert-mention-handle (plist-get tweet :reply-to-handle))
       (insert "\n"))
     (when-let* ((text (plist-get tweet :text)))
       (unless (string-empty-p text)
@@ -1074,10 +1082,11 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
     (insert "\n\n")))
 
 (defun chirp-render-insert-tweet-list (tweets &optional previous)
-  "Insert TWEETS, continuing separators and reply context from PREVIOUS."
+  "Insert TWEETS, continuing separators and reply context from PREVIOUS.
+
+Separators are inserted only between independent posts, never between a
+tweet and its adjacent reply."
   (dolist (tweet tweets)
-    (when previous
-      (chirp-render-insert-tweet-separator))
     (if-let* ((reply-parent (chirp-render--list-reply-parent tweet previous)))
         (chirp-render--insert-tweet
          tweet
@@ -1086,6 +1095,8 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
          nil
          nil
          reply-parent)
+      (when previous
+        (chirp-render-insert-tweet-separator))
       (chirp-render-insert-tweet tweet))
     (setq previous tweet)))
 

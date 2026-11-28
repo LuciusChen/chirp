@@ -24,7 +24,16 @@
 (declare-function chirp-thread-add-spam-rule "chirp-thread" (&optional authorp))
 (declare-function chirp-dispatch "chirp-actions" ())
 (declare-function chirp--dispatch-mouse-action "chirp-actions" (event))
+(declare-function chirp-compose-post "chirp-actions" ())
+(declare-function chirp-reply-at-point "chirp-actions" ())
+(declare-function chirp-quote-at-point "chirp-actions" ())
+(declare-function chirp-toggle-retweet-at-point "chirp-actions" ())
+(declare-function chirp-toggle-like-at-point "chirp-actions" ())
+(declare-function chirp-toggle-bookmark-at-point "chirp-actions" ())
+(declare-function chirp-translate-at-point "chirp-actions" ())
+(declare-function chirp-copy-fixupx-url-at-point "chirp-actions" ())
 (declare-function chirp-toggle-follow-user-at-point "chirp-actions" ())
+(declare-function chirp-notifications "chirp" ())
 (declare-function chirp-toggle-home-following "chirp-timeline" ())
 (declare-function chirp-media-playback-url "chirp-media" (media))
 (declare-function chirp-search "chirp" (query))
@@ -88,6 +97,19 @@ smoother while background data arrives."
   "When non-nil, hide tweets explicitly marked as promoted by X."
   :type 'boolean
   :group 'chirp)
+
+(defcustom chirp-highlight-current-entry t
+  "When non-nil, subtly highlight the header line of the entry at point."
+  :type 'boolean
+  :group 'chirp)
+
+(defface chirp-current-entry
+  '((t :inherit hl-line :extend t))
+  "Face used to highlight the active entry header line in Chirp views."
+  :group 'chirp)
+
+(defvar chirp-search-history nil
+  "Minibuffer history for Chirp search queries.")
 
 (defcustom chirp-show-avatars t
   "When non-nil, show avatar images in Chirp views."
@@ -165,6 +187,9 @@ commands still work, and displays alt text when X provides it."
 (defvar-local chirp--status-timer nil
   "Timer used to refresh Chirp's persistent status display.")
 
+(defvar-local chirp--current-entry-overlay nil
+  "Overlay highlighting the active entry header line.")
+
 (put 'chirp--request-token 'permanent-local t)
 (put 'chirp--timeline-kind 'permanent-local t)
 (put 'chirp--timeline-limit 'permanent-local t)
@@ -212,6 +237,15 @@ commands still work, and displays alt text when X provides it."
     (define-key map (kbd "N") #'chirp-load-more)
     (define-key map (kbd "RET") #'chirp-open-at-point)
     (define-key map (kbd "t") #'chirp-open-at-point)
+    (define-key map (kbd "c") #'chirp-compose-post)
+    (define-key map (kbd "r") #'chirp-reply-at-point)
+    (define-key map (kbd "Q") #'chirp-quote-at-point)
+    (define-key map (kbd "R") #'chirp-toggle-retweet-at-point)
+    (define-key map (kbd "l") #'chirp-toggle-like-at-point)
+    (define-key map (kbd "B") #'chirp-toggle-bookmark-at-point)
+    (define-key map (kbd "T") #'chirp-translate-at-point)
+    (define-key map (kbd "y") #'chirp-copy-fixupx-url-at-point)
+    (define-key map (kbd "i") #'chirp-notifications)
     (define-key map (kbd "m") #'chirp-open-primary-media)
     (define-key map (kbd "D") #'chirp-media-download-at-point)
     (define-key map (kbd "A") #'chirp-open-author-at-point)
@@ -222,6 +256,24 @@ commands still work, and displays alt text when X provides it."
     map)
   "Keymap for `chirp-view-mode'.")
 
+(defun chirp--update-current-entry-overlay ()
+  "Highlight the header line of the Chirp entry at point."
+  (if-let* ((chirp-highlight-current-entry)
+            ((chirp-entry-at-point))
+            (start (chirp--current-entry-start))
+            (bounds (save-excursion
+                      (goto-char start)
+                      (cons (line-beginning-position)
+                            (min (point-max) (1+ (line-end-position)))))))
+      (if (overlayp chirp--current-entry-overlay)
+          (move-overlay chirp--current-entry-overlay (car bounds) (cdr bounds))
+        (setq chirp--current-entry-overlay
+              (make-overlay (car bounds) (cdr bounds)))
+        (overlay-put chirp--current-entry-overlay 'face 'chirp-current-entry)
+        (overlay-put chirp--current-entry-overlay 'priority -50))
+    (when (overlayp chirp--current-entry-overlay)
+      (delete-overlay chirp--current-entry-overlay))))
+
 (define-derived-mode chirp-view-mode special-mode "Chirp"
   "Major mode for Chirp buffers."
   (setq-local truncate-lines nil)
@@ -230,6 +282,7 @@ commands still work, and displays alt text when X provides it."
   (setq-local line-spacing 0)
   (setq-local mode-line-process
               '((:eval (chirp--mode-line-status-string))))
+  (add-hook 'post-command-hook #'chirp--update-current-entry-overlay nil t)
   (visual-line-mode 1))
 
 (defun chirp--status-face (kind)
@@ -386,7 +439,8 @@ revisited later."
     (let ((inhibit-read-only t))
       (erase-buffer)
       (funcall render-fn)
-      (goto-char (point-min)))))
+      (goto-char (point-min)))
+    (chirp--update-current-entry-overlay)))
 
 (defun chirp-open-paged-list (buffer title refresh fetch key insert-row empty &optional prefetch)
   "Open BUFFER with TITLE and REFRESH for a cursor-paginated list.

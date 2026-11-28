@@ -13,8 +13,9 @@ history remains available in Git.
 
 ### Added
 
-- Browse dated account activity with `M-x chirp-notifications` and load older events with `N`. Use `/` to search. Clicking text places point, while handles, hashtags, links, and media open their targets.
-- Show compact local timestamps, article headings and links, visible and filtered conversation counts, and a visible margin for quoted posts.
+- Browse dated account activity with `M-x chirp-notifications` (with semantic labels by event type) and load older events with `N`. Use `/` to search with minibuffer history and press `TAB` in search buffers to toggle `Top` and `Latest`. Clicking text places point, while handles (including `retweeted by` and `replying to`), hashtags, links, and media open their targets.
+- Bind direct single-key shortcuts (`l`, `R`, `B`, `c`, `r`, `Q`, `T`, `y`, `i`) in Chirp browsing views, apply optimistic state updates with rollback on failure for like/repost/bookmark toggles, and subtly highlight the active entry header line (`chirp-highlight-current-entry`).
+- Show compact local timestamps, article headings and links, visible and filtered conversation counts, a visible margin for quoted posts, and tweet separators only between independent posts rather than inside adjacent reply chains.
 - Show the weighted length, reply context and attachment previews while composing.
 - Load additional pages of bookmarks and replies in thread views with `N` or by moving past the last entry.
 - Inline tweet translation from the actions menu with `T`.

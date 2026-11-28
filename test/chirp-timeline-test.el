@@ -815,6 +815,30 @@
             (should (equal opened '(list "42" "Lisp")))
             (should-error (chirp-list " ") :type 'user-error)))))))
 
+(ert-deftest chirp-search-tab-toggles-between-top-and-latest ()
+  "TAB in a search view should toggle between Top and Latest product ordering."
+  (save-window-excursion
+    (let ((view (generate-new-buffer " *chirp-search-toggle*"))
+          products)
+      (unwind-protect
+          (cl-letf (((symbol-function 'chirp-backend-search)
+                     (lambda (query ok _err _limit _cursor &optional product)
+                       (push (cons query (or product "Top")) products)
+                       (funcall ok (list (list :kind 'tweet :id "1" :text query)) nil))))
+            (should-error (chirp-timeline-open-search "   " view) :type 'user-error)
+            (chirp-timeline-open-search "emacs" view)
+            (with-current-buffer view
+              (should (equal chirp--view-title "Search: emacs"))
+              (chirp-toggle-home-following)
+              (should (equal chirp--view-title "Search (Latest): emacs"))
+              (chirp-toggle-home-following)
+              (should (equal chirp--view-title "Search: emacs")))
+            (should (equal (nreverse products)
+                           '(("emacs" . "Top")
+                             ("emacs" . "Latest")
+                             ("emacs" . "Top")))))
+        (kill-buffer view)))))
+
 (provide 'chirp-timeline-test)
 
 ;;; chirp-timeline-test.el ends here

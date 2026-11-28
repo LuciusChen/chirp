@@ -107,7 +107,7 @@ When LIST-ID-OR-URL is nil, prompt from the authenticated account's lists."
 ;;;###autoload
 (defun chirp-search (query)
   "Search X for QUERY."
-  (interactive "sSearch X: ")
+  (interactive (list (read-string "Search X: " nil 'chirp-search-history)))
   (chirp--open #'chirp-timeline-open-search query))
 
 ;;;###autoload

@@ -1333,6 +1333,97 @@
       (search-forward label)
       (should (equal (get-text-property (1- (point)) 'chirp-link-url) url)))))
 
+(ert-deftest chirp-render-insert-tweet-list-omits-separator-inside-reply-chains ()
+  "Separators should appear only between independent posts, not reply chains."
+  (pcase-let* ((`(,parent ,reply) (chirp-test--sample-adjacent-reply-tweets))
+               (followup '(:kind tweet
+                           :id "102"
+                           :text "Chained reply"
+                           :reply-to-id "101"
+                           :reply-to-handle "alice"
+                           :conversation-id "100"
+                           :author-name "Ding"
+                           :author-handle "dingyi"
+                           :reply-count 0 :retweet-count 0 :like-count 0
+                           :quote-count 0 :bookmark-count 0 :view-count 0))
+               (standalone '(:kind tweet
+                             :id "200"
+                             :text "Independent post"
+                             :author-name "Bob"
+                             :author-handle "bob"
+                             :reply-count 0 :retweet-count 0 :like-count 0
+                             :quote-count 0 :bookmark-count 0 :view-count 0)))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet-list (list parent reply followup standalone))))
+      (goto-char (point-min))
+      (let* ((reply-pos (save-excursion (search-forward "Reply body text") (point)))
+             (followup-pos (save-excursion (search-forward "Chained reply") (point)))
+             (standalone-pos (save-excursion (search-forward "Independent post") (point)))
+             (sep-pos (save-excursion
+                        (goto-char (point-min))
+                        (and (search-forward chirp-tweet-separator nil t)
+                             (match-beginning 0)))))
+        (should sep-pos)
+        (should (> sep-pos followup-pos))
+        (should (< sep-pos standalone-pos))
+        (should-not (string-match-p
+                     (regexp-quote chirp-tweet-separator)
+                     (buffer-substring-no-properties (point-min) followup-pos)))
+        (should (> reply-pos (point-min)))))))
+
+(ert-deftest chirp-render-social-and-reply-handles-are-clickable ()
+  "Retweeted-by and thread replying-to handles should open profiles."
+  (let ((retweeted (chirp-test--sample-retweeted-tweet))
+        (reply '(:kind tweet
+                 :id "reply-2"
+                 :text "Hello"
+                 :reply-to-handle "bob"
+                 :author-name "Alice"
+                 :author-handle "alice")))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet retweeted)
+          (chirp-render-insert-thread-reply reply)))
+      (goto-char (point-min))
+      (search-forward "@dotey")
+      (should (equal (get-text-property (1- (point)) 'chirp-mention) "@dotey"))
+      (should (eq (get-text-property (1- (point)) 'pointer) 'hand))
+      (search-forward "replying to @bob")
+      (should (equal (get-text-property (1- (point)) 'chirp-mention) "@bob"))
+      (should (eq (get-text-property (1- (point)) 'pointer) 'hand)))))
+
+(ert-deftest chirp-view-current-entry-overlay-tracks-active-entry ()
+  "Active entry highlighting should follow point and clear on separators."
+  (let ((tweets (list
+                 '(:kind tweet :id "100" :text "First" :author-name "Alice" :author-handle "alice"
+                   :reply-count 0 :retweet-count 0 :like-count 0 :quote-count 0 :bookmark-count 0 :view-count 0)
+                 '(:kind tweet :id "101" :text "Second" :author-name "Bob" :author-handle "bob"
+                   :reply-count 0 :retweet-count 0 :like-count 0 :quote-count 0 :bookmark-count 0 :view-count 0))))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet-list tweets)))
+      (goto-char (point-min))
+      (chirp--update-current-entry-overlay)
+      (should (overlayp chirp--current-entry-overlay))
+      (should (overlay-buffer chirp--current-entry-overlay))
+      (should (string-match-p "Alice"
+                              (buffer-substring-no-properties
+                               (overlay-start chirp--current-entry-overlay)
+                               (overlay-end chirp--current-entry-overlay))))
+      (search-forward chirp-tweet-separator)
+      (goto-char (match-beginning 0))
+      (chirp--update-current-entry-overlay)
+      (should-not (overlay-buffer chirp--current-entry-overlay)))))
+
 (provide 'chirp-render-test)
 
 ;;; chirp-render-test.el ends here
